@@ -1,0 +1,887 @@
+// ============================================================================
+// PioneerVendor.cpp - Pioneer vendor feature implementation
+// ============================================================================
+#define NOMINMAX
+#include "PioneerVendor.h"
+#include "ScsiDrive.h"
+#include "Constants.h"
+#include <cstring>
+#include <cstdio>
+#include <iostream>
+#include <iomanip>
+#include <algorithm>
+
+namespace {
+    // Big-endian helpers.
+    inline void StoreBE24(BYTE* p, uint32_t v) {
+        p[0] = static_cast<BYTE>((v >> 16) & 0xFF);
+        p[1] = static_cast<BYTE>((v >> 8) & 0xFF);
+        p[2] = static_cast<BYTE>(v & 0xFF);
+    }
+    inline void StoreBE32(BYTE* p, uint32_t v) {
+        p[0] = static_cast<BYTE>((v >> 24) & 0xFF);
+        p[1] = static_cast<BYTE>((v >> 16) & 0xFF);
+        p[2] = static_cast<BYTE>((v >> 8) & 0xFF);
+        p[3] = static_cast<BYTE>(v & 0xFF);
+    }
+    inline uint32_t LoadBE32(const BYTE* p) {
+        return (static_cast<uint32_t>(p[0]) << 24)
+             | (static_cast<uint32_t>(p[1]) << 16)
+             | (static_cast<uint32_t>(p[2]) << 8)
+             |  static_cast<uint32_t>(p[3]);
+    }
+    inline uint16_t LoadBE16(const BYTE* p) {
+        return static_cast<uint16_t>((p[0] << 8) | p[1]);
+    }
+}
+
+bool PioneerVendor::IsPioneerDrive() {
+    if (m_isPioneerCached >= 0) return m_isPioneerCached == 1;
+    m_isPioneerCached = m_drive.IsPioneer() ? 1 : 0;
+    return m_isPioneerCached == 1;
+}
+
+bool PioneerVendor::ReadBuffer(BYTE bufId, uint32_t offset, BYTE* dst,
+    DWORD length, BYTE mode) {
+    BYTE cdb[10] = {};
+    cdb[0] = 0x3C;
+    cdb[1] = mode;
+    cdb[2] = bufId;
+    StoreBE24(&cdb[3], offset);
+    StoreBE24(&cdb[6], length);
+    return m_drive.SendSCSI(cdb, 10, dst, length, /*dataIn=*/true);
+}
+
+bool PioneerVendor::WriteBuffer(BYTE bufId, uint32_t offset, const BYTE* src,
+    DWORD length, BYTE mode) {
+    BYTE cdb[10] = {};
+    cdb[0] = 0x3B;
+    cdb[1] = mode;
+    cdb[2] = bufId;
+    StoreBE24(&cdb[3], offset);
+    StoreBE24(&cdb[6], length);
+    // SendSCSI takes a non-const buffer; safe because dataIn=false treats it read-only.
+    return m_drive.SendSCSI(cdb, 10, const_cast<BYTE*>(src), length, /*dataIn=*/false);
+}
+
+bool PioneerVendor::WriteFeatureCommand(BYTE cmdId, BYTE arg2, BYTE arg3,
+    BYTE arg4, BYTE arg5, BYTE arg6) {
+    BYTE payload[256] = {};
+    payload[0] = cmdId;
+    payload[1] = 0;
+    payload[2] = arg2;
+    payload[3] = arg3;
+    payload[4] = arg4;
+    payload[5] = arg5;
+    payload[6] = arg6;
+    return WriteBuffer(PioneerBufId::FeatureSet, 0, payload, sizeof(payload), /*mode=*/1);
+}
+
+bool PioneerVendor::ReadCapabilities(PioneerCapabilities& caps) {
+    caps = {};
+    if (!IsPioneerDrive()) return false;
+
+    if (!ReadBuffer(PioneerBufId::Capabilities, 0, caps.raw, sizeof(caps.raw))) {
+        return false;
+    }
+
+    const BYTE* r = caps.raw;
+    caps.valid = true;
+    caps.isSupportedDrive          = (r[43] == 1);
+    caps.advancedQuietCurrent      = r[2];
+    caps.quietFallback             = r[3];
+    caps.pureReadSupport           = (r[9] != 0);
+    caps.recordingModeSupport      = (r[10] == 1);
+    caps.bdRecordingMode           = r[11];
+    caps.dvdRecordingMode          = r[13];
+    caps.peakPowerReducerSupport   = (r[16] == 1);
+    caps.peakPowerReducerOn        = (r[17] == 1);
+    caps.smoothTraySupport         = (r[20] != 0xFF);
+    caps.smoothTrayOn              = (r[20] == 1);
+    caps.driveStatusSupport        = (r[22] != 0xFF);
+    caps.driveStatus               = r[23];
+    caps.ledOffSupport             = (r[24] != 0xFF);
+    caps.ledOffOn                  = (r[24] == 1);
+    caps.bdrHighSpeedSupport       = (r[26] != 0xFF);
+    caps.bdrHighSpeedOn            = (r[26] == 1);
+    caps.realTimePureReadOn        = (r[28] != 0);
+    caps.realTimePureReadSupport   = (r[29] != 0);
+    caps.highSpeedDataReadSupport  = (r[41] != 0xFF);
+    caps.advancedQuietSupport      = (r[45] != 0);
+    caps.cdCheckSupport            = (r[44] == 1);
+    caps.discStatusSupport         = (r[46] == 1);
+    caps.usbBusPowerSupport        = (r[47] == 1);
+    caps.forceEjectSupport         = (r[48] == 1);
+    caps.pureReadVersion           = r[49];
+    caps.customEcoSupport          = (r[50] == 1);
+    caps.selectTrackInspectionSupport = (r[52] == 1);
+    caps.driveTypeCode             = r[53];
+    caps.switchCdRomSpeedTableSupport = (r[54] == 1);
+    caps.fragileCdSupport          = (r[55] != 0);
+    caps.fragileCdOn               = (r[56] != 0);
+
+    m_caps = caps;
+    m_capsRead = true;
+    return true;
+}
+
+const PioneerCapabilities& PioneerVendor::Capabilities() {
+    if (!m_capsRead) {
+        PioneerCapabilities tmp;
+        ReadCapabilities(tmp);
+        // Mark probed even on failure so we don't retry on every method call.
+        m_capsRead = true;
+    }
+    return m_caps;
+}
+
+// ── Identification ──────────────────────────────────────────────────────────
+bool PioneerVendor::GetHardwareVersion(uint32_t& versionHex, std::string& versionStr) {
+    versionHex = 0;
+    versionStr.clear();
+    if (!IsPioneerDrive()) return false;
+
+    BYTE buf[48] = {};
+    if (!ReadBuffer(PioneerBufId::HardwareVersion, 0, buf, sizeof(buf))) return false;
+
+    // ASCII hex at offset 20, typically 4 chars.
+    char ascii[5] = {};
+    std::memcpy(ascii, buf + 20, 4);
+    versionStr.assign(ascii, 4);
+
+    unsigned v = 0;
+    if (sscanf_s(ascii, "%4x", &v) == 1) {
+        versionHex = v;
+    }
+    return true;
+}
+
+bool PioneerVendor::GetSerialNumber(std::string& serial) {
+    serial.clear();
+    if (!IsPioneerDrive()) return false;
+
+    // GET CONFIGURATION (0x46) starting at feature 0x0108 (Logical Unit
+    // Serial Number). RT=0 matches the Pioneer utility's request.
+    BYTE cdb[10] = {};
+    cdb[0] = 0x46;
+    cdb[1] = 0x00;          // RT=0 (all supported features from start number)
+    cdb[2] = 0x01;          // feature high
+    cdb[3] = 0x08;          // feature low
+    BYTE buf[32] = {};
+    cdb[7] = 0;
+    cdb[8] = sizeof(buf);
+    if (!m_drive.SendSCSI(cdb, 10, buf, sizeof(buf), true)) return false;
+
+    // Per Pioneer utility: copy 12 bytes starting at offset 12.
+    char s[13] = {};
+    std::memcpy(s, buf + 12, 12);
+    // Trim trailing spaces/nulls.
+    int len = 12;
+    while (len > 0 && (s[len - 1] == ' ' || s[len - 1] == 0)) --len;
+    serial.assign(s, len);
+    return !serial.empty();
+}
+
+// ── PureRead ────────────────────────────────────────────────────────────────
+bool PioneerVendor::GetPureReadMode(PureReadMode& mode, bool& realTimeEnabled) {
+    mode = PureReadMode::Off;
+    realTimeEnabled = false;
+
+    PioneerCapabilities caps;
+    if (!ReadCapabilities(caps)) return false;
+    if (!caps.pureReadSupport) return false;
+
+    const BYTE* r = caps.raw;
+    if (r[4] == 0) mode = PureReadMode::Off;
+    else if (r[5] == 254) mode = PureReadMode::Perfect;
+    else mode = PureReadMode::Master;
+
+    // Pioneer BD Drive Utility reads byte 28 as the Real-Time PureRead state.
+    realTimeEnabled = (r[28] != 0);
+    return true;
+}
+
+bool PioneerVendor::SetPureReadMode(PureReadMode mode, bool realTimeEnabled,
+    bool eepSave) {
+    if (!IsPioneerDrive()) return false;
+    const auto& caps = Capabilities();
+    if (!caps.pureReadSupport) return false;
+
+    BYTE payload[256] = {};
+    payload[0] = PioneerCmdId::PureRead;
+    payload[1] = 0x80;
+    switch (mode) {
+    case PureReadMode::Off:
+        payload[2] = 0;
+        break;
+    case PureReadMode::Master:
+        payload[2] = 1;
+        payload[3] = 8;
+        payload[4] = 64;
+        break;
+    case PureReadMode::Perfect:
+        payload[2] = 1;
+        payload[3] = 254;
+        payload[4] = 1;
+        break;
+    }
+    payload[5] = eepSave ? 1 : 0;
+    payload[6] = (realTimeEnabled && caps.realTimePureReadSupport) ? 1 : 0;
+    return WriteBuffer(PioneerBufId::FeatureSet, 0, payload, sizeof(payload), 1);
+}
+
+PioneerPureReadOffGuard::PioneerPureReadOffGuard(ScsiDrive& drive, bool active)
+    : m_pioneer(drive), m_active(active) {
+    if (!m_active) return;
+
+    bool realTime = false;
+    if (!m_pioneer.GetPureReadMode(m_previousMode, realTime))
+        return;
+
+    m_restore = (m_previousMode != PureReadMode::Off);
+    if (m_restore &&
+        m_pioneer.SetPureReadMode(PureReadMode::Off, false, false)) {
+        std::cout << "  [Pioneer] PureRead disabled for measurement scan.\n";
+    }
+    else {
+        m_restore = false;
+    }
+}
+
+PioneerPureReadOffGuard::~PioneerPureReadOffGuard() {
+    if (m_restore) {
+        m_pioneer.SetPureReadMode(m_previousMode, false, false);
+        std::cout << "\n  [Pioneer] PureRead restored after measurement scan.\n";
+    }
+}
+
+PioneerPerformanceModeGuard::PioneerPerformanceModeGuard(ScsiDrive& drive, bool active)
+    : m_pioneer(drive), m_active(active) {
+    if (!m_active) return;
+
+    const auto& caps = m_pioneer.Capabilities();
+    // Match ApplyAudioExtractionPreset's gate: advancedQuietSupport (byte 45)
+    // is the official "speed mode is changeable" flag. Some drives expose
+    // a valid current-mode byte without honoring writes, so byte 45 is the
+    // authoritative check.
+    if (!caps.valid || !caps.advancedQuietSupport)
+        return;
+
+    // Only attempt restore if the current-mode read-back is a known enum
+    // value. 0xFF means "not reported" and anything > 3 is an undocumented
+    // mode we shouldn't pretend to recognize.
+    BYTE current = caps.advancedQuietCurrent;
+    if (current > 3)
+        return;
+
+    m_previousMode = static_cast<PioneerSpeedMode>(current);
+    if (m_previousMode == PioneerSpeedMode::Performance)
+        return;  // Already in performance mode
+
+    if (m_pioneer.SetSpeedMode(PioneerSpeedMode::Performance, /*eepSave=*/false)) {
+        m_restore = true;
+        std::cout << "  [Pioneer] Performance speed mode enabled for scan.\n";
+    }
+}
+
+PioneerPerformanceModeGuard::~PioneerPerformanceModeGuard() {
+    if (m_restore) {
+        m_pioneer.SetSpeedMode(m_previousMode, /*eepSave=*/false);
+        std::cout << "\n  [Pioneer] Speed mode restored after scan.\n";
+    }
+}
+
+bool PioneerVendor::GetRealTimePureReadStatus(PioneerRtPureReadStatus& status) {
+    status = {};
+    if (!IsPioneerDrive()) return false;
+    const auto& caps = Capabilities();
+    if (!caps.realTimePureReadSupport) return false;
+
+    BYTE buf[32] = {};
+    if (!ReadBuffer(PioneerBufId::RealTimePureRead, 0, buf, sizeof(buf))) return false;
+
+    status.valid = true;
+    status.errorSectors = LoadBE32(buf + 0);
+    status.playSectors  = LoadBE32(buf + 4);
+    status.currentLBA   = LoadBE32(buf + 8);
+    return true;
+}
+
+bool PioneerVendor::ClearRealTimePureReadStatus() {
+    if (!IsPioneerDrive()) return false;
+    const auto& caps = Capabilities();
+    if (!caps.realTimePureReadSupport) return false;
+
+    BYTE empty = 0;
+    BYTE cdb[10] = {};
+    cdb[0] = 0x3B;
+    cdb[1] = 0x02;
+    cdb[2] = PioneerBufId::RealTimePureRead;
+    return m_drive.SendSCSI(cdb, 10, &empty, 0, /*dataIn=*/false);
+}
+
+// ── Quiet / Performance ─────────────────────────────────────────────────────
+bool PioneerVendor::SetSpeedMode(PioneerSpeedMode mode, bool eepSave,
+    int readMultiplier, int writeMultiplier) {
+    if (!IsPioneerDrive()) return false;
+    BYTE modeByte = static_cast<BYTE>(mode);
+    // SetCdSpeedPioneer applies the 0x80 / 0xC0 prefix internally.
+    return m_drive.SetCdSpeedPioneer(readMultiplier, modeByte, eepSave, writeMultiplier);
+}
+
+// ── Boolean toggles ─────────────────────────────────────────────────────────
+bool PioneerVendor::SetPeakPowerReducer(bool on, bool eepSave) {
+    if (!Capabilities().peakPowerReducerSupport) return false;
+    return WriteFeatureCommand(PioneerCmdId::PeakPowerReducer, on ? 1 : 0, eepSave ? 1 : 0);
+}
+
+bool PioneerVendor::SetSmoothTray(bool on, bool eepSave) {
+    if (!Capabilities().smoothTraySupport) return false;
+    return WriteFeatureCommand(PioneerCmdId::TraySmooth, on ? 1 : 0, eepSave ? 1 : 0);
+}
+
+bool PioneerVendor::SetLedOff(bool on, bool eepSave) {
+    if (!Capabilities().ledOffSupport) return false;
+    return WriteFeatureCommand(PioneerCmdId::LedOff, on ? 1 : 0, eepSave ? 1 : 0);
+}
+
+bool PioneerVendor::SetBdrHighSpeedRecording(bool on, bool eepSave) {
+    if (!Capabilities().bdrHighSpeedSupport) return false;
+    return WriteFeatureCommand(PioneerCmdId::BdrHighSpeed, on ? 1 : 0, eepSave ? 1 : 0);
+}
+
+bool PioneerVendor::SetHighSpeedDataRead(bool on, bool eepSave) {
+    if (!Capabilities().highSpeedDataReadSupport) return false;
+    return WriteFeatureCommand(PioneerCmdId::HighSpeedRead, on ? 1 : 0, eepSave ? 1 : 0);
+}
+
+bool PioneerVendor::SetFragileCdMode(bool on, bool eepSave) {
+    if (!Capabilities().fragileCdSupport) return false;
+    // Per utility: w[2]=eepSave, w[3]=off-flag (1 means disable).
+    BYTE off = on ? 0 : 1;
+    return WriteFeatureCommand(PioneerCmdId::RentalCdMode, eepSave ? 1 : 0, off);
+}
+
+// ── Recording mode ──────────────────────────────────────────────────────────
+bool PioneerVendor::SetRecordingMode(PioneerRecordingMode bdMode,
+    PioneerRecordingMode dvdMode, bool eepSave) {
+    if (!Capabilities().recordingModeSupport) return false;
+    return WriteFeatureCommand(PioneerCmdId::RecordingMode,
+        static_cast<BYTE>(bdMode), static_cast<BYTE>(dvdMode), eepSave ? 1 : 0);
+}
+
+// ── Utility commands via 0xE6 ───────────────────────────────────────────────
+bool PioneerVendor::ForceEject() {
+    if (!Capabilities().forceEjectSupport) return false;
+    BYTE empty = 0;
+    // WRITE BUFFER mode=2, id=0xE6, offset=0x20000, length=0.
+    BYTE cdb[10] = {};
+    cdb[0] = 0x3B;
+    cdb[1] = 0x02;
+    cdb[2] = PioneerBufId::Utility;
+    StoreBE24(&cdb[3], 0x20000);
+    // length stays 0.
+    return m_drive.SendSCSI(cdb, 10, &empty, 0, /*dataIn=*/false);
+}
+
+bool PioneerVendor::RunBusPowerCheck(uint32_t& reading) {
+    reading = 0;
+    if (!Capabilities().usbBusPowerSupport) return false;
+
+    BYTE dummy = 0;
+    BYTE cdbW[10] = {};
+    cdbW[0] = 0x3B;
+    cdbW[1] = 0x02;
+    cdbW[2] = PioneerBufId::Utility;
+    StoreBE24(&cdbW[3], 0x10000);
+    if (!m_drive.SendSCSI(cdbW, 10, &dummy, 0, /*dataIn=*/false)) return false;
+
+    BYTE buf[8] = {};
+    BYTE cdbR[10] = {};
+    cdbR[0] = 0x3C;
+    cdbR[1] = 0x02;
+    cdbR[2] = PioneerBufId::Utility;
+    StoreBE24(&cdbR[3], 0x10000);
+    StoreBE24(&cdbR[6], sizeof(buf));
+    if (!m_drive.SendSCSI(cdbR, 10, buf, sizeof(buf), /*dataIn=*/true)) return false;
+
+    reading = LoadBE32(buf + 4);
+    return true;
+}
+
+// ── CD Check ────────────────────────────────────────────────────────────────
+// The capability-flag gate is intentionally omitted: byte 44 of the 0xF4 block
+// disagrees with reality on some Pioneer firmwares (e.g. BDR-S13U reports the
+// flag as 0 even though the 0xE6+0x300000 protocol is implemented). The drive
+// is the authoritative oracle — it will reject the SCSI command with a sense
+// error if the feature is genuinely unsupported.
+bool PioneerVendor::CdCheckStart(uint32_t startLBA, uint32_t unitSize) {
+    BYTE sk = 0, asc = 0, ascq = 0;
+    return CdCheckStartWithSense(startLBA, unitSize, sk, asc, ascq);
+}
+
+bool PioneerVendor::CdCheckStartWithSense(uint32_t startLBA, uint32_t unitSize,
+    BYTE& senseKey, BYTE& asc, BYTE& ascq) {
+    senseKey = asc = ascq = 0;
+    if (!IsPioneerDrive()) return false;
+    BYTE payload[32] = {};
+    payload[0] = 0xFF;
+    payload[1] = 0x02;
+    payload[2] = 0;     // start
+    StoreBE32(&payload[3], startLBA);
+    StoreBE32(&payload[11], unitSize);
+    BYTE cdb[10] = {};
+    cdb[0] = 0x3B;
+    cdb[1] = 0x02;
+    cdb[2] = PioneerBufId::Utility;
+    StoreBE24(&cdb[3], 0x300000);
+    StoreBE24(&cdb[6], sizeof(payload));
+    return m_drive.SendSCSIWithSense(cdb, 10, payload, sizeof(payload),
+        &senseKey, &asc, &ascq, /*dataIn=*/false);
+}
+
+bool PioneerVendor::CdCheckStop() {
+    if (!IsPioneerDrive()) return false;
+    BYTE payload[32] = {};
+    payload[0] = 0xFF;
+    payload[1] = 0x02;
+    payload[2] = 1;     // stop
+    BYTE cdb[10] = {};
+    cdb[0] = 0x3B;
+    cdb[1] = 0x02;
+    cdb[2] = PioneerBufId::Utility;
+    StoreBE24(&cdb[3], 0x300000);
+    StoreBE24(&cdb[6], sizeof(payload));
+    return m_drive.SendSCSI(cdb, 10, payload, sizeof(payload), /*dataIn=*/false);
+}
+
+bool PioneerVendor::CdCheckRead(PioneerCdCheckResult& result) {
+    result = {};
+    if (!IsPioneerDrive()) return false;
+    BYTE buf[64] = {};
+    BYTE cdb[10] = {};
+    cdb[0] = 0x3C;
+    cdb[1] = 0x02;
+    cdb[2] = PioneerBufId::Utility;
+    StoreBE24(&cdb[3], 0x300000);
+    StoreBE24(&cdb[6], sizeof(buf));
+    if (!m_drive.SendSCSI(cdb, 10, buf, sizeof(buf), /*dataIn=*/true)) return false;
+
+    result.valid = true;
+    result.c1Uncorrectable = LoadBE16(buf + 4);
+    result.c2Uncorrectable = LoadBE16(buf + 14);
+    result.endAddress = LoadBE32(buf + 18);
+    uint32_t validity = LoadBE32(buf + 22);
+    result.dataValid = (validity != 0xFFFFFFFFu);
+    result.tePeak = LoadBE16(buf + 60);
+    result.teIntegrationMax = LoadBE16(buf + 62);
+    result.teDataValid = (result.tePeak != 0xFFFF && result.teIntegrationMax != 0xFFFF);
+    return true;
+}
+
+// ── Media code / Media ID / write protection ────────────────────────────────
+namespace {
+// Disc-type labels keyed by the low byte of the Pioneer media code.
+struct DiscTypeEntry { BYTE code; const char* label; };
+constexpr DiscTypeEntry kDiscTypeTable[] = {
+    { 0x00, "CD-ROM" },
+    { 0x20, "CD-R" },
+    { 0x10, "CD-RW" },
+    { 0x40, "DVD-ROM Single" },
+    { 0x44, "DVD-ROM Dual" },
+    { 0x46, "DVD-ROM Dual" },
+    { 0x50, "DVD-RW" },
+    { 0x60, "DVD-R Single" },
+    { 0x68, "DVD-R 3.95GB Single" },
+    { 0x51, "DVD+RW" },
+    { 0x61, "DVD+R Single" },
+    { 0x66, "DVD-R Dual" },
+    { 0x67, "DVD+R Dual" },
+    { 0x70, "DVD-RAM" },
+    { 0x80, "BD-ROM Single" },
+    { 0x86, "BD-ROM Dual" },
+    { 0x8A, "BD-ROM Triple" },
+    { 0x90, "BD-RE Single" },
+    { 0x96, "BD-RE Dual" },
+    { 0x9A, "BD-RE Triple" },
+    { 0xA0, "BD-R Single" },
+    { 0xA6, "BD-R Dual" },
+    { 0xAA, "BD-R Triple" },
+    { 0xAE, "BD-R Quadruple" },
+};
+
+PioneerMediaFamily FamilyFromLowByte(BYTE lo) {
+    switch (lo) {
+    case 0x00: return PioneerMediaFamily::CDROM;
+    case 0x20: case 0x10: return PioneerMediaFamily::CDR;
+    case 0x40: case 0x44: case 0x46: return PioneerMediaFamily::DVDROM;
+    case 0x50: case 0x60: case 0x68: case 0x66: return PioneerMediaFamily::DVDDashR;
+    case 0x51: case 0x61: case 0x67: return PioneerMediaFamily::DVDPlusR;
+    case 0x70: return PioneerMediaFamily::DVDRAM;
+    case 0x80: case 0x86: case 0x8A: return PioneerMediaFamily::BDROM;
+    case 0x90: case 0x96: case 0x9A:
+    case 0xA0: case 0xA6: case 0xAA: case 0xAE:
+        return PioneerMediaFamily::BDR;
+    default: return PioneerMediaFamily::Unknown;
+    }
+}
+
+// Replace zeros with underscores; then trim trailing underscores to spaces.
+std::string CleanAsciiMediaId(const BYTE* p, size_t n) {
+    std::string out;
+    out.reserve(n);
+    for (size_t i = 0; i < n; i++) {
+        BYTE b = p[i];
+        if (b == 0) out.push_back('_');
+        else if (b < 0x20 || b > 0x7E) break;  // stop at non-printable
+        else out.push_back(static_cast<char>(b));
+    }
+    // Convert trailing underscores to spaces, then rtrim.
+    while (!out.empty() && out.back() == '_') out.pop_back();
+    while (!out.empty() && (out.back() == ' ' || out.back() == '\t')) out.pop_back();
+    return out;
+}
+
+// READ DISC STRUCTURE (0xAD) helper.
+bool DoReadDiscStructure(ScsiDrive& drive, BYTE mediaType, BYTE format,
+    BYTE* dst, uint16_t allocLen) {
+    BYTE cdb[12] = {};
+    cdb[0] = 0xAD;
+    cdb[1] = mediaType & 0x0F;     // MediaType nibble
+    cdb[7] = format;
+    cdb[8] = static_cast<BYTE>((allocLen >> 8) & 0xFF);
+    cdb[9] = static_cast<BYTE>(allocLen & 0xFF);
+    return drive.SendSCSI(cdb, 12, dst, allocLen, /*dataIn=*/true);
+}
+}  // namespace
+
+bool PioneerVendor::GetMediaInfo(PioneerMediaInfo& info) {
+    info = {};
+    if (!IsPioneerDrive()) return false;
+
+    // Step 1: WRITE BUFFER 0xE1 with command 0x91 0x40 to request media code.
+    BYTE wpayload[32] = {};
+    wpayload[0] = 0x91;
+    wpayload[1] = 0x40;
+    if (!WriteBuffer(PioneerBufId::McDirectAlt, 0, wpayload, sizeof(wpayload), /*mode=*/2))
+        return false;
+
+    // Step 2: READ BUFFER 0xE1 to retrieve the response.
+    BYTE rbuf[32] = {};
+    if (!ReadBuffer(PioneerBufId::McDirectAlt, 0, rbuf, sizeof(rbuf), /*mode=*/2))
+        return false;
+
+    info.valid = true;
+    info.mediaCode = static_cast<uint16_t>((rbuf[10] << 8) | rbuf[6]);
+    info.lowByte = static_cast<BYTE>(info.mediaCode & 0xFF);
+    info.family = FamilyFromLowByte(info.lowByte);
+
+    const char* label = "Unknown Disc";
+    for (const auto& e : kDiscTypeTable) {
+        if (e.code == info.lowByte) { label = e.label; break; }
+    }
+    info.discTypeLabel = label;
+    return true;
+}
+
+bool PioneerVendor::GetMediaId(const PioneerMediaInfo& info, std::string& id) {
+    id.clear();
+    if (!info.valid) return false;
+
+    BYTE buf[2048] = {};
+
+    switch (info.family) {
+    case PioneerMediaFamily::BDR: {
+        // READ DISC STRUCTURE mediaType=1, format=0; ASCII at offset 104, length 9.
+        if (!DoReadDiscStructure(m_drive, 1, 0x00, buf, 256)) return false;
+        id = CleanAsciiMediaId(buf + 104, 9);
+        return !id.empty();
+    }
+    case PioneerMediaFamily::DVDDashR: {
+        // mediaType=0, format=14; ASCII from offsets around 21, skipping bytes 6 and 7.
+        if (!DoReadDiscStructure(m_drive, 0, 0x0E, buf, 256)) return false;
+        // Build from offset 21 skipping the two reserved bytes at +6,+7 relative
+        // to offset 21 (i.e. absolute indexes 27 and 28).
+        std::string raw;
+        raw.reserve(16);
+        for (int i = 0; i < 16 && (21 + i) < 256; i++) {
+            int abs = 21 + i;
+            if (abs == 27 || abs == 28) continue;
+            BYTE b = buf[abs];
+            if (b < 0x20 || b > 0x7E) {
+                if (b == 0) raw.push_back('_');
+                else break;
+            } else {
+                raw.push_back(static_cast<char>(b));
+            }
+        }
+        id = CleanAsciiMediaId(reinterpret_cast<const BYTE*>(raw.data()), raw.size());
+        return !id.empty();
+    }
+    case PioneerMediaFamily::DVDPlusR: {
+        // mediaType=0, format=0; ASCII from offset 23, length 11.
+        if (!DoReadDiscStructure(m_drive, 0, 0x00, buf, 256)) return false;
+        id = CleanAsciiMediaId(buf + 23, 11);
+        return !id.empty();
+    }
+    case PioneerMediaFamily::CDR: {
+        // READ TOC (0x43) format=4 (ATIP). Per MMC, the ATIP descriptor
+        // starts at response offset 4. The Lead-In Start ATIP Time is at
+        // bytes 8/9/10 (MIN/SEC/FRAME) and the Lead-Out Start ATIP Time at
+        // bytes 12/13/14. All time fields are BCD-encoded.
+        BYTE cdb[10] = {};
+        cdb[0] = 0x43;
+        cdb[2] = 0x04;          // Format = 4 (ATIP)
+        cdb[8] = 32;
+        BYTE atip[32] = {};
+        if (!m_drive.SendSCSI(cdb, 10, atip, sizeof(atip), /*dataIn=*/true))
+            return false;
+        char tmp[32] = {};
+        std::snprintf(tmp, sizeof(tmp), "%02u:%02u:%02u-%02u:%02u:%02u",
+            BcdToBin(atip[8]),  BcdToBin(atip[9]),  BcdToBin(atip[10]),
+            BcdToBin(atip[12]), BcdToBin(atip[13]), BcdToBin(atip[14]));
+        id.assign(tmp);
+        return true;
+    }
+    case PioneerMediaFamily::CDROM:
+    case PioneerMediaFamily::BDROM:
+    case PioneerMediaFamily::DVDROM:
+    case PioneerMediaFamily::DVDRAM:
+    case PioneerMediaFamily::Unknown:
+    default: {
+        // Default DVD-ish handling: mediaType=0, format=0, ASCII from offset
+        // 601, up to 16 bytes or carriage return.
+        if (!DoReadDiscStructure(m_drive, 0, 0x00, buf, 2048)) return false;
+        std::string raw;
+        raw.reserve(16);
+        for (int i = 0; i < 16 && (601 + i) < 2048; i++) {
+            BYTE b = buf[601 + i];
+            if (b == '\r' || b == '\n') break;
+            if (b == 0) raw.push_back('_');
+            else if (b < 0x20 || b > 0x7E) break;
+            else raw.push_back(static_cast<char>(b));
+        }
+        id = CleanAsciiMediaId(reinterpret_cast<const BYTE*>(raw.data()), raw.size());
+        return !id.empty();
+    }
+    }
+}
+
+bool PioneerVendor::GetMediaId(std::string& id) {
+    PioneerMediaInfo info;
+    if (!GetMediaInfo(info)) return false;
+    return GetMediaId(info, id);
+}
+
+bool PioneerVendor::IsWriteProtected(bool& writeProtected) {
+    writeProtected = false;
+    if (!IsPioneerDrive()) return false;
+
+    PioneerMediaInfo info;
+    if (!GetMediaInfo(info)) return false;
+
+    // BD-like media (high nibble 0x90 or 0xA0) -> mediaType=1; else 0.
+    BYTE hi = static_cast<BYTE>(info.lowByte & 0xF0);
+    BYTE mediaType = (hi == 0x90 || hi == 0xA0) ? 1 : 0;
+
+    BYTE buf[8] = {};
+    if (!DoReadDiscStructure(m_drive, mediaType, 0xC0, buf, sizeof(buf)))
+        return false;
+
+    writeProtected = ((buf[4] & 0x0F) != 0);
+    return true;
+}
+
+// ── Status ──────────────────────────────────────────────────────────────────
+int PioneerVendor::GetDriveStatusCode() {
+    const auto& caps = Capabilities();
+    if (!caps.driveStatusSupport) return -1;
+    return caps.driveStatus;
+}
+
+bool PioneerVendor::GetDiscStatus(int& status, std::string& description) {
+    status = -1;
+    description.clear();
+    if (!Capabilities().discStatusSupport) return false;
+
+    // READ DISC INFORMATION (0x51), 34-byte response is sufficient for byte 2.
+    BYTE cdb[10] = {};
+    cdb[0] = 0x51;
+    cdb[8] = 32;
+    BYTE buf[32] = {};
+    if (!m_drive.SendSCSI(cdb, 10, buf, sizeof(buf), true)) return false;
+
+    int s = buf[2] & 0x03;
+    status = s;
+    switch (s) {
+    case 0: description = "Blank Disc"; break;
+    case 1: description = "Writable Media"; break;
+    case 2: description = "Finalized Disc or writable depending on format"; break;
+    default: description = "Cannot Write"; break;
+    }
+    return true;
+}
+
+// ── Audio preset ────────────────────────────────────────────────────────────
+bool PioneerVendor::ApplyAudioExtractionPreset(bool persist, PureReadMode pureReadMode) {
+    if (!IsPioneerDrive()) return false;
+    const auto& caps = Capabilities();
+    if (!caps.valid) return false;
+
+    bool any = false;
+
+    if (caps.pureReadSupport) {
+        // Master mode interpolates after retry exhaustion — best for music CDs
+        // where a silent dropout is worse than a near-perfect interpolation.
+        // Perfect mode instead reports a read error and never fabricates the
+        // missing samples — strictest, for callers that want unrecoverable
+        // sectors surfaced rather than masked.
+        if (SetPureReadMode(pureReadMode,
+            caps.realTimePureReadSupport, persist)) {
+            any = true;
+        }
+    }
+
+    if (caps.advancedQuietSupport) {
+        // Quiet mode reduces spin-up surges and head excursions, which helps
+        // marginal discs read cleanly.
+        if (SetSpeedMode(PioneerSpeedMode::Quiet, persist)) {
+            any = true;
+        }
+    }
+
+    if (caps.fragileCdSupport) {
+        // Fragile / Rental CD mode slows rotation on audio CDs.
+        if (SetFragileCdMode(true, persist)) {
+            any = true;
+        }
+    }
+
+    return any;
+}
+
+// Inverse of ApplyAudioExtractionPreset. A rip enables Quiet speed + Fragile/
+// Rental-CD slow-rotation (and PureRead) for read quality; those read-optimized
+// modes are session-only but survive a media swap, so a burn started on the same
+// drive right after a rip inherits them and the firmware refuses to stream the
+// write (BDR-S13U: COMMAND SEQUENCE ERROR, KEY=05 ASC=2C ASCQ=00). Restoring the
+// default spin/speed state here lets the raw SAO write proceed normally.
+bool PioneerVendor::ClearAudioExtractionPreset() {
+    if (!IsPioneerDrive()) return false;
+    const auto& caps = Capabilities();
+    if (!caps.valid) return false;
+
+    bool any = false;
+
+    if (caps.fragileCdSupport) {
+        if (SetFragileCdMode(false, /*eepSave=*/false)) any = true;
+    }
+
+    if (caps.advancedQuietSupport) {
+        if (SetSpeedMode(PioneerSpeedMode::Default, /*eepSave=*/false)) any = true;
+    }
+
+    if (caps.pureReadSupport) {
+        if (SetPureReadMode(PureReadMode::Off, /*realTimeEnabled=*/false,
+            /*eepSave=*/false)) any = true;
+    }
+
+    return any;
+}
+
+// ── Pretty-print ────────────────────────────────────────────────────────────
+void PioneerVendor::PrintCapabilitiesReport() {
+    if (!IsPioneerDrive()) return;
+    const auto& caps = Capabilities();
+    if (!caps.valid) {
+        std::cout << "\n--- Pioneer Vendor Features ---\n";
+        std::cout << "  (capability block 0xF4 unavailable)\n";
+        return;
+    }
+
+    auto yn = [](bool v) -> const char* { return v ? "YES" : "NO"; };
+
+    std::cout << "\n--- Pioneer Vendor Features ---\n";
+    std::cout << "  Supported drive flag:  " << yn(caps.isSupportedDrive) << "\n";
+
+    uint32_t hwHex = 0; std::string hwStr;
+    if (GetHardwareVersion(hwHex, hwStr) && !hwStr.empty()) {
+        std::cout << "  Hardware Version:      " << hwStr
+            << " (0x" << std::hex << hwHex << std::dec << ")\n";
+    }
+    std::string serial;
+    if (GetSerialNumber(serial) && !serial.empty()) {
+        std::cout << "  Drive Serial:          " << serial << "\n";
+    }
+    std::cout << "  Drive Type Code:       " << static_cast<int>(caps.driveTypeCode) << "\n";
+
+    std::cout << "  PureRead:              " << yn(caps.pureReadSupport);
+    if (caps.pureReadSupport) {
+        const char* ver = "PureRead";
+        switch (caps.pureReadVersion) {
+        case 2: ver = "PureRead2"; break;
+        case 3: ver = "PureRead3+"; break;
+        case 4: ver = "PureRead4+"; break;
+        default: break;
+        }
+        PureReadMode m = PureReadMode::Off; bool rt = false;
+        GetPureReadMode(m, rt);
+        const char* mname = m == PureReadMode::Off ? "Off"
+            : m == PureReadMode::Master ? "Master" : "Perfect";
+        std::cout << "  (" << ver << ", mode=" << mname << ")";
+    }
+    std::cout << "\n";
+    std::cout << "  Real-Time PureRead:    " << yn(caps.realTimePureReadSupport) << "\n";
+    if (caps.realTimePureReadSupport)
+        std::cout << "  Real-Time PR enabled:  " << yn(caps.realTimePureReadOn) << "\n";
+    std::cout << "  Advanced Quiet:        " << yn(caps.advancedQuietSupport);
+    if (caps.advancedQuietSupport && caps.advancedQuietCurrent != 0xFF)
+        std::cout << "  (current=" << static_cast<int>(caps.advancedQuietCurrent) << ")";
+    std::cout << "\n";
+    std::cout << "  Peak Power Reducer:    " << yn(caps.peakPowerReducerSupport)
+        << "  (on=" << yn(caps.peakPowerReducerOn) << ")\n";
+    std::cout << "  LED Off:               " << yn(caps.ledOffSupport)
+        << "  (on=" << yn(caps.ledOffOn) << ")\n";
+    std::cout << "  Smooth Tray Loading:   " << yn(caps.smoothTraySupport)
+        << "  (on=" << yn(caps.smoothTrayOn) << ")\n";
+    std::cout << "  BD-R High-Speed Rec:   " << yn(caps.bdrHighSpeedSupport)
+        << "  (on=" << yn(caps.bdrHighSpeedOn) << ")\n";
+    std::cout << "  High-Speed Data Read:  " << yn(caps.highSpeedDataReadSupport) << "\n";
+    std::cout << "  CD Check (BLER/C2):    " << yn(caps.cdCheckSupport) << "\n";
+    std::cout << "  Select-Track Check:    " << yn(caps.selectTrackInspectionSupport) << "\n";
+    std::cout << "  Disc Status report:    " << yn(caps.discStatusSupport) << "\n";
+    std::cout << "  Drive Status report:   " << yn(caps.driveStatusSupport);
+    if (caps.driveStatusSupport)
+        std::cout << "  (code=" << static_cast<int>(caps.driveStatus)
+            << (caps.driveStatus == 1 ? ", speed-limited" : "") << ")";
+    std::cout << "\n";
+    std::cout << "  USB Bus-Power Check:   " << yn(caps.usbBusPowerSupport) << "\n";
+    std::cout << "  Force Eject:           " << yn(caps.forceEjectSupport) << "\n";
+    std::cout << "  Custom Eco:            " << yn(caps.customEcoSupport) << "\n";
+    std::cout << "  Fragile CD Mode:       " << yn(caps.fragileCdSupport)
+        << "  (on=" << yn(caps.fragileCdOn) << ")\n";
+    std::cout << "  Recording-Mode Select: " << yn(caps.recordingModeSupport) << "\n";
+
+    if (caps.discStatusSupport) {
+        int s = -1; std::string desc;
+        if (GetDiscStatus(s, desc) && s >= 0) {
+            std::cout << "  Current Disc Status:   " << desc << "\n";
+        }
+    }
+
+    // Media code / media ID / write-protect for the currently inserted disc.
+    PioneerMediaInfo media;
+    if (GetMediaInfo(media) && media.valid) {
+        std::cout << "  Inserted Media:        " << media.discTypeLabel
+            << "  (code=0x" << std::hex << std::setw(4) << std::setfill('0')
+            << media.mediaCode << std::dec << std::setfill(' ') << ")\n";
+        std::string mid;
+        if (GetMediaId(media, mid) && !mid.empty()) {
+            std::cout << "  Media ID:              " << mid << "\n";
+        }
+        bool wp = false;
+        if (IsWriteProtected(wp)) {
+            std::cout << "  Write Protected:       " << (wp ? "YES" : "NO") << "\n";
+        }
+    }
+}

@@ -1,0 +1,1013 @@
+﻿#define NOMINMAX
+#include "OpticalDrive.h"
+#include "InterruptHandler.h"
+#include "ConsoleColor.h"
+#include "ConsoleGraph.h"
+#include "ConsoleFormat.h"
+#include "PioneerVendor.h"
+#include <iostream>
+#include <iomanip>
+#include <sstream>
+#include <vector>
+#include <algorithm>
+#include <cstring>
+#include <cstdint>
+
+// ============================================================================
+// Disc Rot Detection
+// ============================================================================
+
+namespace {
+// PioneerPureReadOffGuard and PioneerPerformanceModeGuard are now in
+// PioneerVendor.h (shared with OpticalDrive_QCheck.cpp).
+
+// 4-tier rating for the Pioneer E22 diagnostic counter.  Mirrors the
+// implementation in OpticalDrive_QCheck.cpp; duplicated here to keep each
+// translation unit self-contained.  Tiers and thresholds must stay in sync.
+const char* PioneerE22Rating(int total, double avg, int peak) {
+	if (total == 0) return "Ideal";
+	if (avg < 0.25 && peak < 25) return "Good";
+	if (avg < 1.0 && peak < 100) return "Acceptable";
+	return "Concerning";
+}
+
+const char* PioneerE22RatingDescription(const std::string& rating) {
+	if (rating == "Ideal")      return "no E22 reported";
+	if (rating == "Good")       return "low background, normal for Pioneer scans";
+	if (rating == "Acceptable") return "elevated diagnostic activity";
+	return "heavy diagnostic activity";
+}
+
+void RecalculateQCheckTotals(QCheckResult& result) {
+	result.totalC1 = 0;
+	result.totalC2 = 0;
+	result.totalCU = 0;
+	result.totalPioneerE22 = 0;
+	result.maxC1PerSecond = 0;
+	result.maxC1SecondIndex = -1;
+	result.maxC2PerSecond = 0;
+	result.maxC2SecondIndex = -1;
+	result.maxCUPerSecond = 0;
+	result.maxPioneerE22PerSecond = 0;
+	result.maxPioneerE22SecondIndex = -1;
+
+	for (int i = 0; i < static_cast<int>(result.samples.size()); i++) {
+		const auto& s = result.samples[i];
+		result.totalC1 += s.c1;
+		result.totalC2 += s.c2;
+		result.totalCU += s.cu;
+		result.totalPioneerE22 += s.pioneerE22;
+		if (s.c1 > result.maxC1PerSecond) {
+			result.maxC1PerSecond = s.c1;
+			result.maxC1SecondIndex = i;
+		}
+		if (s.c2 > result.maxC2PerSecond) {
+			result.maxC2PerSecond = s.c2;
+			result.maxC2SecondIndex = i;
+		}
+		if (s.cu > result.maxCUPerSecond)
+			result.maxCUPerSecond = s.cu;
+		if (s.pioneerE22 > result.maxPioneerE22PerSecond) {
+			result.maxPioneerE22PerSecond = s.pioneerE22;
+			result.maxPioneerE22SecondIndex = i;
+		}
+	}
+
+	DWORD sampleCount = static_cast<DWORD>(result.samples.size());
+	result.avgC1PerSecond = sampleCount > 0
+		? static_cast<double>(result.totalC1) / sampleCount : 0.0;
+	result.avgC2PerSecond = sampleCount > 0
+		? static_cast<double>(result.totalC2) / sampleCount : 0.0;
+	result.avgPioneerE22PerSecond = sampleCount > 0
+		? static_cast<double>(result.totalPioneerE22) / sampleCount : 0.0;
+}
+}  // namespace
+
+bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int scanSpeed) {
+	std::cout << "\n=== Disc Rot Detection Scan ===\n";
+	std::cout << "This scan checks for physical disc degradation patterns.\n\n";
+
+	EnsureCapabilitiesDetected();
+
+	if (!m_drive.CheckC2Support()) {
+		std::cout << "ERROR: C2 error detection required but not supported.\n";
+		return false;
+	}
+
+	DWORD firstLBA = 0, lastLBA = 0;
+	DWORD totalSectors = 0;
+	for (const auto& t : disc.tracks) {
+		if (t.isAudio) {
+			DWORD start = (t.trackNumber == 1) ? 0 : t.pregapLBA;
+			if (totalSectors == 0) firstLBA = start;
+			lastLBA = t.endLBA;
+			totalSectors += t.endLBA - start + 1;
+		}
+	}
+
+	if (totalSectors == 0) {
+		std::cout << "No audio tracks to scan.\n";
+		return false;
+	}
+
+	result = DiscRotAnalysis{};
+	std::vector<DWORD> errorLBAs;
+	std::vector<DWORD> inconsistentLBAs;
+
+	// ── Phase 0 (optional): C1 quality scan for early degradation ────
+	// C1 errors are correctable — they reveal disc stress BEFORE C2
+	// errors appear.  Available on Plextor, Pioneer, and LiteOn/MediaTek
+	// drives that expose hardware quality-scan commands.
+	QCheckResult c1Result;
+	bool hasC1 = false;
+
+	PioneerVendor pioneerProbe(m_drive);
+	bool isPioneerDrive = pioneerProbe.IsPioneerDrive();
+	PioneerPureReadOffGuard pioneerPureReadGuard(m_drive, isPioneerDrive);
+	PioneerPerformanceModeGuard pioneerPerfGuard(m_drive, isPioneerDrive);
+
+	bool usePlextor = m_drive.SupportsQCheck();
+	bool usePioneer = false;
+	bool useLiteOn = false;
+
+	if (!usePlextor) {
+		usePioneer = m_drive.SupportsPioneerScan();
+		if (!usePioneer)
+			useLiteOn = m_drive.SupportsLiteOnScan();
+	}
+
+	if (usePlextor || usePioneer || useLiteOn) {
+		c1Result.supported = true;
+		c1Result.scanMethod = usePlextor
+			? "Plextor Q-Check (0xE9/0xEB)"
+			: usePioneer ? "Pioneer (0x3B/0x3C)"
+			: "LiteOn/MediaTek";
+		c1Result.totalSectors = lastLBA - firstLBA + 1;
+		c1Result.totalSeconds = (c1Result.totalSectors + 74) / 75;
+
+		std::cout << "Phase 0: C1 quality scan (early degradation detection)...\n";
+		std::cout << "  Method: " << c1Result.scanMethod << "\n";
+
+		m_drive.SetSpeed(scanSpeed);
+
+		bool started = usePlextor
+			? m_drive.PlextorQCheckStart(firstLBA, lastLBA)
+			: usePioneer ? m_drive.PioneerScanStart(firstLBA, lastLBA)
+			: m_drive.LiteOnScanStart(firstLBA, lastLBA);
+
+		if (started) {
+			bool scanDone = false;
+			bool c1Cancelled = false;
+			int sampleIndex = 0;
+			DWORD lastReportedLBA = DWORD(-1);
+
+			ProgressIndicator c1Progress(40);
+			c1Progress.SetLabel("  C1 Scan");
+			c1Progress.Start();
+
+			while (!scanDone) {
+				if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
+					c1Cancelled = true;
+					break;
+				}
+
+				if (usePlextor)
+					std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+				int c1 = 0, c2 = 0, cu = 0;
+				DWORD currentLBA = 0;
+
+				bool pollOk = usePlextor
+					? m_drive.PlextorQCheckPoll(c1, c2, cu, currentLBA, scanDone)
+					: usePioneer
+					? m_drive.PioneerScanPoll(c1, c2, cu, currentLBA, scanDone)
+					: m_drive.LiteOnScanPoll(c1, c2, cu, currentLBA, scanDone);
+
+				if (!pollOk && (usePlextor || usePioneer)) {
+					std::this_thread::sleep_for(std::chrono::milliseconds(200));
+					pollOk = usePlextor
+						? m_drive.PlextorQCheckPoll(c1, c2, cu, currentLBA, scanDone)
+						: m_drive.PioneerScanPoll(c1, c2, cu, currentLBA, scanDone);
+				}
+				if (!pollOk) break;
+				if (!usePioneer && currentLBA == 0 && c1 == 0 && c2 == 0 && cu == 0 && !scanDone) continue;
+				if (currentLBA == lastReportedLBA && !scanDone) continue;
+				lastReportedLBA = currentLBA;
+
+				// Match Q-Check: discard the first 3 startup/seek-settle samples.
+				if (sampleIndex < 3) { sampleIndex++; continue; }
+
+				if (useLiteOn && currentLBA >= lastLBA) scanDone = true;
+
+				QCheckSample sample;
+				sample.lba = currentLBA;
+				sample.c1 = c1;
+				if (usePioneer) {
+					sample.pioneerE22 = c2;
+					sample.c2 = 0;
+				}
+				else {
+					sample.c2 = c2;
+				}
+				sample.cu = cu;
+				c1Result.samples.push_back(sample);
+				c1Result.totalC1 += sample.c1;
+				c1Result.totalC2 += sample.c2;
+				c1Result.totalCU += sample.cu;
+				c1Result.totalPioneerE22 += sample.pioneerE22;
+				int idx = static_cast<int>(c1Result.samples.size()) - 1;
+				if (c1 > c1Result.maxC1PerSecond) {
+					c1Result.maxC1PerSecond = c1;
+					c1Result.maxC1SecondIndex = idx;
+				}
+				if (sample.c2 > c1Result.maxC2PerSecond) {
+					c1Result.maxC2PerSecond = sample.c2;
+					c1Result.maxC2SecondIndex = idx;
+				}
+				if (cu > c1Result.maxCUPerSecond)
+					c1Result.maxCUPerSecond = cu;
+				if (sample.pioneerE22 > c1Result.maxPioneerE22PerSecond) {
+					c1Result.maxPioneerE22PerSecond = sample.pioneerE22;
+					c1Result.maxPioneerE22SecondIndex = idx;
+				}
+				sampleIndex++;
+
+				if (currentLBA >= firstLBA) {
+					int done = static_cast<int>(std::min<DWORD>(currentLBA - firstLBA, totalSectors));
+					c1Progress.Update(done, static_cast<int>(totalSectors));
+				}
+			}
+
+			c1Progress.Finish(!c1Cancelled, static_cast<int>(totalSectors));
+
+			if (usePlextor) m_drive.PlextorQCheckStop();
+			else if (usePioneer) m_drive.PioneerScanStop();
+			else m_drive.LiteOnScanStop();
+
+			if (c1Cancelled) {
+				m_drive.SetSpeed(0);
+				std::cout << "*** Disc rot scan cancelled ***\n";
+				return false;
+			}
+
+			bool spikesTrimmed = false;
+			if (c1Result.samples.size() > 50) {
+				std::vector<int> allErrs;
+				allErrs.reserve(c1Result.samples.size());
+				for (const auto& s : c1Result.samples)
+					allErrs.push_back(s.c1 + s.c2 + s.cu);
+				std::sort(allErrs.begin(), allErrs.end());
+				int median = allErrs[allErrs.size() / 2];
+
+				size_t checkEnd = std::min<size_t>(30, c1Result.samples.size() / 2);
+				for (int i = static_cast<int>(checkEnd) - 1; i >= 0; i--) {
+					int err = c1Result.samples[i].c1 + c1Result.samples[i].c2 + c1Result.samples[i].cu;
+					if ((median == 0 && err > 10) || (median > 0 && err > median * 10)) {
+						c1Result.samples.erase(c1Result.samples.begin() + i);
+						spikesTrimmed = true;
+					}
+				}
+			}
+
+			bool pioneerCoupledSpikesTrimmed = false;
+			if (usePioneer && c1Result.samples.size() > 10) {
+				for (size_t i = 1; i + 1 < c1Result.samples.size(); i++) {
+					auto& s = c1Result.samples[i];
+					int neighbourC1 = std::max(c1Result.samples[i - 1].c1, c1Result.samples[i + 1].c1);
+					int neighbourE22 = std::max(c1Result.samples[i - 1].pioneerE22, c1Result.samples[i + 1].pioneerE22);
+					bool isolatedC1 = s.c1 > 100 && s.c1 > std::max(50, neighbourC1 * 8);
+					bool isolatedE22 = s.pioneerE22 > 0 && s.pioneerE22 > std::max(20, neighbourE22 * 8);
+					if (isolatedC1 && isolatedE22) {
+						s.c1 = std::max(c1Result.samples[i - 1].c1, c1Result.samples[i + 1].c1);
+						s.pioneerE22 = 0;
+						pioneerCoupledSpikesTrimmed = true;
+					}
+				}
+			}
+
+			RecalculateQCheckTotals(c1Result);
+			if (spikesTrimmed)
+				std::cout << "  Startup spike(s) trimmed from quality scan.\n";
+			if (pioneerCoupledSpikesTrimmed)
+				std::cout << "  [Pioneer] Suppressed isolated coupled C1/E22 spike(s) as vendor-scan artifacts.\n";
+
+			hasC1 = !c1Result.samples.empty();
+			if (hasC1)
+				std::cout << "\r  C1 scan complete: " << c1Result.samples.size()
+				<< " samples, avg C1=" << std::fixed << std::setprecision(1)
+				<< c1Result.avgC1PerSecond << "/sec\n\n";
+			// Record Pioneer E22 stats whenever the Pioneer vendor scan ran, so
+			// the rating reaches "Ideal" (zero E22) instead of being omitted.
+			if (usePioneer) {
+				result.pioneerE22Total = c1Result.totalPioneerE22;
+				result.pioneerE22Peak = c1Result.maxPioneerE22PerSecond;
+				result.pioneerE22AvgPerSecond = c1Result.avgPioneerE22PerSecond;
+				result.pioneerE22Rating = PioneerE22Rating(
+					result.pioneerE22Total,
+					result.pioneerE22AvgPerSecond,
+					result.pioneerE22Peak);
+			}
+			// Verbose in-scan status only when there's actual E22 activity —
+			// printing zeros mid-scan is noise; the report still shows "Ideal".
+			if (usePioneer && c1Result.totalPioneerE22 > 0) {
+				std::cout << "  [Pioneer] E22 diagnostic (not a copy trigger): "
+					<< result.pioneerE22Rating
+					<< " (" << PioneerE22RatingDescription(result.pioneerE22Rating) << ")\n"
+					<< "            total " << c1Result.totalPioneerE22
+					<< ", avg " << std::fixed << std::setprecision(2)
+					<< result.pioneerE22AvgPerSecond << "/sec"
+					<< ", peak " << c1Result.maxPioneerE22PerSecond << "/sec\n"
+					<< "            Phase 1 verified C2/read failures drive the rot decision.\n\n";
+			}
+		}
+	}
+	else {
+		std::cout << "  (C1 scan not available - drive lacks quality scan support)\n";
+		std::cout << "  (Disc rot detection limited to C2 errors only)\n\n";
+	}
+
+	std::cout << "Phase 1: C2 error distribution scan...\n";
+	m_drive.SetSpeed(scanSpeed);
+
+	ProgressIndicator progress(40);
+	progress.SetLabel("  C2 Scan");
+	progress.Start();
+
+	ScsiDrive::C2ReadOptions c2Opts;
+	c2Opts.countBytes = true;
+
+	DWORD scannedSectors = 0;
+	int maxC2InSector = 0;
+	int pioneerTransientC2 = 0;
+	int pioneerRecoveredReadFailures = 0;
+	if (isPioneerDrive) {
+		std::cout << "  [Pioneer] C2-positive sectors will be verified with a second read.\n";
+	}
+	for (const auto& t : disc.tracks) {
+		if (!t.isAudio) continue;
+		DWORD start = (t.trackNumber == 1) ? 0 : t.pregapLBA;
+
+		for (DWORD lba = start; lba <= t.endLBA; lba++) {
+			if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
+				m_drive.SetSpeed(0);
+				return false;
+			}
+
+			std::vector<BYTE> buf(AUDIO_SECTOR_SIZE);
+			int c2Errors = 0;
+			bool readOk = m_drive.ReadSectorWithC2Ex(lba, buf.data(), nullptr, c2Errors, nullptr, c2Opts);
+			if (!readOk && isPioneerDrive) {
+				DefeatDriveCache(lba, lastLBA);
+				readOk = m_drive.ReadSectorWithC2Ex(lba, buf.data(), nullptr, c2Errors, nullptr, c2Opts);
+				if (readOk)
+					pioneerRecoveredReadFailures++;
+			}
+			if (readOk) {
+				if (isPioneerDrive && c2Errors > 0) {
+					DefeatDriveCache(lba, lastLBA);
+					std::vector<BYTE> verifyBuf(AUDIO_SECTOR_SIZE);
+					int verifyC2 = 0;
+					if (m_drive.ReadSectorWithC2Ex(lba, verifyBuf.data(), nullptr, verifyC2, nullptr, c2Opts)) {
+						if (verifyC2 == 0) {
+							c2Errors = 0;
+							pioneerTransientC2++;
+						}
+						else {
+							c2Errors = std::max(c2Errors, verifyC2);
+						}
+					}
+				}
+				ClassifyZone(lba, firstLBA, lastLBA, c2Errors > 0 ? 1 : 0, result.zones);
+				if (c2Errors > 0) {
+					errorLBAs.push_back(lba);
+					if (c2Errors > maxC2InSector)
+						maxC2InSector = c2Errors;
+				}
+			}
+			else {
+				ClassifyZone(lba, firstLBA, lastLBA, 1, result.zones);
+				errorLBAs.push_back(lba);
+			}
+
+			scannedSectors++;
+			progress.Update(static_cast<int>(scannedSectors), static_cast<int>(totalSectors));
+		}
+	}
+	progress.Finish(true);
+	if (pioneerTransientC2 > 0) {
+		std::cout << "  [Pioneer] Ignored " << pioneerTransientC2
+			<< " transient C2 sector" << (pioneerTransientC2 == 1 ? "" : "s")
+			<< " not reproduced on verification read.\n";
+	}
+	if (pioneerRecoveredReadFailures > 0) {
+		std::cout << "  [Pioneer] Recovered " << pioneerRecoveredReadFailures
+			<< " transient read failure" << (pioneerRecoveredReadFailures == 1 ? "" : "s")
+			<< " on verification read.\n";
+	}
+
+	std::sort(errorLBAs.begin(), errorLBAs.end());
+	DetectErrorClusters(errorLBAs, result.clusters, scanSpeed);
+	result.maxC2InSingleSector = maxC2InSector;
+
+	// Adaptive Zone-Based Sampling
+	std::cout << "\nPhase 2: Adaptive read consistency check...\n";
+
+	double innerRate = result.zones.InnerErrorRate();
+	double middleRate = result.zones.MiddleErrorRate();
+	double outerRate = result.zones.OuterErrorRate();
+
+	auto calcSampleInterval = [](double errorRate) -> int {
+		if (errorRate > 2.0) return 20;
+		if (errorRate > 0.5) return 50;
+		if (errorRate > 0.1) return 100;
+		return 200;
+		};
+
+	int innerInterval = calcSampleInterval(innerRate);
+	int middleInterval = calcSampleInterval(middleRate);
+	int outerInterval = calcSampleInterval(outerRate);
+
+	int expectedSamples = 0;
+	for (const auto& t : disc.tracks) {
+		if (!t.isAudio) continue;
+		DWORD start = (t.trackNumber == 1) ? 0 : t.pregapLBA;
+		for (DWORD lba = start; lba <= t.endLBA; lba++) {
+			DWORD range = lastLBA - firstLBA;
+			DWORD pos = lba - firstLBA;
+			double pct = range > 0 ? static_cast<double>(pos) / range : 0;
+			int sampleInterval = 200;
+			if (pct < 0.33) sampleInterval = innerInterval;
+			else if (pct < 0.66) sampleInterval = middleInterval;
+			else sampleInterval = outerInterval;
+			if ((lba - start) % sampleInterval == 0) expectedSamples++;
+		}
+	}
+
+	int samplesChecked = 0;
+	int inconsistentSamples = 0;
+
+	progress.SetLabel("  Adaptive Check");
+	progress.Start();
+
+	for (const auto& t : disc.tracks) {
+		if (!t.isAudio) continue;
+		DWORD start = (t.trackNumber == 1) ? 0 : t.pregapLBA;
+
+		for (DWORD lba = start; lba <= t.endLBA; lba++) {
+			if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
+				break;
+			}
+
+			DWORD range = lastLBA - firstLBA;
+			DWORD pos = lba - firstLBA;
+			double pct = range > 0 ? static_cast<double>(pos) / range : 0;
+			int sampleInterval = 200;
+
+			if (pct < 0.33) sampleInterval = innerInterval;
+			else if (pct < 0.66) sampleInterval = middleInterval;
+			else sampleInterval = outerInterval;
+
+			if ((lba - start) % sampleInterval != 0) continue;
+
+			int inconsistent = 0;
+			if (TestReadConsistency(lba, 3, inconsistent, scanSpeed)) {
+				samplesChecked++;
+				if (inconsistent > 0) {
+					inconsistentSamples++;
+					inconsistentLBAs.push_back(lba);
+				}
+			}
+
+			progress.Update(samplesChecked, expectedSamples);
+		}
+	}
+	progress.Finish(true);
+
+	result.totalRereadTests = samplesChecked;
+	result.inconsistentSectors = inconsistentSamples;
+	result.inconsistencyRate = samplesChecked > 0
+		? static_cast<double>(inconsistentSamples) / samplesChecked * 100.0 : 0;
+
+	m_drive.SetSpeed(0);
+
+	AnalyzeErrorPatterns(errorLBAs, result);
+
+	// ── Factor C1 data into rot assessment ───────────────────────────
+	if (hasC1) {
+		AnalyzeC1RotPatterns(c1Result, firstLBA, lastLBA, result);
+	}
+
+	if (result.rotRiskLevel == "NONE") {
+		result.recommendation = "Disc appears healthy. Store properly to prevent future damage.";
+	}
+	else if (result.rotRiskLevel == "LOW") {
+		result.recommendation = "Minor issues detected. Consider backing up soon.";
+	}
+	else if (result.rotRiskLevel == "MODERATE") {
+		result.recommendation = "Disc showing early degradation signs. Back up immediately.";
+	}
+	else if (result.rotRiskLevel == "HIGH") {
+		result.recommendation = "Significant degradation detected. Back up NOW - data loss likely.";
+	}
+	else {
+		result.recommendation = "CRITICAL damage! Extract whatever data possible immediately.";
+	}
+
+	PrintDiscRotReport(result);
+
+	// Print C1 graph if available
+	if (hasC1 && !c1Result.samples.empty()) {
+		// Convert samples to a flat int vector for BucketData
+		std::vector<int> c1Values;
+		c1Values.reserve(c1Result.samples.size());
+		for (const auto& s : c1Result.samples)
+			c1Values.push_back(s.c1);
+
+		int maxC1 = 1;
+		for (int v : c1Values)
+			if (v > maxC1) maxC1 = v;
+
+		// Ensure the chart is tall enough to show the Red Book reference line
+		if (maxC1 < 250) maxC1 = 250;
+
+		Console::GraphOptions c1Opts;
+		c1Opts.title = "C1 Quality Profile";
+		c1Opts.subtitle = "C1 = corrected errors - early warning for degradation";
+		c1Opts.width = 60;
+		c1Opts.height = 10;
+		c1Opts.refLine = 220;
+		c1Opts.refLabel = "Red Book limit (220/sec)";
+		c1Opts.colorize = true;
+
+		auto buckets = Console::BucketData(c1Values, c1Opts.width);
+		Console::DrawBarGraph(buckets, maxC1, c1Opts,
+			static_cast<DWORD>(c1Result.samples.size()));
+	}
+
+	return true;
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+bool OpticalDrive::TestReadConsistency(DWORD lba, int passes, int& mismatchCount, int readSpeed) {
+	mismatchCount = 0;
+	if (passes < 2) return true;
+
+	// Set consistent read speed for all consistency checks to ensure
+	// reproducible results; speed variations can affect read stability.
+	m_drive.SetSpeed(readSpeed);
+
+	std::vector<BYTE> reference(AUDIO_SECTOR_SIZE);
+	if (!m_drive.ReadSectorAudioOnly(lba, reference.data()))
+		return false;
+
+	std::vector<BYTE> compare(AUDIO_SECTOR_SIZE);
+	for (int i = 1; i < passes; i++) {
+		// Without Accurate Stream, the drive may return cached data instead
+		// of re-reading from the disc, hiding genuine read inconsistencies
+		if (!m_hasAccurateStream) {
+			DefeatDriveCache(lba, 0);
+		}
+
+		if (!m_drive.ReadSectorAudioOnly(lba, compare.data()))
+			return false;
+		if (memcmp(reference.data(), compare.data(), AUDIO_SECTOR_SIZE) != 0)
+			mismatchCount++;
+	}
+	return true;
+}
+
+void OpticalDrive::ClassifyZone(DWORD lba, DWORD totalStart, ULONG totalEnd,
+	int hasError, DiscZoneStats& zones) {
+	DWORD range = totalEnd - totalStart;
+	if (range == 0) return;
+
+	DWORD relative = lba - totalStart;
+	double position = static_cast<double>(relative) / range;
+
+	if (position < 0.33) {
+		zones.innerSectors++;
+		zones.innerErrors += hasError;
+	}
+	else if (position < 0.66) {
+		zones.middleSectors++;
+		zones.middleErrors += hasError;
+	}
+	else {
+		zones.outerSectors++;
+		zones.outerErrors += hasError;
+	}
+}
+
+int OpticalDrive::CalculateClusterTolerance(int scanSpeed) {
+	// scanSpeed typically ranges from 1-48x
+	// Map to tolerance: slower speeds = tighter clusters (lower tolerance)
+	//                   faster speeds = scattered sectors (higher tolerance)
+	if (scanSpeed >= 40) return 8;      // Very fast: 8-sector window
+	if (scanSpeed >= 24) return 7;      // Fast: 7-sector window
+	if (scanSpeed >= 16) return 6;      // Medium-fast: 6-sector window
+	if (scanSpeed >= 8) return 5;       // Medium: 5-sector window
+	if (scanSpeed >= 4) return 4;       // Medium-slow: 4-sector window
+	return 3;                           // Slow: 3-sector window (tight clustering)
+}
+
+void OpticalDrive::DetectErrorClusters(const std::vector<DWORD>& errorLBAs,
+	std::vector<ErrorCluster>& clusters, int scanSpeed) {
+	clusters.clear();
+	if (errorLBAs.empty()) return;
+
+	// Defensive: callers should pass sorted LBAs, but normalize here to avoid silent misclustering.
+	std::vector<DWORD> sortedLBAs = errorLBAs;
+	if (!std::is_sorted(sortedLBAs.begin(), sortedLBAs.end())) {
+		std::sort(sortedLBAs.begin(), sortedLBAs.end());
+	}
+
+	int tolerance = CalculateClusterTolerance(scanSpeed);
+
+	ErrorCluster current;
+	current.startLBA = sortedLBAs[0];
+	current.endLBA = sortedLBAs[0];
+	current.errorCount = 1;
+
+	for (size_t i = 1; i < sortedLBAs.size(); i++) {
+		const DWORD next = sortedLBAs[i];
+
+		// Overflow-safe window test.
+		const bool inWindow =
+			(next >= current.endLBA) &&
+			(static_cast<uint64_t>(next) - static_cast<uint64_t>(current.endLBA) <=
+				static_cast<uint64_t>(tolerance));
+
+		// If the next error is within the adaptive tolerance window, extend the current cluster
+		if (inWindow) {
+			current.endLBA = next;
+			current.errorCount++;
+		}
+		else {
+			// Gap exceeds tolerance; finalize current cluster and start a new one
+			clusters.push_back(current);
+			current.startLBA = next;
+			current.endLBA = next;
+			current.errorCount = 1;
+		}
+	}
+	// Don't forget the last cluster
+	clusters.push_back(current);
+}
+
+void OpticalDrive::AnalyzeErrorPatterns(const std::vector<DWORD>& errorLBAs,
+	DiscRotAnalysis& analysis) {
+	if (errorLBAs.empty()) {
+		analysis.rotRiskLevel = "NONE";
+		return;
+	}
+
+	if (analysis.zones.outerSectors > 0 && analysis.zones.innerSectors > 0) {
+		double outerRate = analysis.zones.OuterErrorRate();
+		double innerRate = analysis.zones.InnerErrorRate();
+		analysis.edgeConcentration =
+			(outerRate > innerRate * 2.0 && outerRate > 1.0) ||
+			(innerRate > outerRate * 2.0 && innerRate > 1.0);
+	}
+
+	analysis.progressivePattern =
+		analysis.zones.InnerErrorRate() < analysis.zones.MiddleErrorRate() &&
+		analysis.zones.MiddleErrorRate() < analysis.zones.OuterErrorRate() &&
+		analysis.zones.OuterErrorRate() > 0.5;
+
+	int smallClusters = 0;
+	for (const auto& c : analysis.clusters) {
+		if (c.size() <= 3) smallClusters++;
+	}
+	analysis.pinholePattern = (smallClusters > 10) &&
+		(smallClusters > static_cast<int>(analysis.clusters.size()) / 2);
+
+	analysis.readInstability = analysis.inconsistencyRate > 5.0;
+
+	analysis.rotRiskLevel = AssessRotRisk(analysis);
+}
+
+std::string OpticalDrive::AssessRotRisk(const DiscRotAnalysis& analysis) {
+	int score = 0;
+
+	if (analysis.edgeConcentration) score += 25;
+	if (analysis.progressivePattern) score += 25;
+	if (analysis.pinholePattern) score += 15;
+	if (analysis.readInstability) score += 20;
+	if (analysis.inconsistencyRate > 10.0) score += 15;
+
+	// Severe C2 errors in a single sector indicate physical damage
+	if (analysis.maxC2InSingleSector >= 100) score += 20;
+	else if (analysis.maxC2InSingleSector >= 50) score += 10;
+
+	if (score >= 75) return "CRITICAL";
+	if (score >= 50) return "HIGH";
+	if (score >= 30) return "MODERATE";
+	if (score >= 10) return "LOW";
+	return "NONE";
+}
+
+void OpticalDrive::PrintDiscRotReport(const DiscRotAnalysis& analysis) {
+	using namespace Console;
+
+	std::cout << "\n";
+	SetColorRGB(Theme::CyanR, Theme::CyanG, Theme::CyanB);
+	std::cout << Sym::TopLeft;
+	for (int i = 0; i < 58; i++) std::cout << Sym::Horizontal;
+	std::cout << Sym::TopRight << "\n";
+	Heading("  DISC ROT ANALYSIS REPORT\n");
+	SetColorRGB(Theme::CyanR, Theme::CyanG, Theme::CyanB);
+	std::cout << Sym::BottomLeft;
+	for (int i = 0; i < 58; i++) std::cout << Sym::Horizontal;
+	std::cout << Sym::BottomRight << "\n";
+	Reset();
+
+	std::cout << "\n";
+	Heading("  Zone Error Rates\n");
+	SetColorRGB(Theme::DimR, Theme::DimG, Theme::DimB);
+	std::cout << "  (Disc surface divided into three radial zones)\n\n";
+	Reset();
+
+	auto printZone = [](const char* label, double rate, int errors, int sectors) {
+		using namespace Console;
+
+		// Fill scales with rate (capped at 10% = full bar). Severity scales
+		// with rate too, but uses a finer-grained scale (5% = full red).
+		double fillFrac = std::min(1.0, rate / 10.0);
+		double severity = std::min(1.0, rate / 5.0);
+
+		std::ostringstream suffix;
+		suffix << std::fixed << std::setprecision(2) << rate << "%  ("
+			<< errors << "/" << sectors << ")  ";
+		if (rate > 5.0) suffix << Sym::Cross << " severe";
+		else if (rate > 1.0) suffix << Sym::Warn << " moderate";
+		else suffix << Sym::Check << " healthy";
+
+		DrawScoreBar(label, fillFrac, severity, 30, suffix.str());
+		};
+
+	printZone("Inner  (0-33%):  ", analysis.zones.InnerErrorRate(),
+		analysis.zones.innerErrors, analysis.zones.innerSectors);
+	printZone("Middle (33-66%): ", analysis.zones.MiddleErrorRate(),
+		analysis.zones.middleErrors, analysis.zones.middleSectors);
+	printZone("Outer  (66-100%):", analysis.zones.OuterErrorRate(),
+		analysis.zones.outerErrors, analysis.zones.outerSectors);
+
+	if (!analysis.pioneerE22Rating.empty()) {
+		std::cout << "\n";
+		Heading("  Pioneer E22 Diagnostic (Not a copy trigger)\n");
+		Reset();
+		std::cout << "  Meaning: Raw Pioneer firmware counter; common at low levels.\n";
+		std::cout << "  Rating:  ";
+		if (analysis.pioneerE22Rating == "Ideal" || analysis.pioneerE22Rating == "Good")
+			Success(analysis.pioneerE22Rating.c_str());
+		else if (analysis.pioneerE22Rating == "Acceptable")
+			Warning(analysis.pioneerE22Rating.c_str());
+		else
+			Error(analysis.pioneerE22Rating.c_str());
+		std::cout << " (" << PioneerE22RatingDescription(analysis.pioneerE22Rating) << ")\n";
+		std::cout << "  Total E22: " << analysis.pioneerE22Total
+			<< "  avg " << std::fixed << std::setprecision(2)
+			<< analysis.pioneerE22AvgPerSecond << "/sec"
+			<< "  peak " << analysis.pioneerE22Peak << "/sec\n";
+		std::cout << "  Verified C2/read failures from Phase 1 drive the rot decision.\n";
+	}
+
+	std::cout << "\n";
+	Heading("  Error Clusters\n");
+	Reset();
+	std::cout << "  Total clusters:  " << analysis.clusters.size() << "\n";
+	if (!analysis.clusters.empty()) {
+		int maxSize = 0;
+		for (const auto& c : analysis.clusters)
+			if (c.size() > maxSize) maxSize = c.size();
+		std::cout << "  Largest cluster: " << maxSize << " sectors";
+		if (maxSize > 100) { Error("  (severe - large contiguous damage)"); }
+		else if (maxSize > 20) { Warning("  (moderate - localized damage)"); }
+		else { Success("  (minor - small scratch or defect)"); }
+		std::cout << "\n";
+	}
+
+	std::cout << "\n";
+	Heading("  Disc Rot Indicators\n");
+	Reset();
+
+	auto indicator = [](bool v, const char* yesExplain, const char* noExplain) {
+		using namespace Console;
+		if (v) {
+			SetColorRGB(Theme::RedR, Theme::RedG, Theme::RedB);
+			std::cout << Sym::Cross << " YES  - " << yesExplain;
+		}
+		else {
+			SetColorRGB(Theme::GreenR, Theme::GreenG, Theme::GreenB);
+			std::cout << Sym::Check << " NO   - " << noExplain;
+		}
+		Reset();
+		std::cout << "\n";
+		};
+
+	std::cout << "  Edge concentration:  ";
+	indicator(analysis.edgeConcentration,
+		"Errors concentrated at disc edges (classic rot pattern)",
+		"Errors not edge-concentrated");
+	std::cout << "  Progressive pattern: ";
+	indicator(analysis.progressivePattern,
+		"Error rate increases toward outer edge (spreading damage)",
+		"No progressive error increase");
+	std::cout << "  Pinhole pattern:     ";
+	indicator(analysis.pinholePattern,
+		"Small scattered error spots (early-stage pitting)",
+		"No pinhole defects detected");
+	std::cout << "  Read instability:    ";
+	if (analysis.readInstability) {
+		SetColorRGB(Theme::RedR, Theme::RedG, Theme::RedB);
+		std::cout << Sym::Cross << " YES  - Same sectors return different data on re-read ("
+			<< static_cast<int>(analysis.inconsistencyRate) << "% unstable)\n";
+	}
+	else {
+		SetColorRGB(Theme::GreenR, Theme::GreenG, Theme::GreenB);
+		std::cout << Sym::Check << " NO   - Reads are consistent across re-reads\n";
+	}
+	Reset();
+
+	std::cout << "\n";
+	Heading("  Risk Assessment\n");
+	Reset();
+	std::cout << "  Disc Rot Risk: ";
+	if (analysis.rotRiskLevel == "CRITICAL" || analysis.rotRiskLevel == "HIGH")
+		SetColorRGB(Theme::RedR, Theme::RedG, Theme::RedB);
+	else if (analysis.rotRiskLevel == "MODERATE")
+		SetColorRGB(Theme::YellowR, Theme::YellowG, Theme::YellowB);
+	else
+		SetColorRGB(Theme::GreenR, Theme::GreenG, Theme::GreenB);
+	std::cout << "\033[1m" << analysis.rotRiskLevel << "\033[22m\n";
+	Reset();
+
+	if (!analysis.recommendation.empty()) {
+		SetColorRGB(Theme::CyanR, Theme::CyanG, Theme::CyanB);
+		std::cout << "\n  " << Sym::Arrow << " " << analysis.recommendation << "\n";
+		Reset();
+	}
+
+	SetColorRGB(Theme::CyanR, Theme::CyanG, Theme::CyanB);
+	std::cout << Sym::BottomLeft;
+	for (int i = 0; i < 58; i++) std::cout << Sym::Horizontal;
+	std::cout << Sym::BottomRight << "\n";
+	Reset();
+}
+
+bool OpticalDrive::SaveDiscRotLog(const DiscRotAnalysis& analysis, const std::wstring& path) {
+	FILE* f = nullptr;
+	if (_wfopen_s(&f, path.c_str(), L"w") != 0 || !f)
+		return false;
+
+	fprintf(f, "# ==============================\n");
+	fprintf(f, "# Disc Rot Analysis Report\n");
+	fprintf(f, "# ==============================\n");
+	fprintf(f, "#\n");
+	fprintf(f, "# Risk Level:            %s\n", analysis.rotRiskLevel.c_str());
+	if (!analysis.recommendation.empty())
+		fprintf(f, "# Recommendation:        %s\n", analysis.recommendation.c_str());
+	fprintf(f, "#\n");
+
+	fprintf(f, "# --- Zone Error Rates ---\n");
+	fprintf(f, "# Inner  (0-33%%%%):       %.2f%% (%d/%d)\n",
+		analysis.zones.InnerErrorRate(), analysis.zones.innerErrors, analysis.zones.innerSectors);
+	fprintf(f, "# Middle (33-66%%%%):      %.2f%% (%d/%d)\n",
+		analysis.zones.MiddleErrorRate(), analysis.zones.middleErrors, analysis.zones.middleSectors);
+	fprintf(f, "# Outer  (66-100%%%%):     %.2f%% (%d/%d)\n",
+		analysis.zones.OuterErrorRate(), analysis.zones.outerErrors, analysis.zones.outerSectors);
+	fprintf(f, "#\n");
+
+	if (!analysis.pioneerE22Rating.empty()) {
+		fprintf(f, "# --- Pioneer E22 Diagnostic (Not a copy trigger) ---\n");
+		fprintf(f, "# Meaning:               Raw Pioneer firmware counter; common at low levels\n");
+		fprintf(f, "# Rating:                %s (%s)\n",
+			analysis.pioneerE22Rating.c_str(),
+			PioneerE22RatingDescription(analysis.pioneerE22Rating));
+		fprintf(f, "# Total E22:             %d\n", analysis.pioneerE22Total);
+		fprintf(f, "# Avg E22/sec:           %.2f\n", analysis.pioneerE22AvgPerSecond);
+		fprintf(f, "# Peak E22/sec:          %d\n", analysis.pioneerE22Peak);
+		fprintf(f, "# Decision Impact:       Phase 1 verified C2/read failures drive risk\n");
+		fprintf(f, "#\n");
+	}
+
+	fprintf(f, "# --- Read Consistency ---\n");
+	fprintf(f, "# Inconsistent Sectors:  %d / %d tested\n",
+		analysis.inconsistentSectors, analysis.totalRereadTests);
+	fprintf(f, "# Inconsistency Rate:    %.2f%%\n", analysis.inconsistencyRate);
+	fprintf(f, "#\n");
+
+	fprintf(f, "# --- Disc Rot Indicators ---\n");
+	fprintf(f, "# Edge Concentration:    %s\n", analysis.edgeConcentration ? "YES" : "NO");
+	fprintf(f, "# Progressive Pattern:   %s\n", analysis.progressivePattern ? "YES" : "NO");
+	fprintf(f, "# Pinhole Pattern:       %s\n", analysis.pinholePattern ? "YES" : "NO");
+	fprintf(f, "# Read Instability:      %s\n", analysis.readInstability ? "YES" : "NO");
+	fprintf(f, "#\n");
+
+	fprintf(f, "# ==============================\n");
+	fprintf(f, "# Zone Summary\n");
+	fprintf(f, "# ==============================\n");
+	fprintf(f, "Zone,ErrorRate,Errors,TotalSectors\n");
+	fprintf(f, "Inner (0-33%%),%.2f,%d,%d\n",
+		analysis.zones.InnerErrorRate(), analysis.zones.innerErrors, analysis.zones.innerSectors);
+	fprintf(f, "Middle (33-66%%),%.2f,%d,%d\n",
+		analysis.zones.MiddleErrorRate(), analysis.zones.middleErrors, analysis.zones.middleSectors);
+	fprintf(f, "Outer (66-100%%),%.2f,%d,%d\n",
+		analysis.zones.OuterErrorRate(), analysis.zones.outerErrors, analysis.zones.outerSectors);
+	fprintf(f, "\n");
+
+	fprintf(f, "# ==============================\n");
+	fprintf(f, "# Error Clusters (%zu total)\n", analysis.clusters.size());
+	fprintf(f, "# ==============================\n");
+	fprintf(f, "ClusterIndex,StartLBA,EndLBA,SectorCount,ErrorCount\n");
+	for (size_t i = 0; i < analysis.clusters.size(); i++) {
+		const auto& c = analysis.clusters[i];
+		fprintf(f, "%zu,%lu,%lu,%d,%d\n",
+			i, c.startLBA, c.endLBA, c.size(), c.errorCount);
+	}
+
+	fclose(f);
+	return true;
+}
+
+void OpticalDrive::AnalyzeC1RotPatterns(const QCheckResult& c1Result,
+	DWORD firstLBA, DWORD lastLBA, DiscRotAnalysis& analysis) {
+	if (c1Result.samples.empty()) return;
+
+	// Guard invalid ordering and avoid unsigned underflow.
+	if (lastLBA <= firstLBA) return;
+	const uint64_t range = static_cast<uint64_t>(lastLBA) - static_cast<uint64_t>(firstLBA);
+	if (range == 0) return;
+
+	// Split C1 data into three zones and compute avg C1 per zone
+	double innerC1 = 0, middleC1 = 0, outerC1 = 0;
+	int innerN = 0, middleN = 0, outerN = 0;
+
+	for (const auto& s : c1Result.samples) {
+		// Ignore out-of-scan-range samples to avoid wrap and bad positioning.
+		if (s.lba < firstLBA || s.lba > lastLBA)
+			continue;
+
+		const uint64_t pos = static_cast<uint64_t>(s.lba) - static_cast<uint64_t>(firstLBA);
+		double posPct = static_cast<double>(pos) / static_cast<double>(range);
+
+		if (posPct < 0.33) { innerC1 += s.c1; innerN++; }
+		else if (posPct < 0.66) { middleC1 += s.c1; middleN++; }
+		else { outerC1 += s.c1; outerN++; }
+	}
+
+	if (innerN == 0 && middleN == 0 && outerN == 0)
+		return;
+
+	double avgInner = innerN > 0 ? innerC1 / innerN : 0;
+	double avgMiddle = middleN > 0 ? middleC1 / middleN : 0;
+	double avgOuter = outerN > 0 ? outerC1 / outerN : 0;
+
+	std::cout << "\n--- C1 Zone Analysis (early warning) ---\n";
+	std::cout << "  Inner  avg C1/sec: " << std::fixed << std::setprecision(1) << avgInner << "\n";
+	std::cout << "  Middle avg C1/sec: " << avgMiddle << "\n";
+	std::cout << "  Outer  avg C1/sec: " << avgOuter << "\n";
+
+	// C1-based rot indicators (these fire BEFORE C2 errors appear)
+	bool c1EdgeElevated = (avgOuter > avgInner * 3.0) && (avgOuter > 10.0);
+	bool c1Progressive = (avgInner < avgMiddle) && (avgMiddle < avgOuter) && (avgOuter > 10.0);
+	bool c1OverallHigh = (c1Result.avgC1PerSecond > 50.0);
+	bool c1RedBookFail = (c1Result.avgC1PerSecond >= 220.0);
+
+	if (c1EdgeElevated)
+		std::cout << "  ** C1 elevated at outer edge - early disc rot signal **\n";
+	if (c1Progressive)
+		std::cout << "  ** C1 rising inner->outer - progressive degradation pattern **\n";
+	if (c1RedBookFail)
+		std::cout << "  ** C1 exceeds Red Book limit - disc is stressed **\n";
+
+	// Boost the rot risk score based on C1 findings
+	// These are early warnings that wouldn't show up in C2 alone
+	int c1Score = 0;
+	if (c1EdgeElevated) c1Score += 15;
+	if (c1Progressive) c1Score += 20;
+	if (c1OverallHigh) c1Score += 10;
+	if (c1RedBookFail) c1Score += 15;
+
+	if (c1Score > 0) {
+		// Re-assess with C1 data factored in
+		std::string current = analysis.rotRiskLevel;
+		if (current == "NONE" && c1Score >= 15)
+			analysis.rotRiskLevel = "LOW";
+		if (current == "NONE" && c1Score >= 30)
+			analysis.rotRiskLevel = "MODERATE";
+		if (current == "LOW" && c1Score >= 20)
+			analysis.rotRiskLevel = "MODERATE";
+		if (current == "MODERATE" && c1Score >= 25)
+			analysis.rotRiskLevel = "HIGH";
+
+		if (analysis.rotRiskLevel != current) {
+			std::cout << "  Risk level upgraded from " << current
+				<< " to " << analysis.rotRiskLevel
+				<< " based on C1 early-warning data\n";
+		}
+	}
+}

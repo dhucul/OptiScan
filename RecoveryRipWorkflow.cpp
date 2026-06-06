@@ -1,0 +1,174 @@
+#include "RecoveryRipWorkflow.h"
+#include "FileUtils.h"
+#include "ConsoleColors.h"
+#include "GuiInput.h"
+#include "Progress.h"
+#include "MenuHelpers.h"
+#include <windows.h>
+#include <iostream>
+
+bool RunRecoveryRipWorkflow(OpticalDrive& copier, DiscInfo& disc,
+	const std::wstring& /*workDir*/) {
+
+	Console::Heading("\n=== Recovery Rip (drive-independent) ===\n");
+	Console::Info("Rebuilds hard sectors from cross-read consensus rather than\n");
+	Console::Info("trusting the drive's C2. Slow but resilient on damaged discs.\n");
+	Console::Info("(Enter 0 / Cancel at any prompt to go back to the menu.)\n");
+
+	{
+		std::vector<std::string> warnings;
+		if (!copier.RunPreflightChecks(disc, warnings)) {
+			std::string msg = "Disc preflight reported issues:\n";
+			for (const auto& w : warnings) msg += "  - " + w + "\n";
+			msg += "\nContinue anyway?";
+			if (!GuiInput::PromptYesNo("Disc preflight", msg.c_str())) {
+				Console::Info("Recovery rip cancelled.\n");
+				return false;
+			}
+		}
+	}
+
+	if (disc.sessionCount > 1) {
+		disc.selectedSession = 1;
+		Console::Info("Multi-session disc — using session 1 (audio).\n");
+	}
+
+	// Speed: low speeds read marginal media more reliably. This doubles as the
+	// engine's per-pass speed cap.
+	int speed = copier.SelectScanSpeed();
+	if (speed == -1) return false;
+
+	int subch = copier.SelectSubchannel();
+	if (subch == -1) return false;
+	disc.includeSubchannel = (subch == 1);
+
+	int pregapMode = copier.SelectPregapMode();
+	if (pregapMode == -1) return false;
+	disc.pregapMode = static_cast<PregapMode>(pregapMode);
+
+	int offset = copier.SelectOffset();
+	if (offset == -1) return false;
+	disc.driveOffset = offset;
+
+	// The hybrid C2 tie-break can only engage if the drive reports C2 at all.
+	{
+		std::cout << "\nDetecting drive capabilities..." << std::flush;
+		DriveCapabilities caps;
+		if (copier.DetectDriveCapabilities(caps)) {
+			disc.enableC2Detection = caps.supportsC2ErrorReporting;
+			std::cout << " done.\n";
+		}
+		else {
+			disc.enableC2Detection = false;
+			std::cout << " skipped (detection failed).\n";
+		}
+	}
+
+	RecoveryRipConfig config;
+	config.maxSpeed = speed;        // SelectScanSpeed returns 0 for "max"
+	config.cacheDefeat = true;
+
+	// Output directory via native folder picker.
+	Console::Info("\nChoose the output directory for the recovered image...\n");
+	std::wstring outputDir = GuiInput::PromptForFolder(L"Choose output directory for recovery rip");
+	if (outputDir.empty()) {
+		Console::Info("Recovery rip cancelled (no output directory selected).\n");
+		return false;
+	}
+	outputDir = NormalizePath(outputDir);
+	if (!outputDir.empty() && outputDir.back() != L'\\' && outputDir.back() != L'/')
+		outputDir += L"\\";
+	if (!CreateDirectoryRecursive(outputDir)) {
+		Console::Error("Failed to create directory: ");
+		std::wcerr << outputDir << L"\n";
+		return false;
+	}
+
+	// Synthesize a basename from CD-TEXT when available.
+	std::wstring defaultName = L"AudioCD_recovered";
+	if (!disc.cdText.albumTitle.empty()) {
+		std::string title = disc.cdText.albumTitle;
+		if (!disc.cdText.albumArtist.empty())
+			title = disc.cdText.albumArtist + " - " + title;
+		int len = MultiByteToWideChar(CP_UTF8, 0, title.c_str(), -1, nullptr, 0);
+		if (len > 1) {
+			std::wstring wideTitle(static_cast<size_t>(len - 1), L'\0');
+			MultiByteToWideChar(CP_UTF8, 0, title.c_str(), -1, &wideTitle[0], len);
+			std::wstring sanitized = SanitizeFilename(wideTitle);
+			if (!sanitized.empty()) defaultName = sanitized;
+		}
+	}
+	std::wstring path = outputDir + defaultName;
+	Console::Success("Output directory: ");
+	std::wcout << outputDir << L"\n";
+	std::wcout << L"Using filename: " << path << L"\n";
+
+	{
+		DWORD estSectors = 0;
+		for (const auto& t : disc.tracks) {
+			if (disc.selectedSession > 0 && t.session != disc.selectedSession) continue;
+			DWORD start = (disc.pregapMode == PregapMode::Skip) ? t.startLBA : t.pregapLBA;
+			if (t.endLBA >= start) estSectors += (t.endLBA - start + 1);
+		}
+		if (estSectors > 0 && !copier.CheckDiskSpace(outputDir, estSectors)) {
+			char buf[160];
+			std::snprintf(buf, sizeof(buf),
+				"Insufficient free space at output path (need ~%llu MB). Continue anyway?",
+				static_cast<unsigned long long>(estSectors) * AUDIO_SECTOR_SIZE / (1024 * 1024));
+			if (!GuiInput::PromptYesNo("Low disk space", buf)) {
+				Console::Info("Recovery rip cancelled.\n");
+				return false;
+			}
+		}
+	}
+
+	Console::Info("\nReading disc (recovery engine)...\n");
+	ProgressIndicator prog;
+	prog.SetLabel("Recover");
+	prog.Start();
+
+	RecoveryRipResult result;
+	bool ok = copier.ReadDiscRecovery(disc, config, result, MakeProgressCallback(&prog));
+	prog.Finish(ok);
+	if (!ok) return false;
+
+	if (disc.driveOffset != 0)
+		copier.ApplyOffsetCorrection(disc);
+
+	Console::Info("Saving files...\n");
+	if (!copier.SaveToFile(disc, path)) {
+		Console::Error("Failed to save!\n");
+		return false;
+	}
+
+	std::wstring reportPath = path + L"_recovery.txt";
+	if (copier.SaveRecoveryReport(result, reportPath)) {
+		Console::Success("Recovery report saved to: ");
+		std::wcout << reportPath << L"\n";
+	}
+
+	if (result.unrecovered > 0) {
+		Console::Warning("Some sectors were never readable — see the recovery report.\n");
+	}
+	else if (result.partial > 0) {
+		Console::Warning("Some bytes could not reach consensus — see the recovery report.\n");
+	}
+	else {
+		Console::Success("All problem sectors rebuilt by consensus.\n");
+	}
+
+	if (result.c2DisputedBytes > 0) {
+		char buf[200];
+		std::snprintf(buf, sizeof(buf),
+			"%lld byte(s) in %d sector(s) were accepted by consensus but flagged "
+			"by the drive's C2 — see C2FlaggedBytes in the recovery report.\n",
+			result.c2DisputedBytes, result.c2DisputedSectors);
+		Console::Warning(buf);
+	}
+
+	copier.Eject();
+
+	Console::Success("\nRecovery rip complete. Files written to: ");
+	std::wcout << outputDir << L"\n";
+	return true;
+}

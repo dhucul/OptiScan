@@ -1,0 +1,173 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
+    </Filter>
+    <Filter Include="Resource Files">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Accessibility.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="AccessibleAnnounce.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="AccurateRip.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="AnalysisTypes.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="OpticalDrive.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="OptiScan.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="OptiScanUi.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="OptiScanUiInternal.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="OptiScanWorkflowHost.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="BlerResult.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="CDStructures.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="ConsoleBox.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="ConsoleColor.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="ConsoleColors.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="ConsoleFormat.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="ConsoleGraph.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="ConsoleSymbols.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Constants.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="CopyWorkflow.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="DiscTypes.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Drive.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="DriveOffsetDatabase.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="DriveOffsetRecord.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="DriveOffsets.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="DriveSelection.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="DriveTypes.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="ErrorTypes.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="FileUtils.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="FingerprintTypes.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="framework.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="GuiInput.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="GuiSink.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="GuiWorker.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="OutputControl.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="InterruptHandler.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="MainMenu.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="MenuHelpers.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="MenuUI.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="OffsetCalibration.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="PioneerVendor.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Progress.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="ProtectionCheck.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="RecoveryRipWorkflow.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="RecoveryTypes.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Resource.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="ScanResults.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="ScsiDrive.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="ScsiTypes.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="SecureRipTypes.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="targetver.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="TrackRipWorkflow.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="UpdateChecker.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="WriteDiscInternal.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="WriteTracksWorkflow.h"><Filter>Header Files</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="AccessibleAnnounce.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="AccurateRip.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_AudioAnalysis.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_BasicReading.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_BlerAnalysis.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_BlerGraph.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_BlerReport.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_BlerScan.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_BurstRead.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_C2Scan.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_Comprehensive.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_DiscBalance.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_DiscRot.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_DriveCapabilities.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_FileOutput.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_Fingerprinting.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_HiddenTracks.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_JitterScan.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_MenuSelection.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_Metadata.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_Preflight.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_QCheck.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_SecureRead.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_SeekAnalysis.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_SpeedComparison.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_StandardRead.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_Surface.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_TOC.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_TOCScan.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_Utilities.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_Verification.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_WriteAudioSectors.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_WriteDisc.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_WriteDisc_CDText.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_WriteDisc_CueParse.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_WriteDisc_CueSheet.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_WriteDisc_Helpers.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_WriteDisc_IMAPI.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_WriteDisc_Media.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_WriteVerify.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OptiScan.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OptiScanUi.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OptiScanUiLayout.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OptiScanUiMenu.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OptiScanUiPaint.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OptiScanWorkflowHost.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="CopyWorkflow.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Drive.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="DriveOffsetDatabase.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="DriveSelection.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="FileUtils.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="GuiInput.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="GuiSink.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="GuiWorker.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OutputControl.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="MainMenu.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="MenuUI.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OffsetCalibration.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="PioneerVendor.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="ProtectionCheck.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_RecoveryRead.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="RecoveryRipWorkflow.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="ScsiDrive.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="ScsiDrive.Capabilities.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="ScsiDrive.Chipset.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="ScsiDrive.Core.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="ScsiDrive.HideCDR.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="ScsiDrive.LiteOnJitter.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="ScsiDrive.LiteOnScan.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="ScsiDrive.Offset.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="ScsiDrive.PioneerScan.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="ScsiDrive.PlextorFeatures.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="ScsiDrive.QCheck.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="ScsiDrive.Read.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="ScsiDrive.Recommendations.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="TrackRipWorkflow.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="UpdateChecker.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="WriteTracksWorkflow.cpp"><Filter>Source Files</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="OptiScan.rc">
+      <Filter>Resource Files</Filter>
+    </ResourceCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="small.ico">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="OptiScan.ico">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="assets\top.png">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="assets\output.png">
+      <Filter>Resource Files</Filter>
+    </Image>
+  </ItemGroup>
+</Project>

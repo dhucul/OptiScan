@@ -1,0 +1,295 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>18.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{9c187de4-b07d-4185-9193-873092f2da16}</ProjectGuid>
+    <RootNamespace>OptiScan</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ProjectName>OptiScan</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+    <Manifest>
+      <EnableSegmentHeap>true</EnableSegmentHeap>
+    </Manifest>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+    <Manifest>
+      <EnableSegmentHeap>true</EnableSegmentHeap>
+    </Manifest>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+    <Manifest>
+      <EnableSegmentHeap>true</EnableSegmentHeap>
+    </Manifest>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+    <Manifest>
+      <EnableSegmentHeap>true</EnableSegmentHeap>
+    </Manifest>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="Accessibility.h" />
+    <ClInclude Include="AccessibleAnnounce.h" />
+    <ClInclude Include="AccurateRip.h" />
+    <ClInclude Include="AnalysisTypes.h" />
+    <ClInclude Include="OpticalDrive.h" />
+    <ClInclude Include="OptiScan.h" />
+    <ClInclude Include="OptiScanUi.h" />
+    <ClInclude Include="OptiScanUiInternal.h" />
+    <ClInclude Include="OptiScanWorkflowHost.h" />
+    <ClInclude Include="BlerResult.h" />
+    <ClInclude Include="CDStructures.h" />
+    <ClInclude Include="ConsoleBox.h" />
+    <ClInclude Include="ConsoleColor.h" />
+    <ClInclude Include="ConsoleColors.h" />
+    <ClInclude Include="ConsoleFormat.h" />
+    <ClInclude Include="ConsoleGraph.h" />
+    <ClInclude Include="ConsoleSymbols.h" />
+    <ClInclude Include="Constants.h" />
+    <ClInclude Include="CopyWorkflow.h" />
+    <ClInclude Include="DiscTypes.h" />
+    <ClInclude Include="Drive.h" />
+    <ClInclude Include="DriveOffsetDatabase.h" />
+    <ClInclude Include="DriveOffsetRecord.h" />
+    <ClInclude Include="DriveOffsets.h" />
+    <ClInclude Include="DriveSelection.h" />
+    <ClInclude Include="DriveTypes.h" />
+    <ClInclude Include="ErrorTypes.h" />
+    <ClInclude Include="FileUtils.h" />
+    <ClInclude Include="FingerprintTypes.h" />
+    <ClInclude Include="framework.h" />
+    <ClInclude Include="GuiInput.h" />
+    <ClInclude Include="GuiSink.h" />
+    <ClInclude Include="OutputControl.h" />
+    <ClInclude Include="GuiWorker.h" />
+    <ClInclude Include="InterruptHandler.h" />
+    <ClInclude Include="MainMenu.h" />
+    <ClInclude Include="MenuHelpers.h" />
+    <ClInclude Include="MenuUI.h" />
+    <ClInclude Include="OffsetCalibration.h" />
+    <ClInclude Include="PioneerVendor.h" />
+    <ClInclude Include="Progress.h" />
+    <ClInclude Include="ProtectionCheck.h" />
+    <ClInclude Include="RecoveryRipWorkflow.h" />
+    <ClInclude Include="RecoveryTypes.h" />
+    <ClInclude Include="Resource.h" />
+    <ClInclude Include="ScanResults.h" />
+    <ClInclude Include="ScsiDrive.h" />
+    <ClInclude Include="ScsiTypes.h" />
+    <ClInclude Include="SecureRipTypes.h" />
+    <ClInclude Include="targetver.h" />
+    <ClInclude Include="TrackRipWorkflow.h" />
+    <ClInclude Include="UpdateChecker.h" />
+    <ClInclude Include="WriteDiscInternal.h" />
+    <ClInclude Include="WriteTracksWorkflow.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="AccessibleAnnounce.cpp" />
+    <ClCompile Include="AccurateRip.cpp" />
+    <ClCompile Include="OpticalDrive.cpp" />
+    <ClCompile Include="OpticalDrive_AudioAnalysis.cpp" />
+    <ClCompile Include="OpticalDrive_BasicReading.cpp" />
+    <ClCompile Include="OpticalDrive_BlerAnalysis.cpp" />
+    <ClCompile Include="OpticalDrive_BlerGraph.cpp" />
+    <ClCompile Include="OpticalDrive_BlerReport.cpp" />
+    <ClCompile Include="OpticalDrive_BlerScan.cpp" />
+    <ClCompile Include="OpticalDrive_BurstRead.cpp" />
+    <ClCompile Include="OpticalDrive_C2Scan.cpp" />
+    <ClCompile Include="OpticalDrive_Comprehensive.cpp" />
+    <ClCompile Include="OpticalDrive_DiscBalance.cpp" />
+    <ClCompile Include="OpticalDrive_DiscRot.cpp" />
+    <ClCompile Include="OpticalDrive_DriveCapabilities.cpp" />
+    <ClCompile Include="OpticalDrive_FileOutput.cpp" />
+    <ClCompile Include="OpticalDrive_Fingerprinting.cpp" />
+    <ClCompile Include="OpticalDrive_HiddenTracks.cpp" />
+    <ClCompile Include="OpticalDrive_JitterScan.cpp" />
+    <ClCompile Include="OpticalDrive_MenuSelection.cpp" />
+    <ClCompile Include="OpticalDrive_Metadata.cpp" />
+    <ClCompile Include="OpticalDrive_Preflight.cpp" />
+    <ClCompile Include="OpticalDrive_QCheck.cpp" />
+    <ClCompile Include="OpticalDrive_SecureRead.cpp" />
+    <ClCompile Include="OpticalDrive_SeekAnalysis.cpp" />
+    <ClCompile Include="OpticalDrive_SpeedComparison.cpp" />
+    <ClCompile Include="OpticalDrive_StandardRead.cpp" />
+    <ClCompile Include="OpticalDrive_Surface.cpp" />
+    <ClCompile Include="OpticalDrive_TOC.cpp" />
+    <ClCompile Include="OpticalDrive_TOCScan.cpp" />
+    <ClCompile Include="OpticalDrive_Utilities.cpp" />
+    <ClCompile Include="OpticalDrive_Verification.cpp" />
+    <ClCompile Include="OpticalDrive_WriteAudioSectors.cpp" />
+    <ClCompile Include="OpticalDrive_WriteDisc.cpp" />
+    <ClCompile Include="OpticalDrive_WriteDisc_CDText.cpp" />
+    <ClCompile Include="OpticalDrive_WriteDisc_CueParse.cpp" />
+    <ClCompile Include="OpticalDrive_WriteDisc_CueSheet.cpp" />
+    <ClCompile Include="OpticalDrive_WriteDisc_Helpers.cpp" />
+    <ClCompile Include="OpticalDrive_WriteDisc_IMAPI.cpp" />
+    <ClCompile Include="OpticalDrive_WriteDisc_Media.cpp" />
+    <ClCompile Include="OpticalDrive_WriteVerify.cpp" />
+    <ClCompile Include="OptiScan.cpp" />
+    <ClCompile Include="OptiScanUi.cpp" />
+    <ClCompile Include="OptiScanUiLayout.cpp" />
+    <ClCompile Include="OptiScanUiMenu.cpp" />
+    <ClCompile Include="OptiScanUiPaint.cpp" />
+    <ClCompile Include="OptiScanWorkflowHost.cpp" />
+    <ClCompile Include="CopyWorkflow.cpp" />
+    <ClCompile Include="Drive.cpp" />
+    <ClCompile Include="DriveOffsetDatabase.cpp" />
+    <ClCompile Include="DriveSelection.cpp" />
+    <ClCompile Include="FileUtils.cpp" />
+    <ClCompile Include="GuiInput.cpp" />
+    <ClCompile Include="GuiSink.cpp" />
+    <ClCompile Include="OutputControl.cpp" />
+    <ClCompile Include="GuiWorker.cpp" />
+    <ClCompile Include="MainMenu.cpp" />
+    <ClCompile Include="MenuUI.cpp" />
+    <ClCompile Include="OffsetCalibration.cpp" />
+    <ClCompile Include="PioneerVendor.cpp" />
+    <ClCompile Include="ProtectionCheck.cpp" />
+    <ClCompile Include="OpticalDrive_RecoveryRead.cpp" />
+    <ClCompile Include="RecoveryRipWorkflow.cpp" />
+    <ClCompile Include="ScsiDrive.cpp" />
+    <ClCompile Include="ScsiDrive.Capabilities.cpp" />
+    <ClCompile Include="ScsiDrive.Chipset.cpp" />
+    <ClCompile Include="ScsiDrive.Core.cpp" />
+    <ClCompile Include="ScsiDrive.HideCDR.cpp" />
+    <ClCompile Include="ScsiDrive.LiteOnJitter.cpp" />
+    <ClCompile Include="ScsiDrive.LiteOnScan.cpp" />
+    <ClCompile Include="ScsiDrive.Offset.cpp" />
+    <ClCompile Include="ScsiDrive.PioneerScan.cpp" />
+    <ClCompile Include="ScsiDrive.PlextorFeatures.cpp" />
+    <ClCompile Include="ScsiDrive.QCheck.cpp" />
+    <ClCompile Include="ScsiDrive.Read.cpp" />
+    <ClCompile Include="ScsiDrive.Recommendations.cpp" />
+    <ClCompile Include="TrackRipWorkflow.cpp" />
+    <ClCompile Include="UpdateChecker.cpp" />
+    <ClCompile Include="WriteTracksWorkflow.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="OptiScan.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="OptiScan.ico" />
+    <Image Include="assets\top.png" />
+    <Image Include="assets\output.png" />
+    <Image Include="small.ico" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>
