@@ -2,6 +2,7 @@
 #include "OpticalDrive.h"
 #include "ConsoleColors.h"
 #include "WriteDiscInternal.h"
+#include <chrono>
 #include <iostream>
 #include <windows.h>
 
@@ -9,11 +10,14 @@
 // Helper: Wait for drive to become ready (poll TEST UNIT READY)
 // ============================================================================
 bool WriteDiscInternal::WaitForDriveReady(ScsiDrive& drive, int timeoutSeconds) {
-	for (int i = 0; i < timeoutSeconds * 4; i++) {
+	if (timeoutSeconds <= 0) return false;
+
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSeconds);
+	while (std::chrono::steady_clock::now() < deadline) {
 		BYTE testCmd[6] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 		BYTE sk = 0, asc = 0, ascq = 0;
 		if (drive.SendSCSIWithSense(testCmd, sizeof(testCmd), nullptr, 0,
-			&sk, &asc, &ascq, true)) {
+			&sk, &asc, &ascq, true, 2)) {
 			return true;
 		}
 		// NOT READY (0x02) with "becoming ready" (ASC 0x04) — keep polling

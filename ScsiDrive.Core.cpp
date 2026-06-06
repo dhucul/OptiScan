@@ -187,7 +187,7 @@ bool ScsiDrive::SendSCSI(void* cdb, BYTE cdbLength, void* buffer, DWORD bufferSi
 }
 
 bool ScsiDrive::SendSCSIWithSense(void* cdb, BYTE cdbLength, void* buffer, DWORD bufferSize,
-	BYTE* senseKey, BYTE* asc, BYTE* ascq, bool dataIn) {
+	BYTE* senseKey, BYTE* asc, BYTE* ascq, bool dataIn, DWORD timeoutSec) {
 	if (m_handle == INVALID_HANDLE_VALUE) {
 		if (senseKey) *senseKey = 0x02;  // Not Ready
 		return false;
@@ -216,7 +216,7 @@ bool ScsiDrive::SendSCSIWithSense(void* cdb, BYTE cdbLength, void* buffer, DWORD
 		sptd->DataBuffer = buffer;
 	}
 
-	sptd->TimeOutValue = 60;
+	sptd->TimeOutValue = timeoutSec;
 	sptd->SenseInfoOffset = sizeof(SCSI_PASS_THROUGH_DIRECT);
 	memcpy(sptd->Cdb, cdb, cdbLength);
 

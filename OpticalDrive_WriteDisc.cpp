@@ -346,8 +346,60 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 			std::cout << ")\n";
 
 			if (!WriteDiscInternal::SendCDTextToDevice(m_drive, cdTextPacks)) {
-				Console::Warning("CD-Text will not be written (drive rejected data)\n");
-				Console::Info("Audio data will still be written normally\n");
+				char leadInOptIn[8] = {};
+				DWORD leadInOptInLen = GetEnvironmentVariableA(
+					"OPTISCAN_EXPERIMENTAL_CDTEXT_LEADIN",
+					leadInOptIn,
+					static_cast<DWORD>(sizeof(leadInOptIn)));
+				bool allowLeadInFallback = leadInOptInLen > 0
+					&& leadInOptInLen < sizeof(leadInOptIn)
+					&& leadInOptIn[0] != '0';
+
+				if (!allowLeadInFallback) {
+					Console::Warning("CD-Text lead-in R-W fallback is disabled by default\n");
+					Console::Info("The experimental raw P-W lead-in path can stall on drives that reject WRITE BUFFER.\n");
+					Console::Info("Skipping CD-Text so the audio burn can continue normally.\n");
+					Console::Warning("CD-Text will not be written (drive rejected data)\n");
+					Console::Info("Audio data will still be written normally\n");
+				}
+				else {
+					Console::Info("Trying experimental CD-Text lead-in R-W subchannel path...\n");
+
+					bool cdTextLeadInWritten = false;
+					bool cdTextLeadInTouchedDisc = false;
+					if (WriteDiscInternal::PrepareDriveForWrite(m_drive, 4)) {
+						Console::Info("Resending disc layout for CD-Text lead-in...\n");
+						if (WriteDiscInternal::BuildAndSendCueSheet(m_drive, tracks, totalSectors, 4, false)) {
+							cdTextLeadInWritten = WriteDiscInternal::SendCDTextLeadInToDevice(
+								m_drive, cdTextPacks, &cdTextLeadInTouchedDisc);
+						}
+					}
+
+					if (!cdTextLeadInWritten) {
+						if (cdTextLeadInTouchedDisc) {
+							Console::Error("CD-Text lead-in failed after writing began - aborting\n");
+							Console::Info("The disc may already contain a partial lead-in; not continuing audio write.\n");
+							return false;
+						}
+
+						Console::Warning("CD-Text lead-in path failed - restoring normal SAO layout\n");
+						Console::Info("Resetting drive handle after rejected CD-Text lead-in mode...\n");
+						if (!m_drive.Reopen()) {
+							Console::Error("Failed to reopen drive after CD-Text fallback\n");
+							return false;
+						}
+						WriteDiscInternal::WaitForDriveReady(m_drive, 15);
+
+						if (!WriteDiscInternal::PrepareDriveForWrite(m_drive, 0) ||
+							!WriteDiscInternal::BuildAndSendCueSheet(m_drive, tracks, totalSectors, 0, false)) {
+							Console::Error("Failed to restore normal write layout after CD-Text fallback\n");
+							return false;
+						}
+
+						Console::Warning("CD-Text will not be written (drive rejected data)\n");
+						Console::Info("Audio data will still be written normally\n");
+					}
+				}
 			}
 		}
 	}

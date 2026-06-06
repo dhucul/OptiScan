@@ -85,17 +85,19 @@ bool OpticalDrive::WriteAudioSectors(const std::wstring& binFile,
 		Console::Info("Write mode: SAO (2352 bytes/sector, drive-generated subchannel)\n");
 	}
 
-	if (!WriteDiscInternal::WaitForDriveReady(m_drive, 10)) {
-		Console::Warning("Drive not ready after CUE sheet (attempting write anyway)\n");
-	}
-
 	ProgressIndicator progress(35);
 	progress.SetLabel("Writing");
 	progress.Start();
 	// Paint the bar at 0% immediately so there's a visible sign of life before
-	// the first batch completes -- otherwise a slow/stuck first write looks like a
-	// total freeze with no output at all.
+	// the final readiness wait or first batch completes -- otherwise a slow
+	// drive looks like a total freeze with no output at all.
 	progress.Update(0, static_cast<int>(writeTotalSectors));
+	std::cout << "\n";
+
+	Console::Info("Waiting for drive write readiness...\n");
+	if (!WriteDiscInternal::WaitForDriveReady(m_drive, 10)) {
+		Console::Warning("Drive not ready after CUE sheet (attempting write anyway)\n");
+	}
 
 	// No-progress watchdog: if not a single sector commits for this long, the
 	// drive has accepted a write mode it can't actually perform (seen on the

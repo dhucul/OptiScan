@@ -260,7 +260,8 @@ public:
 	bool SendSCSI(void* cdb, BYTE cdbLength, void* buffer, DWORD bufferSize,
 		bool dataIn = true, DWORD timeoutSec = 60);
 	bool SendSCSIWithSense(void* cdb, BYTE cdbLength, void* buffer, DWORD bufferSize,
-		BYTE* senseKey, BYTE* asc, BYTE* ascq, bool dataIn = true);
+		BYTE* senseKey, BYTE* asc, BYTE* ascq, bool dataIn = true,
+		DWORD timeoutSec = 60);
 	bool SeekToLBA(DWORD lba);
 
 	// ── Enhanced error handling ──────────────────────────────

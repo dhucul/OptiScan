@@ -30,4 +30,6 @@ namespace WriteDiscInternal {
 		const std::vector<OpticalDrive::TrackWriteInfo>& tracks);
 
 	bool SendCDTextToDevice(ScsiDrive& drive, const std::vector<BYTE>& packs);
+	bool SendCDTextLeadInToDevice(ScsiDrive& drive, const std::vector<BYTE>& packs,
+		bool* wroteAnyLeadInFrame = nullptr);
 }

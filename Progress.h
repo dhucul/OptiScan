@@ -26,6 +26,9 @@ public:
         : m_barWidth(barWidth) {}
 
     void SetLabel(const std::string& label) { m_label = label; }
+    void SetUnitBytes(int unitBytes) {
+        if (unitBytes > 0) m_unitBytes = unitBytes;
+    }
 
     void Start() {
         m_current = 0;
@@ -116,12 +119,12 @@ private:
     void UpdateSpeeds(int64_t sectorElapsedMs,
                       const std::chrono::steady_clock::time_point& now) {
         if (sectorElapsedMs > 0 && sectorElapsedMs < kMaxSectorTimeMs) {
-            m_instantSpeed = static_cast<double>(AUDIO_SECTOR_SIZE) / (sectorElapsedMs / 1000.0);
+            m_instantSpeed = static_cast<double>(m_unitBytes) / (sectorElapsedMs / 1000.0);
         }
 
         auto totalElapsedMs = GetElapsedMs(m_startTime, now);
         double avgSpeed = (totalElapsedMs > 0 && m_current > 0)
-            ? static_cast<double>(m_current) * AUDIO_SECTOR_SIZE / (totalElapsedMs / 1000.0)
+            ? static_cast<double>(m_current) * m_unitBytes / (totalElapsedMs / 1000.0)
             : 0;
 
         m_smoothedSpeed = (m_smoothedSpeed == 0)
@@ -145,7 +148,7 @@ private:
 
     int CalculateEta() const {
         if (m_smoothedSpeed <= 0 || m_current >= m_total) return -1;
-        return static_cast<int>((m_total - m_current) * AUDIO_SECTOR_SIZE / m_smoothedSpeed);
+        return static_cast<int>((m_total - m_current) * m_unitBytes / m_smoothedSpeed);
     }
 
     std::string FormatTime(int seconds) const {
@@ -230,6 +233,7 @@ private:
     // Configuration
     int m_barWidth;
     std::string m_label;
+    int m_unitBytes = AUDIO_SECTOR_SIZE;
 
     // Progress state
     int m_total = 0;
