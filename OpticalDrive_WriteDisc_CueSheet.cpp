@@ -70,6 +70,24 @@ static bool SetWriteParametersPage(ScsiDrive& drive, int subchannelMode, bool qu
 		break;
 	}
 
+	// Optional dry-run: set the Test Write (simulate) bit -- page 05h byte 2 bit 4
+	// -- when OPTISCAN_SIMULATE_WRITE is set to a non-zero value. The drive then
+	// runs the entire write sequence (cue sheet, CD-Text lead-in, program area)
+	// with the laser held at read power, so nothing is committed to the disc and
+	// the pipeline can be exercised without consuming a blank. Requires a drive
+	// that advertises Test Write (Drive capabilities -> "Test Write (Simulate)").
+	// Post-write readback verification will report a mismatch in this mode (the
+	// disc stays blank) -- that is expected for a simulated burn.
+	{
+		char sim[8] = {};
+		DWORD simLen = GetEnvironmentVariableA("OPTISCAN_SIMULATE_WRITE", sim, sizeof(sim));
+		if (simLen > 0 && simLen < sizeof(sim) && sim[0] != '0') {
+			page[2] |= 0x10;  // Test Write (simulate)
+			if (!quiet)
+				Console::Warning("SIMULATE (Test Write) enabled -- nothing will be committed to the disc\n");
+		}
+	}
+
 	page[3] = 0x00;
 	page[5] = 0x00;
 	page[8] = 0x00;
@@ -171,7 +189,8 @@ static BYTE GetCueLeadDataForm(bool isAudio, int dataMode) {
 // ============================================================================
 bool WriteDiscInternal::BuildAndSendCueSheet(ScsiDrive& drive,
 	const std::vector<OpticalDrive::TrackWriteInfo>& tracks,
-	DWORD totalSectors, int subchannelMode, bool verbose, bool quiet) {
+	DWORD totalSectors, int subchannelMode, bool verbose, bool quiet,
+	bool cdTextInLeadIn) {
 
 	if (tracks.empty()) {
 		Console::Error("Cannot build CUE sheet: no tracks\n");
@@ -194,6 +213,12 @@ bool WriteDiscInternal::BuildAndSendCueSheet(ScsiDrive& drive,
 	// Lead-in: CTL/ADR matches the first track; data form is the *pause* form.
 	BYTE leadInCtlAdr = GetCueCtlAdr(tracks[0].isAudio);
 	BYTE leadInDataForm = GetCueLeadDataForm(tracks[0].isAudio, tracks[0].dataMode);
+
+	// Per the MMC SEND CUE SHEET spec (and the libburn SAO cookbook), the lead-in
+	// cue entry's DATA FORM is OR'd with 0x40 to declare that CD-Text will be
+	// written into the lead-in's R-W subchannel. Only then does the drive accept
+	// the 96-byte CD-Text blocks the host writes ahead of the program area.
+	if (cdTextInLeadIn) leadInDataForm |= 0x40;
 
 	// Lead-in TOC entry
 	cueSheet[ei * 8 + 0] = leadInCtlAdr;

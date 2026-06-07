@@ -165,6 +165,14 @@ public:
 	bool DetectDriveCapabilities(DriveCapabilities& caps);
 	void PrintDriveCapabilities(const DriveCapabilities& caps);
 
+	// CD-Text write-path probe (see OpticalDrive_DriveCapabilities.cpp). Runs
+	// MODE SELECT + MODE SENSE readback for each SAO/RAW + subchannel write mode
+	// to report which the drive actually ACCEPTS, silently DOWNGRADES, or
+	// REJECTS -- so we know whether host-side CD-Text (lead-in R-W) is even
+	// possible on this drive (WRITE BUFFER 0x3B is rejected by many non-Plextor
+	// drives). Non-destructive: no disc I/O; restores default SAO write params.
+	void ProbeCDTextWritePaths();
+
 	// Disc fingerprinting
 	bool GenerateDiscFingerprint(const DiscInfo& disc, DiscFingerprint& fingerprint);
 	bool CalculateCDDBId(const DiscInfo& disc, CDDBFingerprint& cddb);

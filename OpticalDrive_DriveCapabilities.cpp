@@ -97,6 +97,14 @@ void OpticalDrive::PrintDriveCapabilities(const DriveCapabilities& caps) {
 		std::cout << "  Write SAO/DAO:         " << yn(caps.supportsWriteSAO) << "\n";
 	}
 
+	// CD-Text write-path probe -- only meaningful for CD-R writers. Reveals
+	// whether the drive accepts a P-W subchannel write mode (required to put
+	// CD-Text in the lead-in), since WRITE BUFFER (0x3B) is rejected outright by
+	// many non-Plextor drives. Non-destructive; restores default SAO afterward.
+	if (caps.writesCDR) {
+		ProbeCDTextWritePaths();
+	}
+
 	// --- Performance ---
 	std::cout << "\n--- Performance ---\n";
 	if (caps.maxReadSpeedKB > 0)
@@ -254,6 +262,184 @@ void OpticalDrive::PrintDriveCapabilities(const DriveCapabilities& caps) {
 	}
 
 	std::cout << std::string(60, '=') << "\n";
+}
+
+// ============================================================================
+// CD-Text Write-Path Probe
+// ----------------------------------------------------------------------------
+// CD-Text is written into the disc lead-in's R-W subchannel during an SAO (or
+// RAW) write -- it is NOT delivered by WRITE BUFFER (0x3B) on most non-Plextor
+// drives. For the host to put CD-Text in the lead-in it must be able to send
+// full 2448-byte sectors (2352 main + 96 subchannel) in a write mode whose
+// block type carries P-W (packed 0x02 or raw 0x03). This probe runs MODE SELECT
+// + MODE SENSE readback for every relevant write/block-type combination and
+// reports, per mode, whether the drive ACCEPTS it as requested, silently
+// DOWNGRADES it (accepts MODE SELECT but stores different parameters), or
+// REJECTS it outright. No data is written to the disc; the drive's default SAO
+// write parameters are restored at the end.
+// ============================================================================
+namespace {
+	struct WriteModeProbe {
+		BYTE pageByte2;    // Write Parameters page byte 2 (write type nibble)
+		BYTE pageByte4;    // byte 4 (data block type)
+		BYTE expectWrite;  // expected write type (low nibble) after readback
+		BYTE expectBlock;  // expected block type after readback
+		const char* label;
+		bool carriesRW;    // block type carries P-W subchannel (CD-Text capable)
+	};
+
+	// Read back the Write Parameters page (0x05) and return its write type (low
+	// nibble of byte 2) and block type (byte 4). DBD is set (CDB[1] bit 3) so the
+	// drive returns no block descriptor and the page is always at offset 8.
+	// Returns false if the page couldn't be read or the returned page code isn't
+	// 0x05 (i.e. we can't trust the bytes).
+	bool ReadWriteParamsPage(ScsiDrive& drive, BYTE& writeType, BYTE& blockType) {
+		BYTE senseCdb[10] = { 0x5A, 0x08, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3C, 0x00 };
+		BYTE buf[60] = { 0 };
+		if (!drive.SendSCSI(senseCdb, sizeof(senseCdb), buf, sizeof(buf), true))
+			return false;
+		WORD bdLen = (static_cast<WORD>(buf[6]) << 8) | buf[7];
+		size_t pageOff = static_cast<size_t>(8) + bdLen;
+		if (pageOff + 4 >= sizeof(buf)) return false;
+		if ((buf[pageOff] & 0x3F) != 0x05) return false;   // not the page we asked for
+		writeType = buf[pageOff + 2] & 0x0F;
+		blockType = buf[pageOff + 4];
+		return true;
+	}
+
+	// MODE SELECT one Write Parameters combination. Returns false (sense in
+	// sk/asc/ascq) if the drive rejected the command outright. Mirrors the byte
+	// layout of SetWriteParametersPage() in OpticalDrive_WriteDisc_CueSheet.cpp.
+	bool SelectWriteParams(ScsiDrive& drive, const WriteModeProbe& m,
+		BYTE& sk, BYTE& asc, BYTE& ascq) {
+		BYTE modeData[60] = { 0 };
+		BYTE* page = modeData + 8;   // 8-byte MODE SELECT(10) parameter header
+		page[0] = 0x05;
+		page[1] = 0x32;
+		page[2] = m.pageByte2;
+		page[3] = 0x00;
+		page[4] = m.pageByte4;
+		page[5] = 0x00;
+		page[8] = 0x00;
+		WORD totalLen = 60;
+		BYTE selectCdb[10] = { 0x55, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+		selectCdb[7] = static_cast<BYTE>((totalLen >> 8) & 0xFF);
+		selectCdb[8] = static_cast<BYTE>(totalLen & 0xFF);
+		sk = asc = ascq = 0;
+		return drive.SendSCSIWithSense(selectCdb, sizeof(selectCdb), modeData, totalLen,
+			&sk, &asc, &ascq, false);
+	}
+}
+
+void OpticalDrive::ProbeCDTextWritePaths() {
+	// write type: 0x02 = SAO (session-at-once), 0x03 = RAW.
+	// block type: 0x00 = none (2352), 0x02 = packed P-W (2448), 0x03 = raw P-W (2448).
+	static const WriteModeProbe modes[] = {
+		{ 0x42, 0x00, 0x02, 0x00, "SAO       (audio only, 2352)", false },
+		{ 0x42, 0x02, 0x02, 0x02, "SAO/R96P  (packed P-W, 2448)", true  },
+		{ 0x42, 0x03, 0x02, 0x03, "SAO/R96R  (raw P-W,    2448)", true  },
+		{ 0x43, 0x00, 0x03, 0x00, "RAW       (audio only, 2352)", false },
+		{ 0x43, 0x02, 0x03, 0x02, "RAW/R96P  (packed P-W, 2448)", true  },
+		{ 0x43, 0x03, 0x03, 0x03, "RAW/R96R  (raw P-W,    2448)", true  },
+	};
+
+	std::cout << "\n--- CD-Text Write-Path Probe ---\n";
+	std::cout << "  (CD-Text needs a P-W mode; WRITE BUFFER 0x3B is a Plextor-only path)\n";
+
+	ScsiDrive& drive = m_drive;
+
+	// Write Parameters MODE SELECT typically only "sticks" when the drive is
+	// write-ready with blank writable media. Settle the drive, then capture its
+	// CURRENT (default) page so we can tell a real downgrade apart from a MODE
+	// SELECT the drive accepted (GOOD status) but silently ignored.
+	drive.WaitForDriveReady(15);
+
+	BYTE defWrite = 0, defBlock = 0;
+	if (!ReadWriteParamsPage(drive, defWrite, defBlock)) {
+		Console::Warning("  Could not read back the Write Parameters page (0x05)\n");
+		std::cout << "    The drive returned no valid page, so write-mode support can't be probed.\n"
+			<< "    Load a blank CD-R and retry; some drives only expose write parameters when\n"
+			<< "    writable media is present.\n";
+		return;
+	}
+
+	std::cout << "  (drive default: write 0x" << std::hex << std::setfill('0') << std::setw(2)
+		<< static_cast<int>(defWrite) << "/block 0x" << std::setw(2) << static_cast<int>(defBlock)
+		<< std::dec << std::setfill(' ') << ")\n\n";
+
+	bool saoR96r = false, rawR96r = false, saoR96p = false, rawR96p = false;
+	int acceptedCount = 0, notAppliedCount = 0, downgradedCount = 0, rejectedCount = 0;
+
+	for (const auto& mode : modes) {
+		std::cout << "  " << mode.label << "  : ";
+
+		BYTE sk = 0, asc = 0, ascq = 0;
+		if (!SelectWriteParams(drive, mode, sk, asc, ascq)) {
+			Console::Error("REJECTED");
+			std::cout << " (" << drive.GetSenseDescription(sk, asc, ascq) << ")\n";
+			rejectedCount++;
+			continue;
+		}
+
+		BYTE gotWrite = 0, gotBlock = 0;
+		if (!ReadWriteParamsPage(drive, gotWrite, gotBlock)) {
+			Console::Warning("UNVERIFIABLE (readback failed)\n");
+			continue;
+		}
+
+		if (gotWrite == mode.expectWrite && gotBlock == mode.expectBlock) {
+			Console::Success("ACCEPTED\n");
+			acceptedCount++;
+			if (mode.carriesRW) {
+				if (mode.expectWrite == 0x02 && mode.expectBlock == 0x03) saoR96r = true;
+				if (mode.expectWrite == 0x03 && mode.expectBlock == 0x03) rawR96r = true;
+				if (mode.expectWrite == 0x02 && mode.expectBlock == 0x02) saoR96p = true;
+				if (mode.expectWrite == 0x03 && mode.expectBlock == 0x02) rawR96p = true;
+			}
+		}
+		else if (gotWrite == defWrite && gotBlock == defBlock) {
+			Console::Warning("NOT APPLIED");
+			std::cout << " (MODE SELECT accepted but drive kept its default)\n";
+			notAppliedCount++;
+		}
+		else {
+			Console::Warning("DOWNGRADED");
+			std::cout << " (drive stored write 0x" << std::hex << std::setfill('0')
+				<< std::setw(2) << static_cast<int>(gotWrite) << "/block 0x"
+				<< std::setw(2) << static_cast<int>(gotBlock)
+				<< std::dec << std::setfill(' ') << " instead)\n";
+			downgradedCount++;
+		}
+	}
+
+	// Restore the drive's default audio-only SAO write parameters.
+	{ BYTE sk = 0, asc = 0, ascq = 0; SelectWriteParams(drive, modes[0], sk, asc, ascq); }
+
+	std::cout << "\n  CD-Text verdict: ";
+	if (saoR96r || rawR96r) {
+		Console::Success("host-side CD-Text is possible on this drive\n");
+		if (saoR96r)
+			std::cout << "    Path: SAO/R96R -- write the lead-in as 2448-byte sectors carrying the\n"
+			<< "    CD-Text packs in R-W, then continue into the program area as one write.\n";
+		else
+			std::cout << "    Path: RAW/R96R -- write the whole disc raw (lead-in + program + lead-out)\n"
+			<< "    with the CD-Text packs in the lead-in R-W.\n";
+	}
+	else if (saoR96p || rawR96p) {
+		Console::Warning("only packed P-W (R96P) accepted -- test an R96P burn before relying on it\n");
+	}
+	else if (acceptedCount == 0 && downgradedCount == 0 && rejectedCount == 0 && notAppliedCount > 0) {
+		Console::Warning("INCONCLUSIVE -- the drive ignored every MODE SELECT\n");
+		std::cout << "    Each MODE SELECT returned GOOD but the drive kept its default parameters,\n"
+			<< "    which usually means it is not write-ready. Load a BLANK CD-R (not a pressed\n"
+			<< "    or finalized disc) and run this again -- write parameters often only stick\n"
+			<< "    when writable media is present.\n";
+	}
+	else {
+		Console::Error("host-side CD-Text does NOT look possible on this drive\n");
+		std::cout << "    No P-W subchannel write mode was accepted, and WRITE BUFFER (0x3B) is\n"
+			<< "    rejected too. Audio burns fine; CD-Text simply cannot be written here.\n";
+	}
 }
 
 void OpticalDrive::ShowDriveRecommendations() {

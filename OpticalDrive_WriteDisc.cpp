@@ -288,12 +288,19 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 
 	// Plextor PoweRec: surface the drive's current state so the user knows
 	// whether the smarter Plextor-only calibration path is in effect.
-	// Toggling is a separate menu action; here we only report.
-	if (m_drive.IsPlextor()) {
-		bool poweRecOn = false;
-		if (m_drive.GetPoweRec(poweRecOn)) {
-			Console::Info("Plextor PoweRec: ");
-			std::cout << (poweRecOn ? "ENABLED" : "disabled") << "\n";
+	// Toggling is a separate menu action; here we only report. Gate on a genuine
+	// PLEXTOR vendor string -- IsPlextor() also matches LiteOn (shared chipset),
+	// but PoweRec (0xED) is Plextor-only, so labeling a LiteOn "Plextor PoweRec"
+	// would be misleading.
+	{
+		std::string poweRecVendor, poweRecModel;
+		if (m_drive.GetDriveInfo(poweRecVendor, poweRecModel) &&
+			poweRecVendor.find("PLEXTOR") != std::string::npos) {
+			bool poweRecOn = false;
+			if (m_drive.GetPoweRec(poweRecOn)) {
+				Console::Info("Plextor PoweRec: ");
+				std::cout << (poweRecOn ? "ENABLED" : "disabled") << "\n";
+			}
 		}
 	}
 
@@ -311,32 +318,25 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 	// stay false and are passed through to WriteAudioSectors only for signature
 	// compatibility.
 	int subchannelMode = 0;
-	bool layoutAccepted = false;
 
-	if (WriteDiscInternal::PrepareDriveForWrite(m_drive, 0)) {
-		Console::Info("\nSending disc layout to drive...\n");
-		if (WriteDiscInternal::BuildAndSendCueSheet(m_drive, tracks, totalSectors, 0)) {
-			layoutAccepted = true;
-			Console::Success("Using SAO mode (drive-generated subchannel)\n");
-		}
-	}
-
-	// Modern Pioneer BD writers (e.g. BDR-S13U) reject the legacy raw-SCSI
-	// SEND CUE SHEET (0x5D) path for CD-DA in *every* mode -- the failure is a
-	// firmware limitation, not a malformed cue sheet. When no raw layout is
-	// accepted, fall back to the Windows IMAPI2 Disc-At-Once writer, which
-	// drives the burn through the recording path the drive actually supports.
-	if (!layoutAccepted) {
-		Console::Warning("Drive rejected every raw-SCSI disc layout\n");
-		Console::Info("Switching to IMAPI2 Disc-At-Once fallback...\n");
-		return WriteDiscIMAPI(binFile, tracks, totalSectors, speed);
-	}
-
-	// ── Send CD-Text after write mode setup, using pre-cached capability ──
+	// ── CD-Text: choose a delivery method BEFORE sending the cue sheet ───
+	// Two mechanisms:
+	//   1. WRITE BUFFER (0x3B): the classic Plextor vendor path. The drive
+	//      buffers the packs (independent of the cue sheet) and embeds them in
+	//      the lead-in it generates during the SAO burn. The cue sheet stays plain.
+	//   2. SAO host lead-in method (the portable path, per the libburn SAO
+	//      cookbook): the cue sheet's lead-in DATA FORM is flagged for CD-Text
+	//      (| 0x40) and the host writes the lead-in itself as 96-byte CD-Text
+	//      blocks (ATIP lead-in start down to LBA -150) as the first phase of one
+	//      continuous SAO write; WriteAudioSectors then continues from -150.
+	// Deciding the method here -- before the cue sheet -- lets us send the cue
+	// sheet exactly once with the correct flag (no reopen, no wasted send), so the
+	// drive speed and power calibration set above stay in effect.
+	std::vector<BYTE> cdTextPacks;
+	bool cdTextViaWriteBuffer = false;
+	bool cdTextViaLeadIn = false;
 	if (canWriteCDText) {
-		Console::Info("Building CD-Text from CUE metadata...\n");
-		std::vector<BYTE> cdTextPacks = WriteDiscInternal::BuildCDTextPacks(discTitle, discPerformer, tracks);
-
+		cdTextPacks = WriteDiscInternal::BuildCDTextPacks(discTitle, discPerformer, tracks);
 		if (!cdTextPacks.empty()) {
 			Console::Info("CD-Text: ");
 			std::cout << (cdTextPacks.size() / 18) << " packs (";
@@ -345,61 +345,73 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 			if (!discTitle.empty()) std::cout << discTitle;
 			std::cout << ")\n";
 
-			if (!WriteDiscInternal::SendCDTextToDevice(m_drive, cdTextPacks)) {
-				char leadInOptIn[8] = {};
-				DWORD leadInOptInLen = GetEnvironmentVariableA(
-					"OPTISCAN_EXPERIMENTAL_CDTEXT_LEADIN",
-					leadInOptIn,
-					static_cast<DWORD>(sizeof(leadInOptIn)));
-				bool allowLeadInFallback = leadInOptInLen > 0
-					&& leadInOptInLen < sizeof(leadInOptIn)
-					&& leadInOptIn[0] != '0';
+			cdTextViaWriteBuffer = WriteDiscInternal::SendCDTextToDevice(m_drive, cdTextPacks);
+			cdTextViaLeadIn = !cdTextViaWriteBuffer;
+			if (cdTextViaWriteBuffer)
+				Console::Success("CD-Text queued via WRITE BUFFER (drive embeds it in the lead-in)\n");
+			else
+				Console::Info("WRITE BUFFER unavailable -- writing CD-Text into the lead-in (SAO)\n");
+		}
+	}
 
-				if (!allowLeadInFallback) {
-					Console::Warning("CD-Text lead-in R-W fallback is disabled by default\n");
-					Console::Info("The experimental raw P-W lead-in path can stall on drives that reject WRITE BUFFER.\n");
-					Console::Info("Skipping CD-Text so the audio burn can continue normally.\n");
-					Console::Warning("CD-Text will not be written (drive rejected data)\n");
-					Console::Info("Audio data will still be written normally\n");
-				}
-				else {
-					Console::Info("Trying experimental CD-Text lead-in R-W subchannel path...\n");
+	// ── Send the disc layout (cue sheet) once, flagged for a CD-Text lead-in
+	// only when we will write that lead-in ourselves ───────────────────
+	bool layoutAccepted = false;
+	if (WriteDiscInternal::PrepareDriveForWrite(m_drive, 0)) {
+		Console::Info("\nSending disc layout to drive...\n");
+		if (WriteDiscInternal::BuildAndSendCueSheet(
+				m_drive, tracks, totalSectors, 0, true, false, cdTextViaLeadIn)) {
+			layoutAccepted = true;
+			Console::Success("Using SAO mode (drive-generated subchannel)\n");
+		}
+		else if (cdTextViaLeadIn) {
+			// The CD-Text lead-in flag may be what the drive rejected; retry the
+			// cue sheet plain and burn audio without CD-Text.
+			Console::Warning("Cue sheet with CD-Text lead-in flag rejected - retrying without CD-Text\n");
+			cdTextViaLeadIn = false;
+			if (WriteDiscInternal::BuildAndSendCueSheet(m_drive, tracks, totalSectors, 0)) {
+				layoutAccepted = true;
+				Console::Success("Using SAO mode (drive-generated subchannel)\n");
+			}
+		}
+	}
 
-					bool cdTextLeadInWritten = false;
-					bool cdTextLeadInTouchedDisc = false;
-					if (WriteDiscInternal::PrepareDriveForWrite(m_drive, 4)) {
-						Console::Info("Resending disc layout for CD-Text lead-in...\n");
-						if (WriteDiscInternal::BuildAndSendCueSheet(m_drive, tracks, totalSectors, 4, false)) {
-							cdTextLeadInWritten = WriteDiscInternal::SendCDTextLeadInToDevice(
-								m_drive, cdTextPacks, &cdTextLeadInTouchedDisc);
-						}
-					}
+	// Modern Pioneer BD writers (e.g. BDR-S13U) reject the legacy raw-SCSI
+	// SEND CUE SHEET (0x5D) path for CD-DA in *every* mode -- a firmware
+	// limitation, not a malformed cue sheet. When no raw layout is accepted,
+	// fall back to the Windows IMAPI2 Disc-At-Once writer.
+	if (!layoutAccepted) {
+		Console::Warning("Drive rejected every raw-SCSI disc layout\n");
+		Console::Info("Switching to IMAPI2 Disc-At-Once fallback...\n");
+		return WriteDiscIMAPI(binFile, tracks, totalSectors, speed);
+	}
 
-					if (!cdTextLeadInWritten) {
-						if (cdTextLeadInTouchedDisc) {
-							Console::Error("CD-Text lead-in failed after writing began - aborting\n");
-							Console::Info("The disc may already contain a partial lead-in; not continuing audio write.\n");
-							return false;
-						}
-
-						Console::Warning("CD-Text lead-in path failed - restoring normal SAO layout\n");
-						Console::Info("Resetting drive handle after rejected CD-Text lead-in mode...\n");
-						if (!m_drive.Reopen()) {
-							Console::Error("Failed to reopen drive after CD-Text fallback\n");
-							return false;
-						}
-						WriteDiscInternal::WaitForDriveReady(m_drive, 15);
-
-						if (!WriteDiscInternal::PrepareDriveForWrite(m_drive, 0) ||
-							!WriteDiscInternal::BuildAndSendCueSheet(m_drive, tracks, totalSectors, 0, false)) {
-							Console::Error("Failed to restore normal write layout after CD-Text fallback\n");
-							return false;
-						}
-
-						Console::Warning("CD-Text will not be written (drive rejected data)\n");
-						Console::Info("Audio data will still be written normally\n");
-					}
-				}
+	// ── Write CD-Text into the lead-in (host method), the first phase of the
+	// continuous SAO write; WriteAudioSectors then continues from LBA -150 ──
+	if (cdTextViaLeadIn) {
+		bool touchedDisc = false;
+		if (WriteDiscInternal::SendCDTextLeadInToDevice(m_drive, cdTextPacks, &touchedDisc)) {
+			Console::Success("CD-Text written into the lead-in\n");
+		}
+		else if (touchedDisc) {
+			Console::Error("CD-Text lead-in failed after writing began - aborting\n");
+			Console::Info("The lead-in is partially written; not continuing the burn.\n");
+			return false;
+		}
+		else {
+			// Rejected before committing anything -- recover a clean audio-only
+			// session (reopen for a fresh cue sheet) so the burn still succeeds.
+			Console::Warning("CD-Text lead-in path failed - burning audio without CD-Text\n");
+			if (!m_drive.Reopen()) {
+				Console::Error("Failed to reopen drive after CD-Text fallback\n");
+				return false;
+			}
+			WriteDiscInternal::WaitForDriveReady(m_drive, 15);
+			m_drive.SetSpeed(speed, speed);  // re-apply speed dropped with the handle
+			if (!WriteDiscInternal::PrepareDriveForWrite(m_drive, 0) ||
+				!WriteDiscInternal::BuildAndSendCueSheet(m_drive, tracks, totalSectors, 0)) {
+				Console::Error("Failed to restore normal write layout\n");
+				return false;
 			}
 		}
 	}
@@ -409,6 +421,18 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 		hasSubchannel, needsDeinterleave, subchannelMode, discMCN)) {
 		Console::Error("Failed to write sectors\n");
 		return false;
+	}
+
+	// In simulate (Test Write) mode nothing is committed, so readback
+	// verification would always fail against the still-blank disc. Skip it and
+	// report the dry-run as a success instead of a spurious write failure.
+	{
+		char sim[8] = {};
+		DWORD simLen = GetEnvironmentVariableA("OPTISCAN_SIMULATE_WRITE", sim, sizeof(sim));
+		if (simLen > 0 && simLen < sizeof(sim) && sim[0] != '0') {
+			Console::Success("SIMULATE complete -- pipeline ran; nothing committed, verification skipped\n");
+			return true;
+		}
 	}
 
 	return VerifyWriteCompletion(binFile);

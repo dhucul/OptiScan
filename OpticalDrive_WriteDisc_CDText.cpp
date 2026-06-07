@@ -4,40 +4,39 @@
 #include "InterruptHandler.h"
 #include "Progress.h"
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <iomanip>
 #include <vector>
 
 namespace {
-	int MsfToLba(int minute, int second, int frame) {
-		return ((minute * 60 + second) * 75 + frame) - 150;
-	}
-
-	int DiscInfoMsfToLba(BYTE minute, BYTE second, BYTE frame) {
-		const int bcdLba = MsfToLba(BcdToBin(minute), BcdToBin(second), BcdToBin(frame));
-		const int binaryLba = MsfToLba(minute, second, frame);
-		constexpr int MIN_80_LBA = (80 * 60 * 75) - 150;
-		constexpr int MAX_ATIP_LBA = (100 * 60 * 75) - 150;
-
-		if (bcdLba >= MIN_80_LBA && bcdLba <= MAX_ATIP_LBA) return bcdLba;
-		return binaryLba;
-	}
-
 	DWORD ReadLeadInLength(ScsiDrive& drive) {
-		BYTE cdb[10] = { 0x51, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 34, 0x00 };
-		BYTE info[34] = {};
+		// Lead-in start comes from READ TOC/PMA/ATIP, Format 0100b (ATIP), per the
+		// libburn SAO cookbook. The lead-in start MSF lives in response bytes 8/9/10;
+		// its minute is >= 90, so LBA = (M*60 + S)*75 + F - 450150. The MSF values
+		// may be returned as binary or BCD depending on the drive, so decode both
+		// and accept whichever yields a minute in the valid 90..99 lead-in range.
+		// Returns the number of frames from the lead-in start up to LBA -150.
+		BYTE cdb[10] = { 0x43, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 28, 0x00 };
+		BYTE atip[28] = {};
 		BYTE sk = 0, asc = 0, ascq = 0;
 
-		if (drive.SendSCSIWithSense(cdb, sizeof(cdb), info, sizeof(info), &sk, &asc, &ascq, true)) {
-			int leadInStartLba = DiscInfoMsfToLba(info[17], info[18], info[19]);
-			constexpr int MIN_80_LBA = (80 * 60 * 75) - 150;
-			constexpr int NOMINAL_LEADIN_END_LBA = (100 * 60 * 75) - 150;
-			if (leadInStartLba >= MIN_80_LBA && leadInStartLba < NOMINAL_LEADIN_END_LBA) {
-				return static_cast<DWORD>(NOMINAL_LEADIN_END_LBA - leadInStartLba);
-			}
+		constexpr int32_t TYPICAL_LEADIN_START = -11635;  // fallback if ATIP fails
+		int32_t leadInStart = TYPICAL_LEADIN_START;
+
+		if (drive.SendSCSIWithSense(cdb, sizeof(cdb), atip, sizeof(atip), &sk, &asc, &ascq, true)) {
+			auto toLba = [](int m, int s, int f) { return (m * 60 + s) * 75 + f - 450150; };
+			const int rm = atip[8], rs = atip[9], rf = atip[10];
+			const int bm = BcdToBin(atip[8]), bs = BcdToBin(atip[9]), bf = BcdToBin(atip[10]);
+			if (rm >= 90 && rm <= 99 && rs < 60 && rf < 75)
+				leadInStart = toLba(rm, rs, rf);
+			else if (bm >= 90 && bm <= 99 && bs < 60 && bf < 75)
+				leadInStart = toLba(bm, bs, bf);
 		}
 
-		return 75 * 60; // Conservative one-minute lead-in fallback.
+		// Guard against an implausible read (lead-in must precede the pre-gap).
+		if (leadInStart >= -150 || leadInStart < -50000) leadInStart = TYPICAL_LEADIN_START;
+		return static_cast<DWORD>(-150 - leadInStart);
 	}
 
 	void SetRawRWData(BYTE* raw96, const BYTE* rw72) {
@@ -270,32 +269,21 @@ bool WriteDiscInternal::SendCDTextToDevice(ScsiDrive& drive, const std::vector<B
 		BYTE senseKey = 0, asc = 0, ascq = 0;
 		if (drive.SendSCSIWithSense(cdb, sizeof(cdb), payload, payloadLen,
 			&senseKey, &asc, &ascq, false)) {
-			Console::Success("CD-Text sent via WRITE BUFFER ");
-			std::cout << v.label << " (" << (packDataLen / 18) << " packs)\n";
-			return true;
+			return true;  // success -- caller reports it
 		}
 
-		Console::Info("  Rejected CD-Text WRITE BUFFER ");
-		std::cout << v.label << " ("
-			<< drive.GetSenseDescription(senseKey, asc, ascq)
-			<< " [KEY=" << std::hex << std::uppercase << std::setfill('0')
-			<< std::setw(2) << static_cast<int>(senseKey)
-			<< " ASC=" << std::setw(2) << static_cast<int>(asc)
-			<< " ASCQ=" << std::setw(2) << static_cast<int>(ascq)
-			<< std::dec << std::nouppercase << std::setfill(' ') << "])\n";
-
-		// Invalid CDB field or invalid parameter list means this selector or
-		// payload layout is not supported; try the next variant.  Medium,
-		// hardware, and command-sequence errors are not layout probes.
+		// "Invalid field in CDB" / "invalid parameter list" just means this
+		// selector or payload layout isn't supported -- expected on non-Plextor
+		// drives -- so try the next variant quietly. Any other sense (medium,
+		// hardware, command-sequence) is a real problem worth surfacing.
 		if (senseKey != 0x05 || (asc != 0x24 && asc != 0x26)) {
-			Console::Warning("CD-Text WRITE BUFFER failed (");
+			Console::Warning("CD-Text WRITE BUFFER error (");
 			std::cout << drive.GetSenseDescription(senseKey, asc, ascq) << ")\n";
 			return false;
 		}
 	}
 
-	Console::Info("CD-Text WRITE BUFFER path unavailable (drive rejected all known modes)\n");
-	return false;
+	return false;  // no WRITE BUFFER variant accepted; caller falls back
 }
 
 // ============================================================================
@@ -313,12 +301,12 @@ bool WriteDiscInternal::SendCDTextLeadInToDevice(ScsiDrive& drive, const std::ve
 	DWORD remaining = leadInLen;
 	size_t subchannelIndex = 0;
 
-	Console::Info("Writing CD-Text lead-in R-W subchannel (");
-	std::cout << leadInLen << " frames, " << (subchannels.size() / SUBCHANNEL_SIZE)
-		<< " CD-Text frame pattern";
-	if ((subchannels.size() / SUBCHANNEL_SIZE) != 1) std::cout << "s";
-	std::cout << ")...\n";
-	Console::Info("Probing first CD-Text lead-in WRITE(10) (15s timeout)...\n");
+	Console::Info("Writing CD-Text into lead-in (");
+	std::cout << leadInLen << " frames)...\n";
+	// The first burn write of a session can return "not ready, becoming ready"
+	// (KEY=02 ASC=04) for several seconds while the drive spins up and performs
+	// automatic power calibration. Give it a head start before the first WRITE.
+	WaitForDriveReady(drive, 15);
 
 	constexpr DWORD FRAMES_PER_WRITE = 64;
 	constexpr DWORD LEADIN_WRITE_TIMEOUT_SEC = 15;
@@ -360,7 +348,14 @@ bool WriteDiscInternal::SendCDTextLeadInToDevice(ScsiDrive& drive, const std::ve
 
 		DWORD transferBytes = batchFrames * SUBCHANNEL_SIZE;
 		bool wrote = false;
-		for (int attempt = 0; attempt < 25; attempt++) {
+		// The first burn write may report "not ready, becoming ready" (KEY=02
+		// ASC=04) repeatedly while the drive spins up and auto-calibrates laser
+		// power (no OPC was run). Poll readiness properly -- as the audio path does
+		// -- for up to a real ~30s budget, instead of a fixed handful of short
+		// sleeps, before treating the write as a genuine stall.
+		constexpr long long READY_BUDGET_MS = 30000;
+		auto batchStart = std::chrono::steady_clock::now();
+		for (int attempt = 0; !wrote; attempt++) {
 			BYTE sk = 0, asc = 0, ascq = 0;
 			if (drive.SendSCSIWithSense(cdb, sizeof(cdb), buffer.data(), transferBytes,
 				&sk, &asc, &ascq, false, LEADIN_WRITE_TIMEOUT_SEC)) {
@@ -376,9 +371,14 @@ bool WriteDiscInternal::SendCDTextLeadInToDevice(ScsiDrive& drive, const std::ve
 				return false;
 			}
 
+			// Not ready / becoming ready: wait for the drive instead of failing.
 			if (sk == 0x02 && asc == 0x04) {
 				if (attempt == 0) progress.AddRetries(1);
-				Sleep(40);
+				long long elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::steady_clock::now() - batchStart).count();
+				if (elapsedMs > READY_BUDGET_MS) break;  // genuine stall -- give up
+				WaitForDriveReady(drive, 5);
+				Sleep(200);
 				continue;
 			}
 

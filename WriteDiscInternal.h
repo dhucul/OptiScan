@@ -18,7 +18,8 @@ namespace WriteDiscInternal {
 	bool PrepareDriveForWrite(ScsiDrive& drive, int subchannelMode, bool quiet = false);
 	bool BuildAndSendCueSheet(ScsiDrive& drive,
 		const std::vector<OpticalDrive::TrackWriteInfo>& tracks,
-		DWORD totalSectors, int subchannelMode, bool verbose = true, bool quiet = false);
+		DWORD totalSectors, int subchannelMode, bool verbose = true, bool quiet = false,
+		bool cdTextInLeadIn = false);
 
 	// CD-Text
 	bool HasCDTextContent(const std::string& discTitle,
