@@ -100,10 +100,17 @@ bool EnsureDriveOpen(HWND hOwner, bool* outFreshlyScanned,
         if (g_hasTOC) {
             std::vector<std::vector<uint32_t>> pressingCRCs;
             AccurateRip::Lookup(g_disc, pressingCRCs);
-            // Capture the disc's catalog number (MCN) at open so it's available to
-            // any later workflow (e.g. Copy disc -> .cue CATALOG line) without a
-            // separate rescan. CD-Text/ISRC are read by Prescan before asterisked
-            // ops; MCN is cheap and disc-level, so read it once here too.
+            // Capture the disc's metadata at open so it's available to the FIRST
+            // workflow without a separate rescan. This is load-bearing: the first
+            // asterisked op after a fresh open skips Prescan()/RefreshDisc() (the
+            // `!freshlyScanned` guard in the WM_COMMAND handler), so whatever is
+            // read here is the only metadata that first op (e.g. Copy disc) sees.
+            // Reading CD-Text + ISRC here too -- not just MCN -- ensures the first
+            // copy's .cue carries TITLE/PERFORMER and per-track ISRC instead of
+            // coming out bare. (Previously only MCN was read here, so a Copy run as
+            // the very first action produced a cue with no CD-Text.)
+            g_copier.ReadCDText(g_disc);
+            g_copier.ReadISRC(g_disc);
             g_copier.ReadMCN(g_disc);
         }
     } else {
