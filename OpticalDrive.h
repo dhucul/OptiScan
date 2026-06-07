@@ -211,9 +211,17 @@ public:
 	// that only need the isFull/isRewritable results and re-report the disc state
 	// themselves later (e.g. Copy disc / Write tracks, which print the media type
 	// in WriteDisc right before the burn). Erase CD-RW leaves it false to show it.
-	bool CheckRewritableDisk(bool& isFull, bool& isRewritable, bool quiet = false);
+	// outIsBlank (optional) is set true when the disc is already empty (disc
+	// status 0x00) so callers can skip an unnecessary erase. It is left false
+	// when the disc state can't be determined (e.g. the GET CONFIGURATION
+	// fallback), so the caller errs on the side of erasing.
+	bool CheckRewritableDisk(bool& isFull, bool& isRewritable, bool quiet = false,
+		bool* outIsBlank = nullptr);
 
-	bool BlankRewritableDisk(int speed, bool quickBlank = true);
+	// skipConfirm=true bypasses the built-in "erase all data?" prompt for callers
+	// that have already gated the operation (e.g. Erase CD-RW only reaches the
+	// blank pass when the disc is confirmed rewritable AND not already blank).
+	bool BlankRewritableDisk(int speed, bool quickBlank = true, bool skipConfirm = false);
 
 	bool PerformPowerCalibration();
 

@@ -953,29 +953,50 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			break;
 
 			// ── 31. Erase CD-RW (rewritable) ────────────────────────
-			// Blanks a rewritable disc. No TOC pre-scan is performed: we are
-			// erasing the disc, so its current contents are irrelevant even when
-			// the disc is full. Surfaced as GUI button 31; the dispatcher op id is
-			// 31 (mapped from button index 30 by ButtonToMenuChoice).
+			// Erases a rewritable disc, with a Quick/Full choice. A disc that already
+			// reports blank is skipped (nothing to do). Crucially, when the disc type
+			// can't be read at all -- a botched/unreadable burn -- it offers to force a
+			// blank anyway: BLANK does not need to read the disc, so a full erase can
+			// often recover a CD-RW, and on a write-once CD-R it just fails harmlessly.
+			// No TOC pre-scan: contents are about to be wiped. Surfaced as GUI button
+			// 31; dispatcher op id 31 (mapped from button index 30 by ButtonToMenuChoice).
 		case 31: {
 			Console::Heading("\n=== Erase CD-RW ===\n");
 
-			bool isFull = false, isRewritable = false;
-			if (!copier.CheckRewritableDisk(isFull, isRewritable)) {
-				Console::Error("Could not determine the disc type. Insert a disc and try again.\n");
-				break;
+			bool isFull = false, isRewritable = false, isBlank = false;
+			bool detected = copier.CheckRewritableDisk(isFull, isRewritable, false, &isBlank);
+
+			bool forceUnreadable = false;
+			if (!detected) {
+				// Bad / unreadable disc -- the type probe failed. A mis-burned CD-RW can
+				// land here. Offer to blank it anyway; a full erase can often recover it.
+				Console::Warning("Could not read the disc type - it may be a bad/unreadable copy.\n");
+				if (!GuiInput::PromptYesNo("Force erase unreadable disc?",
+					"The disc type couldn't be read (e.g. a bad burn).\n\n"
+					"Attempt to blank it anyway?  This recovers a CD-RW; on a write-once\n"
+					"CD-R it will simply fail without doing any harm.")) {
+					Console::Info("Erase cancelled.\n");
+					break;
+				}
+				forceUnreadable = true;
 			}
-			if (!isRewritable) {
+			else if (!isRewritable) {
 				Console::Error("The inserted disc is not rewritable - it cannot be erased.\n");
 				Console::Info("Only CD-RW media can be blanked. CD-R is write-once.\n");
 				break;
 			}
+			else if (isBlank) {
+				Console::Success("CD-RW is already blank - nothing to erase.\n");
+				break;
+			}
 
-			// Quick vs full blank. Quick clears the TOC/PMA (fast, makes the disc
-			// writable again); full erases the entire recorded surface (slow).
+			// Quick vs full. Quick clears the TOC/PMA (fast, makes the disc writable
+			// again); full erases the entire recorded surface (slow, and the more
+			// reliable choice for recovering a bad/unreadable disc).
 			int mode = GuiInput::PromptYesNoCancel("Erase CD-RW",
 				"Quick erase is fast and makes the disc writable again.\n"
-				"Full erase wipes the entire surface and takes much longer.\n\n"
+				"Full erase wipes the entire surface and takes much longer\n"
+				"(more reliable for recovering a bad/unreadable disc).\n\n"
 				"Yes = Quick erase    No = Full erase    Cancel = abort");
 			if (mode == -1) { Console::Info("Erase cancelled.\n"); break; }
 			bool quickBlank = (mode == 1);
@@ -983,9 +1004,12 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			int speed = copier.SelectWriteSpeed();
 			if (speed == -1) { Console::Info("Erase cancelled.\n"); break; }
 
-			// BlankRewritableDisk issues its own final confirmation prompt before
-			// erasing, and prints its own progress / error / cancellation text.
-			copier.BlankRewritableDisk(speed, quickBlank);
+			if (forceUnreadable)
+				Console::Info("Forcing blank on an unreadable disc...\n");
+
+			// skipConfirm=true: the Quick/Full choice above (and the force prompt for
+			// an unreadable disc) already confirm this destructive action.
+			copier.BlankRewritableDisk(speed, quickBlank, /*skipConfirm=*/true);
 			break;
 		}
 

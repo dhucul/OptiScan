@@ -34,9 +34,11 @@ static bool WaitForDriveReady(ScsiDrive& drive, int timeoutSeconds) {
 // ============================================================================
 // CheckRewritableDisk - Detect rewritable disc and capacity
 // ============================================================================
-bool OpticalDrive::CheckRewritableDisk(bool& isFull, bool& isRewritable, bool quiet) {
+bool OpticalDrive::CheckRewritableDisk(bool& isFull, bool& isRewritable, bool quiet,
+	bool* outIsBlank) {
 	isFull = false;
 	isRewritable = false;
+	if (outIsBlank) *outIsBlank = false;
 
 	if (!quiet) Console::Info("Querying disc media type...\n");
 
@@ -89,6 +91,7 @@ bool OpticalDrive::CheckRewritableDisk(bool& isFull, bool& isRewritable, bool qu
 	BYTE discStatus = response[2] & 0x03;
 	isFull = (discStatus == 0x02);
 	isRewritable = (response[2] & 0x10) != 0;
+	if (outIsBlank) *outIsBlank = (discStatus == 0x00);  // 0x00 = Empty (blank)
 
 	if (!quiet) {
 		Console::Success("Disc media type: ");
@@ -109,11 +112,11 @@ bool OpticalDrive::CheckRewritableDisk(bool& isFull, bool& isRewritable, bool qu
 // ============================================================================
 // BlankRewritableDisk - Erase rewritable media (quick or full)
 // ============================================================================
-bool OpticalDrive::BlankRewritableDisk(int speed, bool quickBlank) {
+bool OpticalDrive::BlankRewritableDisk(int speed, bool quickBlank, bool skipConfirm) {
 	Console::Warning(quickBlank ? "\nQuick blanking rewritable disc...\n"
 		: "\nFull blanking rewritable disc...\n");
 	Console::Info("[!] This operation will erase all data on the disc!\n");
-	if (!GuiInput::PromptYesNo("Confirm blank",
+	if (!skipConfirm && !GuiInput::PromptYesNo("Confirm blank",
 		"This operation will erase all data on the disc. Proceed?")) {
 		Console::Info("Blank operation cancelled\n");
 		return false;
