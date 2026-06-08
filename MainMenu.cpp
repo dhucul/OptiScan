@@ -68,8 +68,8 @@ void RunPioneerCdCheck(OpticalDrive& copier, DiscInfo& disc) {
         Console::Warning(msg);
         Console::Info("  Attempting the scan anyway in case the flag is wrong, but the\n");
         Console::Info("  drive will likely reject with a sense error. If that happens,\n");
-        Console::Info("  use option 8 (BLER scan) - it uses the Pioneer 0xE1 quality-\n");
-        Console::Info("  scan protocol which is implemented on more drive models.\n");
+        Console::Info("  use option 6 (Quality Scan) - it uses the Pioneer 0x3B/0x3C vendor\n");
+        Console::Info("  quality-scan protocol, which is implemented on more drive models.\n");
     }
 
     if (disc.tracks.empty()) {
@@ -116,9 +116,10 @@ void RunPioneerCdCheck(OpticalDrive& copier, DiscInfo& disc) {
                 Console::Info("   implement the 0xE6+0x300000 CD Check protocol the Pioneer utility uses\n");
                 Console::Info("   on older drives. Newer drives like BDR-S13U appear to have dropped it.)\n");
             }
-            Console::Info("\n  Alternative: use option 8 (BLER scan). It drives Pioneer drives via\n");
-            Console::Info("  the 0xE1 quality-scan protocol (the same one wired into PioneerScanStart)\n");
-            Console::Info("  and produces C1/C2 error counts across the disc.\n");
+            Console::Info("\n  Alternative: use option 6 (Quality Scan). It drives Pioneer drives via\n");
+            Console::Info("  the 0x3B/0x3C vendor quality-scan protocol (PioneerScanStart) and produces\n");
+            Console::Info("  C1/C2/CU error counts across the disc. Options 7 (C2 scan) and 8 (BLER\n");
+            Console::Info("  scan) now fall back to that same vendor scan on Pioneer drives too.\n");
             return;
         }
     }
@@ -192,14 +193,21 @@ void RunPioneerCdCheck(OpticalDrive& copier, DiscInfo& disc) {
         return;
     }
 
-    // Report
-    std::cout << "\n  C1 uncorrectable frames: " << lastValid.c1Uncorrectable << "\n";
-    std::cout << "  C2 uncorrectable bytes:  " << lastValid.c2Uncorrectable << "\n";
-    if (lastValid.teDataValid) {
-        std::cout << "  Tracking-Error peak:     " << lastValid.tePeak << "\n";
-        std::cout << "  Tracking-Error integ.:   " << lastValid.teIntegrationMax << "\n";
+    // Report. Headline figures come from the worst-graded measurement window
+    // (the one that drives the verdict below); on an all-clean disc that is just
+    // the last valid window. This keeps the numbers consistent with the grade.
+    const bool haveWorse = (worstGrade != PioneerCdCheckGrade::A) && worstSample.valid;
+    const PioneerCdCheckResult& report = haveWorse ? worstSample : lastValid;
+    std::cout << "\n  C1 uncorrectable frames: " << report.c1Uncorrectable << "\n";
+    std::cout << "  C2 uncorrectable bytes:  " << report.c2Uncorrectable << "\n";
+    if (report.teDataValid) {
+        std::cout << "  Tracking-Error peak:     " << report.tePeak << "\n";
+        std::cout << "  Tracking-Error integ.:   " << report.teIntegrationMax << "\n";
     } else {
         std::cout << "  Tracking-Error:          unavailable\n";
+    }
+    if (haveWorse) {
+        Console::Info("  (figures above are from the worst measurement window)\n");
     }
     if (sawInvalidMeasurement) {
         Console::Warning("  (one or more measurements reported invalid data)\n");

@@ -108,20 +108,23 @@ void PrintHelpMenu() {
 	PrintSection("Disc Quality");
 
 	PrintEntry({ "6. Quality Scan (C1/C2/CU Graphs)",
-		"Performs a hardware-driven CIRC error measurement using Plextor vendor\n"
-		"   commands (0xE9/0xEB). The drive enters a dedicated scan mode at ~1x,\n"
-		"   reporting C1, C2, and CU (uncorrectable) error counts per time slice\n"
-		"   without transferring audio data.\n"
+		"Performs a hardware-driven CIRC error measurement: the drive enters a\n"
+		"   dedicated scan mode and reports C1, C2, and CU (uncorrectable) error\n"
+		"   counts per time slice without transferring audio data. This is the\n"
+		"   same measurement QPXTool's Q-Check performs, and provides true C1\n"
+		"   error rates the standard BLER scan cannot measure.\n"
 		"\n"
-		"   This is the same measurement QPXTool's Q-Check performs. It provides\n"
-		"   true C1 error rates that the standard BLER scan cannot measure.\n"
+		"   Three hardware backends are auto-detected, in order:\n"
+		"     - Plextor Q-Check (0xE9/0xEB): classic Plextor drives -\n"
+		"         PX-708A, PX-712A/SA, PX-716A/SA/AL, PX-755A/SA, PX-760A/SA\n"
+		"     - Pioneer vendor scan (0x3B/0x3C): Pioneer BDR-* burners\n"
+		"         (e.g. BDR-S13U). On these drives the second-level counter is\n"
+		"         reported as C2, matching how QPXTool presents it.\n"
+		"     - LiteOn/MediaTek (0xDF): LiteOn and rebadged MediaTek drives\n"
 		"\n"
-		"   Requires a classic Plextor drive:\n"
-		"     PX-708A, PX-712A/SA, PX-716A/SA/AL, PX-755A/SA, PX-760A/SA\n"
-		"\n"
-		"   Other Plextor/Lite-On drives (PX-891SAF, etc.) support D8 reads\n"
-		"   but not Q-Check. Use option 8 (BLER Scan) on those drives instead.",
-		"True C1/C2/CU error rate measurement on supported Plextor drives." });
+		"   Newer Plextor/Lite-On drives (PX-891SAF, etc.) support D8 reads but\n"
+		"   not Q-Check; use option 8 (BLER Scan) on those instead.",
+		"True C1/C2/CU error rate measurement on Plextor, Pioneer, or LiteOn drives." });
 
 	PrintEntry({ "7. C2 Error Scan",
 		"Performs a disc quality scan using the drive's C2 error reporting capability.\n"

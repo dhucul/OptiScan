@@ -297,6 +297,17 @@ private:
 	// Shared utility
 	DWORD CalculateTotalAudioSectors(const DiscInfo& disc) const;
 
+	// Pioneer vendor-scan fallback for the per-sector C2 scans (display options
+	// 7 "C2 Error Scan" and 8 "BLER Scan"). On Pioneer BD burners (e.g. BDR-S13U)
+	// the per-sector READ CD C2 area reads all-zero, so those scans would report
+	// a clean disc regardless of its real condition. When the drive is Pioneer
+	// with the vendor quality scan available, this runs that scan (the same
+	// 0x3B/0x3C path as option 6) and fills `result` from it so the caller's
+	// report and CSV log reflect real C1/C2/CU. Returns true when it handled the
+	// scan; false to let the caller fall through to the per-sector path.
+	bool RunPioneerVendorC2Fallback(const DiscInfo& disc, BlerResult& result,
+		int scanSpeed, const char* featureLabel);
+
 	// Disc rot analysis helpers
 	void ClassifyZone(DWORD lba, DWORD firstLBA, DWORD lastLBA, int c2Errors, DiscZoneStats& zones);
 	int CalculateClusterTolerance(int scanSpeed);

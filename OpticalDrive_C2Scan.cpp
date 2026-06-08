@@ -77,6 +77,12 @@ bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanS
 	std::cout << "Quick disc health check using C2 error reporting.\n";
 	std::cout << "C2 errors indicate uncorrectable data corruption.\n\n";
 
+	// On Pioneer BD burners the per-sector READ CD C2 area reads all-zero, so the
+	// scan below would call the disc clean no matter its condition. Route to the
+	// Pioneer vendor quality scan (option 6 path) for real C2 on those drives.
+	if (RunPioneerVendorC2Fallback(disc, result, scanSpeed, "C2 Error Scan"))
+		return true;
+
 	// Check drive support
 	if (!m_drive.CheckC2Support()) {
 		Console::Error("ERROR: Drive does not support C2 error reporting.\n");
@@ -358,6 +364,75 @@ bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanS
 			<< "     The C2 pointer bitmap may not be functional.\n"
 			<< "     Run Q-Check (quality scan) for hardware-level C1/C2/CU\n"
 			<< "     measurement using the drive's internal ECC decoder. **\n";
+	}
+
+	return true;
+}
+
+// ============================================================================
+// Pioneer vendor-scan fallback (shared by options 7 "C2 Error Scan" and
+// 8 "BLER Scan"). See the declaration in OpticalDrive.h for rationale.
+// ============================================================================
+bool OpticalDrive::RunPioneerVendorC2Fallback(const DiscInfo& disc, BlerResult& result,
+	int scanSpeed, const char* featureLabel) {
+	// Only relevant on Pioneer drives that expose the 0x3B/0x3C vendor scan.
+	// SupportsPioneerScan() caches its probe, so the repeat call inside
+	// RunQCheckScan below is cheap.
+	if (!m_drive.IsPioneer() || !m_drive.SupportsPioneerScan())
+		return false;
+
+	Console::Warning("  [Pioneer] ");
+	std::cout << (featureLabel ? featureLabel : "This scan")
+		<< ": the per-sector READ CD C2 area reads all-zero on Pioneer BD\n"
+		<< "            burners, so it cannot see real C2 on this drive. Running the\n"
+		<< "            Pioneer vendor quality scan (option 6 path) instead.\n";
+
+	QCheckResult qc;
+	if (!RunQCheckScan(disc, qc, scanSpeed)) {
+		// Vendor scan turned out to be unavailable after all - let the caller
+		// fall through to the per-sector path so the user still gets a result.
+		Console::Info("  [Pioneer] Vendor quality scan unavailable; using per-sector C2 scan.\n");
+		return false;
+	}
+
+	// Translate the QCheck (per-time-slice C1/C2/CU) result into the BlerResult
+	// the option-7/8 CSV writer expects. Counts are per ~75-sector slice rather
+	// than per-sector, since the vendor scan reports aggregated slices.
+	DWORD firstLBA = 0, lastLBA = 0;
+	bool first = true;
+	for (const auto& t : disc.tracks) {
+		if (!t.isAudio) continue;
+		DWORD start = (t.trackNumber == 1) ? 0 : t.pregapLBA;
+		if (first) { firstLBA = start; first = false; }
+		lastLBA = t.endLBA;
+	}
+
+	result = BlerResult{};
+	result.totalSectors = qc.totalSectors;
+	result.totalSeconds = static_cast<int>(qc.totalSeconds);
+	result.hasC1Data = true;
+	result.totalC1Errors = qc.totalC1;
+	result.avgC1PerSecond = qc.avgC1PerSecond;
+	result.maxC1PerSecond = qc.maxC1PerSecond;
+	result.totalC2Errors = qc.totalC2;
+	result.avgC2PerSecond = qc.avgC2PerSecond;
+	result.maxC2PerSecond = qc.maxC2PerSecond;
+	result.qualityRating = qc.qualityRating.empty() ? "UNKNOWN" : qc.qualityRating;
+
+	result.perSecondC1.reserve(qc.samples.size());
+	result.perSecondC2.reserve(qc.samples.size());
+	for (const auto& s : qc.samples) {
+		result.perSecondC1.push_back({ s.lba, s.c1 });
+		result.perSecondC2.push_back({ s.lba, s.c2 });
+		if (s.c1 > 0) result.totalC1Sectors++;
+		if (s.c2 > 0) {
+			result.totalC2Sectors++;
+			if (s.c2 > result.maxC2InSingleSector) {
+				result.maxC2InSingleSector = s.c2;
+				result.worstSectorLBA = s.lba;
+			}
+		}
+		ClassifyZone(s.lba, firstLBA, lastLBA, s.c2 > 0 ? 1 : 0, result.zoneStats);
 	}
 
 	return true;

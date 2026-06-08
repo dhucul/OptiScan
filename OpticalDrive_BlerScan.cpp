@@ -11,6 +11,12 @@
 // ============================================================================
 
 bool OpticalDrive::RunBlerScan(const DiscInfo& disc, BlerResult& result, int scanSpeed) {
+	// On Pioneer BD burners the per-sector READ CD C2 area reads all-zero, so the
+	// per-sector BLER path below would miss real C2. Route to the Pioneer vendor
+	// quality scan (option 6 path) for true C1/C2/CU on those drives.
+	if (RunPioneerVendorC2Fallback(disc, result, scanSpeed, "BLER Scan"))
+		return true;
+
 	if (!m_drive.CheckC2Support()) {
 		std::cout << "ERROR: C2 not supported.\n";
 		return false;

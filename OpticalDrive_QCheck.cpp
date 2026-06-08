@@ -321,13 +321,11 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		QCheckSample sample;
 		sample.lba = currentLBA;
 		sample.c1 = c1;    // C1 corrections this time slice (first-level Reed-Solomon)
-		if (usePioneer) {
-			sample.pioneerE22 = c2;  // Pioneer vendor diagnostic; not counted as verified C2
-			sample.c2 = 0;
-		}
-		else {
-			sample.c2 = c2;          // Verified C2 corrections from LiteOn/Plextor
-		}
+		// Pioneer's vendor scan reports its second-level error counter (E22) at
+		// the same place other drives report C2.  Surface it as C2 so it is
+		// counted, graphed, track-bucketed, and drives the verdict — matching how
+		// QPxTool presents the Pioneer reading.
+		sample.c2 = c2;          // C2 (LiteOn/Plextor) or E22-as-C2 (Pioneer)
 		sample.cu = cu;     // Uncorrectable errors (both correction stages failed)
 		result.samples.push_back(sample);
 
@@ -418,7 +416,7 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		// Show live error counts so the user can spot problems immediately
 		// without waiting for the full report.
 		line << "  C1=" << c1
-			<< (usePioneer ? " E22=" : " C2=") << c2
+			<< " C2=" << c2
 			<< " CU=" << cu;
 
 		// Pad with spaces to overwrite any leftover characters from a
@@ -495,36 +493,9 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 			RecalculateQCheckTotals(result);
 	}
 
-	// Pioneer vendor scans can produce an isolated coupled C1/E22 burst
-	// that is not reproduced by LiteOn/Plextor scans.  If one slice jumps
-	// far above both neighbours and carries E22 at the same time, treat it
-	// as a Pioneer measurement artifact rather than disc condition.
-	bool pioneerCoupledSpikesTrimmed = false;
-	if (usePioneer && result.samples.size() > 10) {
-		for (size_t i = 1; i + 1 < result.samples.size(); i++) {
-			auto& s = result.samples[i];
-			int neighbourC1 = std::max(result.samples[i - 1].c1, result.samples[i + 1].c1);
-			int neighbourE22 = std::max(result.samples[i - 1].pioneerE22, result.samples[i + 1].pioneerE22);
-			bool isolatedC1 = s.c1 > 100 && s.c1 > std::max(50, neighbourC1 * 8);
-			bool isolatedE22 = s.pioneerE22 > 0 && s.pioneerE22 > std::max(20, neighbourE22 * 8);
-			if (isolatedC1 && isolatedE22) {
-				s.c1 = std::max(result.samples[i - 1].c1, result.samples[i + 1].c1);
-				s.pioneerE22 = 0;
-				pioneerCoupledSpikesTrimmed = true;
-			}
-		}
-
-		if (pioneerCoupledSpikesTrimmed) {
-			RecalculateQCheckTotals(result);
-			std::cout << "  [Pioneer] Suppressed isolated coupled C1/E22 spike(s) as vendor-scan artifacts.\n";
-		}
-	}
-
-	bool pioneerVendorE22Observed = usePioneer && result.totalPioneerE22 > 0;
-	if (pioneerVendorE22Observed) {
-		std::cout << "  [Pioneer] Vendor E22 observed; not counted as verified C2.\n"
-			<< "            Use Disc Rot Phase 1 or a LiteOn/Plextor C2 scan for the copy decision.\n";
-	}
+	// Pioneer's E22 counter is now treated as C2 (see sample recording above),
+	// so it flows through the same startup-spike trimming as every other scan
+	// backend and needs no separate vendor-artifact handling.
 
 	// Track whether the drive reported any C2 during the primary scan,
 	// before the recheck potentially zeroes the total.  Used later to
@@ -855,8 +826,12 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 // ============================================================================
 
 void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
-	const bool pioneerScan = IsPioneerScanMethod(result.scanMethod);
-	const bool pioneerE22Observed = pioneerScan && result.totalPioneerE22 > 0;
+	// The Pioneer vendor scan's E22 counter is reported as C2 (see
+	// RunQCheckScan), so the report renders a Pioneer scan exactly like a
+	// normal C2 scan.  The scan-method line below still identifies the source
+	// as "Pioneer (0x3B/0x3C)" so the provenance of the C2 figure is clear.
+	const bool pioneerScan = false;
+	const bool pioneerE22Observed = false;
 
 	std::cout << "\n" << std::string(60, '=') << "\n";
 	std::cout << "              CD QUALITY SCAN REPORT\n";
@@ -1324,7 +1299,10 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring& filename) {
 	std::ofstream log(std::filesystem::path(filename), std::ios::out | std::ios::trunc);
 	if (!log) return false;
-	const bool pioneerScan = IsPioneerScanMethod(result.scanMethod);
+	// Pioneer's E22 counter is logged as C2 (see RunQCheckScan), so the CSV is a
+	// standard C1/C2/CU log regardless of backend. The scan-method field still
+	// records "Pioneer (0x3B/0x3C)" for provenance.
+	const bool pioneerScan = false;
 
 	// ── Header block: summary statistics ─────────────────────
 	// Written as '#'-prefixed comments so CSV parsers skip them but

@@ -320,6 +320,14 @@ private:
 	// type 0x00 on Pioneer BD burners) instead of hard-coding 0x04/0xF8.
 	void EnsureCddaReadForm(DWORD lba);
 
+	// Issues one Pioneer WRITE BUFFER (0x3B) scan request for [lba, lba+count)
+	// followed immediately by a READ BUFFER (0x3C) to retrieve the result —
+	// QPxTool's cmd_cd_errc_read + cmd_cd_errc_getdata performed back-to-back.
+	// On success fills c1 (BLER) and c2 (E22) with the parsed counters, already
+	// passed through the >300 firmware-garbage guard. Shared by the probe and
+	// the per-slice poll. Returns false if either transport hard-fails.
+	bool PioneerScanReadSlice(DWORD lba, DWORD count, int& c1, int& c2);
+
 	bool ReadSectorQRaw(DWORD lba, int& qTrack, int& qIndex);
 	bool ParseRawSubchannel(const BYTE* sub, int& qTrack, int& qIndex);
 	bool ProbeC1BlockErrors();

@@ -239,11 +239,8 @@ PioneerPureReadOffGuard::PioneerPureReadOffGuard(ScsiDrive& drive, bool active)
         return;
 
     m_restore = (m_previousMode != PureReadMode::Off);
-    if (m_restore &&
-        m_pioneer.SetPureReadMode(PureReadMode::Off, false, false)) {
-        std::cout << "  [Pioneer] PureRead disabled for measurement scan.\n";
-    }
-    else {
+    if (!m_restore ||
+        !m_pioneer.SetPureReadMode(PureReadMode::Off, false, false)) {
         m_restore = false;
     }
 }
@@ -251,7 +248,6 @@ PioneerPureReadOffGuard::PioneerPureReadOffGuard(ScsiDrive& drive, bool active)
 PioneerPureReadOffGuard::~PioneerPureReadOffGuard() {
     if (m_restore) {
         m_pioneer.SetPureReadMode(m_previousMode, false, false);
-        std::cout << "\n  [Pioneer] PureRead restored after measurement scan.\n";
     }
 }
 
@@ -280,14 +276,12 @@ PioneerPerformanceModeGuard::PioneerPerformanceModeGuard(ScsiDrive& drive, bool 
 
     if (m_pioneer.SetSpeedMode(PioneerSpeedMode::Performance, /*eepSave=*/false)) {
         m_restore = true;
-        std::cout << "  [Pioneer] Performance speed mode enabled for scan.\n";
     }
 }
 
 PioneerPerformanceModeGuard::~PioneerPerformanceModeGuard() {
     if (m_restore) {
         m_pioneer.SetSpeedMode(m_previousMode, /*eepSave=*/false);
-        std::cout << "\n  [Pioneer] Speed mode restored after scan.\n";
     }
 }
 

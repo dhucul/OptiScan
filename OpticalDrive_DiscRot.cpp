@@ -21,23 +21,6 @@ namespace {
 // PioneerPureReadOffGuard and PioneerPerformanceModeGuard are now in
 // PioneerVendor.h (shared with OpticalDrive_QCheck.cpp).
 
-// 4-tier rating for the Pioneer E22 diagnostic counter.  Mirrors the
-// implementation in OpticalDrive_QCheck.cpp; duplicated here to keep each
-// translation unit self-contained.  Tiers and thresholds must stay in sync.
-const char* PioneerE22Rating(int total, double avg, int peak) {
-	if (total == 0) return "Ideal";
-	if (avg < 0.25 && peak < 25) return "Good";
-	if (avg < 1.0 && peak < 100) return "Acceptable";
-	return "Concerning";
-}
-
-const char* PioneerE22RatingDescription(const std::string& rating) {
-	if (rating == "Ideal")      return "no E22 reported";
-	if (rating == "Good")       return "low background, normal for Pioneer scans";
-	if (rating == "Acceptable") return "elevated diagnostic activity";
-	return "heavy diagnostic activity";
-}
-
 void RecalculateQCheckTotals(QCheckResult& result) {
 	result.totalC1 = 0;
 	result.totalC2 = 0;
@@ -202,13 +185,9 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 				QCheckSample sample;
 				sample.lba = currentLBA;
 				sample.c1 = c1;
-				if (usePioneer) {
-					sample.pioneerE22 = c2;
-					sample.c2 = 0;
-				}
-				else {
-					sample.c2 = c2;
-				}
+				// Pioneer's vendor scan reports its second-level counter (E22) where
+				// other drives report C2; treat it as C2 (matches the Q-Check scan).
+				sample.c2 = c2;
 				sample.cu = cu;
 				c1Result.samples.push_back(sample);
 				c1Result.totalC1 += sample.c1;
@@ -269,56 +248,18 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 				}
 			}
 
-			bool pioneerCoupledSpikesTrimmed = false;
-			if (usePioneer && c1Result.samples.size() > 10) {
-				for (size_t i = 1; i + 1 < c1Result.samples.size(); i++) {
-					auto& s = c1Result.samples[i];
-					int neighbourC1 = std::max(c1Result.samples[i - 1].c1, c1Result.samples[i + 1].c1);
-					int neighbourE22 = std::max(c1Result.samples[i - 1].pioneerE22, c1Result.samples[i + 1].pioneerE22);
-					bool isolatedC1 = s.c1 > 100 && s.c1 > std::max(50, neighbourC1 * 8);
-					bool isolatedE22 = s.pioneerE22 > 0 && s.pioneerE22 > std::max(20, neighbourE22 * 8);
-					if (isolatedC1 && isolatedE22) {
-						s.c1 = std::max(c1Result.samples[i - 1].c1, c1Result.samples[i + 1].c1);
-						s.pioneerE22 = 0;
-						pioneerCoupledSpikesTrimmed = true;
-					}
-				}
-			}
-
 			RecalculateQCheckTotals(c1Result);
 			if (spikesTrimmed)
 				std::cout << "  Startup spike(s) trimmed from quality scan.\n";
-			if (pioneerCoupledSpikesTrimmed)
-				std::cout << "  [Pioneer] Suppressed isolated coupled C1/E22 spike(s) as vendor-scan artifacts.\n";
 
 			hasC1 = !c1Result.samples.empty();
 			if (hasC1)
 				std::cout << "\r  C1 scan complete: " << c1Result.samples.size()
 				<< " samples, avg C1=" << std::fixed << std::setprecision(1)
 				<< c1Result.avgC1PerSecond << "/sec\n\n";
-			// Record Pioneer E22 stats whenever the Pioneer vendor scan ran, so
-			// the rating reaches "Ideal" (zero E22) instead of being omitted.
-			if (usePioneer) {
-				result.pioneerE22Total = c1Result.totalPioneerE22;
-				result.pioneerE22Peak = c1Result.maxPioneerE22PerSecond;
-				result.pioneerE22AvgPerSecond = c1Result.avgPioneerE22PerSecond;
-				result.pioneerE22Rating = PioneerE22Rating(
-					result.pioneerE22Total,
-					result.pioneerE22AvgPerSecond,
-					result.pioneerE22Peak);
-			}
-			// Verbose in-scan status only when there's actual E22 activity —
-			// printing zeros mid-scan is noise; the report still shows "Ideal".
-			if (usePioneer && c1Result.totalPioneerE22 > 0) {
-				std::cout << "  [Pioneer] E22 diagnostic (not a copy trigger): "
-					<< result.pioneerE22Rating
-					<< " (" << PioneerE22RatingDescription(result.pioneerE22Rating) << ")\n"
-					<< "            total " << c1Result.totalPioneerE22
-					<< ", avg " << std::fixed << std::setprecision(2)
-					<< result.pioneerE22AvgPerSecond << "/sec"
-					<< ", peak " << c1Result.maxPioneerE22PerSecond << "/sec\n"
-					<< "            Phase 1 verified C2/read failures drive the rot decision.\n\n";
-			}
+			// The Pioneer vendor scan's second-level counter is now collected as C2
+			// (sample.c2 above), so it is folded into the rot verdict in
+			// AnalyzeC1RotPatterns rather than reported as a separate diagnostic.
 		}
 	}
 	else {
@@ -755,26 +696,6 @@ void OpticalDrive::PrintDiscRotReport(const DiscRotAnalysis& analysis) {
 	printZone("Outer  (66-100%):", analysis.zones.OuterErrorRate(),
 		analysis.zones.outerErrors, analysis.zones.outerSectors);
 
-	if (!analysis.pioneerE22Rating.empty()) {
-		std::cout << "\n";
-		Heading("  Pioneer E22 Diagnostic (Not a copy trigger)\n");
-		Reset();
-		std::cout << "  Meaning: Raw Pioneer firmware counter; common at low levels.\n";
-		std::cout << "  Rating:  ";
-		if (analysis.pioneerE22Rating == "Ideal" || analysis.pioneerE22Rating == "Good")
-			Success(analysis.pioneerE22Rating.c_str());
-		else if (analysis.pioneerE22Rating == "Acceptable")
-			Warning(analysis.pioneerE22Rating.c_str());
-		else
-			Error(analysis.pioneerE22Rating.c_str());
-		std::cout << " (" << PioneerE22RatingDescription(analysis.pioneerE22Rating) << ")\n";
-		std::cout << "  Total E22: " << analysis.pioneerE22Total
-			<< "  avg " << std::fixed << std::setprecision(2)
-			<< analysis.pioneerE22AvgPerSecond << "/sec"
-			<< "  peak " << analysis.pioneerE22Peak << "/sec\n";
-		std::cout << "  Verified C2/read failures from Phase 1 drive the rot decision.\n";
-	}
-
 	std::cout << "\n";
 	Heading("  Error Clusters\n");
 	Reset();
@@ -880,19 +801,6 @@ bool OpticalDrive::SaveDiscRotLog(const DiscRotAnalysis& analysis, const std::ws
 	fprintf(f, "# Outer  (66-100%%%%):     %.2f%% (%d/%d)\n",
 		analysis.zones.OuterErrorRate(), analysis.zones.outerErrors, analysis.zones.outerSectors);
 	fprintf(f, "#\n");
-
-	if (!analysis.pioneerE22Rating.empty()) {
-		fprintf(f, "# --- Pioneer E22 Diagnostic (Not a copy trigger) ---\n");
-		fprintf(f, "# Meaning:               Raw Pioneer firmware counter; common at low levels\n");
-		fprintf(f, "# Rating:                %s (%s)\n",
-			analysis.pioneerE22Rating.c_str(),
-			PioneerE22RatingDescription(analysis.pioneerE22Rating));
-		fprintf(f, "# Total E22:             %d\n", analysis.pioneerE22Total);
-		fprintf(f, "# Avg E22/sec:           %.2f\n", analysis.pioneerE22AvgPerSecond);
-		fprintf(f, "# Peak E22/sec:          %d\n", analysis.pioneerE22Peak);
-		fprintf(f, "# Decision Impact:       Phase 1 verified C2/read failures drive risk\n");
-		fprintf(f, "#\n");
-	}
 
 	fprintf(f, "# --- Read Consistency ---\n");
 	fprintf(f, "# Inconsistent Sectors:  %d / %d tested\n",
@@ -1008,6 +916,69 @@ void OpticalDrive::AnalyzeC1RotPatterns(const QCheckResult& c1Result,
 			std::cout << "  Risk level upgraded from " << current
 				<< " to " << analysis.rotRiskLevel
 				<< " based on C1 early-warning data\n";
+		}
+	}
+
+	// ── Factor Pioneer vendor-scan C2 into the rot verdict ───────────
+	// On Pioneer BD burners (e.g. BDR-S13U) the per-sector READ CD C2 path
+	// (Phase 1) frequently returns GOOD with an all-zero C2 area, so the vendor
+	// quality scan is the drive's only reliable C2 source. Its second-level
+	// counter is collected here as sample.c2; fold it into the verdict the same
+	// way C1 is. The counter runs noisy at low levels, so only sustained,
+	// edge-concentrated, or progressive C2 raises the score.
+	if (c1Result.scanMethod.find("Pioneer") != std::string::npos) {
+		double innerC2 = 0, middleC2 = 0, outerC2 = 0;
+		int inN = 0, midN = 0, outN = 0;
+		for (const auto& s : c1Result.samples) {
+			if (s.lba < firstLBA || s.lba > lastLBA) continue;
+			const uint64_t pos = static_cast<uint64_t>(s.lba) - static_cast<uint64_t>(firstLBA);
+			double posPct = static_cast<double>(pos) / static_cast<double>(range);
+			if (posPct < 0.33) { innerC2 += s.c2; inN++; }
+			else if (posPct < 0.66) { middleC2 += s.c2; midN++; }
+			else { outerC2 += s.c2; outN++; }
+		}
+		double aInC2 = inN > 0 ? innerC2 / inN : 0;
+		double aMidC2 = midN > 0 ? middleC2 / midN : 0;
+		double aOutC2 = outN > 0 ? outerC2 / outN : 0;
+
+		if (c1Result.totalC2 > 0) {
+			std::cout << "\n--- C2 Zone Analysis (Pioneer vendor scan) ---\n";
+			std::cout << "  Inner  avg C2/sec: " << std::fixed << std::setprecision(1) << aInC2 << "\n";
+			std::cout << "  Middle avg C2/sec: " << aMidC2 << "\n";
+			std::cout << "  Outer  avg C2/sec: " << aOutC2 << "\n";
+			std::cout << "  Total C2: " << c1Result.totalC2
+				<< " (avg " << std::fixed << std::setprecision(2) << c1Result.avgC2PerSecond
+				<< "/sec, peak " << c1Result.maxC2PerSecond << "/sec)\n";
+		}
+
+		bool c2EdgeElevated = (aOutC2 > aInC2 * 3.0) && (aOutC2 > 2.0);
+		bool c2Progressive = (aInC2 < aMidC2) && (aMidC2 < aOutC2) && (aOutC2 > 2.0);
+		bool c2OverallHigh = (c1Result.avgC2PerSecond > 1.0);
+		bool c2Heavy = (c1Result.avgC2PerSecond > 5.0);
+
+		if (c2EdgeElevated)
+			std::cout << "  ** C2 elevated at outer edge - disc rot signal **\n";
+		if (c2Progressive)
+			std::cout << "  ** C2 rising inner->outer - progressive degradation **\n";
+		if (c2Heavy)
+			std::cout << "  ** Sustained heavy C2 - significant correction load **\n";
+
+		int c2Score = 0;
+		if (c2EdgeElevated) c2Score += 20;
+		if (c2Progressive) c2Score += 20;
+		if (c2OverallHigh) c2Score += 15;
+		if (c2Heavy) c2Score += 20;
+
+		if (c2Score > 0) {
+			std::string current = analysis.rotRiskLevel;
+			if (current == "NONE" && c2Score >= 15) analysis.rotRiskLevel = "LOW";
+			if (current == "NONE" && c2Score >= 30) analysis.rotRiskLevel = "MODERATE";
+			if (current == "LOW" && c2Score >= 20) analysis.rotRiskLevel = "MODERATE";
+			if (current == "MODERATE" && c2Score >= 25) analysis.rotRiskLevel = "HIGH";
+			if (analysis.rotRiskLevel != current)
+				std::cout << "  Risk level upgraded from " << current
+				<< " to " << analysis.rotRiskLevel
+				<< " based on Pioneer C2 data\n";
 		}
 	}
 }
