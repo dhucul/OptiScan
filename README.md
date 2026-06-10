@@ -869,9 +869,168 @@ If the standard TOC is read successfully but contains out-of-range entries that 
 
 ---
 
+## Windows APIs Used
+
+OptiScan is a native Win32 application built directly against the Windows SDK with no third-party frameworks. The APIs it relies on are grouped below by purpose, along with what each is used for. Linked import libraries are pulled in via `#pragma comment(lib, ...)` in the relevant source files.
+
+### Device I/O and SCSI/MMC pass-through (the core of the program)
+
+All low-level disc access goes through a raw device handle and `DeviceIoControl`.
+
+| API | Used for |
+|---|---|
+| `CreateFileW` (on `\\.\X:`) | Opens the optical drive as a raw device handle with `GENERIC_READ`/`GENERIC_WRITE`, which is the prerequisite for SCSI pass-through |
+| `DeviceIoControl` | The workhorse: issues `IOCTL_SCSI_PASS_THROUGH_DIRECT` to send arbitrary SCSI/MMC CDBs (READ CD, READ TOC, MODE SENSE/SELECT, SEND CUE SHEET, WRITE, vendor commands, etc.), plus the storage and CD-ROM IOCTLs below |
+| `IOCTL_SCSI_PASS_THROUGH_DIRECT` (`SCSI_PASS_THROUGH_DIRECT`) | Sends raw SCSI command descriptor blocks to the drive and retrieves sense data — every read, write, scan, and vendor command flows through this |
+| `IOCTL_STORAGE_QUERY_PROPERTY` (`STORAGE_PROPERTY_QUERY`, `STORAGE_ADAPTER_DESCRIPTOR`, `STORAGE_DEVICE_DESCRIPTOR`) | Reads the bus type (USB/SATA/IDE/SCSI) for interface detection and the vendor/product strings for drive naming and USB-bridge identification |
+| `IOCTL_STORAGE_EJECT_MEDIA` | Ejects the tray |
+| `IOCTL_STORAGE_CHECK_VERIFY` | Polls whether media is present/ready while waiting for a disc |
+| `IOCTL_CDROM_READ_TOC` (`CDROM_TOC`) | Fast firmware-level TOC read used during drive enumeration to count audio tracks |
+| `CloseHandle` | Closes the drive handle |
+
+These rely on the SDK headers `winioctl.h`, `ntddscsi.h`, and `ntddcdrm.h`.
+
+### Drive enumeration
+
+| API | Used for |
+|---|---|
+| `GetLogicalDrives` | Gets the bitmask of present drive letters |
+| `GetDriveTypeW` | Filters that list down to `DRIVE_CDROM` devices |
+| `GetTickCount`, `Sleep` | Timeout/poll loop while waiting for a disc to be inserted |
+| `GetLastError` (`ERROR_NOT_READY`, `ERROR_MEDIA_CHANGED`, etc.) | Distinguishes "no disc yet" from real failures during media-ready polling |
+
+### Networking — AccurateRip lookup and update check (WinHTTP / WinINet)
+
+Linked against `winhttp.lib` and `wininet.lib`.
+
+| API | Used for |
+|---|---|
+| `WinHttpOpen`, `WinHttpConnect`, `WinHttpOpenRequest`, `WinHttpSendRequest`, `WinHttpReceiveResponse` | Performs the HTTP/HTTPS request to the AccurateRip database and to the GitHub releases API |
+| `WinHttpQueryHeaders` | Reads the HTTP status code (200/404/403) |
+| `WinHttpQueryDataAvailable`, `WinHttpReadData` | Streams the response body (the AccurateRip `.bin` blob and the GitHub JSON) |
+| `WinHttpSetTimeouts` | Bounds the request so a dead connection doesn't hang the UI |
+| `WinHttpCloseHandle` | Releases WinHTTP handles |
+| `InternetGetConnectedState` (WinINet) | Fast connectivity pre-check before the update lookup to fail quickly when offline |
+| `ShellExecuteW` (`shellapi.h`) | Opens the download page in the user's browser when an update is available |
+
+### GUI — window, message loop, and controls (User32 / common controls)
+
+Linked against `comctl32.lib`.
+
+| API | Used for |
+|---|---|
+| `RegisterClassExW`, `CreateWindowW`/`CreateWindowExW`, `DefWindowProc`, `ShowWindow`, `UpdateWindow`, `DestroyWindow` | Main window, custom output control, modal prompt dialog, and all child controls (buttons, static labels, the accessible EDIT, progress bar) |
+| `GetMessage`, `TranslateMessage`, `DispatchMessage`, `PostMessageW`/`SendMessageW`, `PeekMessageW`, `WaitMessage`, `PostQuitMessage` | The main message loop and the prompt dialog's private modal loop; cross-thread UI updates from the worker thread |
+| `TranslateAccelerator`, `LoadAccelerators`, `IsDialogMessageW` | Keyboard shortcuts (e.g. Ctrl+Shift+A) and Tab/Shift+Tab focus navigation between controls |
+| `LoadIcon`, `LoadCursor`, `LoadStringW`, `GetStockObject` | Window class resources (icon, cursor, title strings, background brush) |
+| `InitCommonControlsEx`, `PROGRESS_CLASS` (`PBM_SETRANGE32`/`PBM_SETPOS`/`PBM_SETBARCOLOR`) | The live progress meter |
+| `CreateWindowEx` with `EDIT`/`STATIC`/`BUTTON` classes; `EM_SETSEL`, `EM_REPLACESEL`, `EM_SCROLLCARET`, `EM_SETLIMITTEXT` | The screen-reader-readable output mirror (a read-only multiline EDIT) and prompt fields |
+| `BeginDeferWindowPos`/`DeferWindowPos`/`EndDeferWindowPos`, `MoveWindow`, `SetWindowPos`, `InvalidateRect`, `GetClientRect`, `GetWindowRect`, `MapWindowPoints` | Batched, flicker-free layout of the button grid and panels |
+| `EnableWindow`, `SetFocus`, `GetFocus`, `IsChild`, `GetDlgCtrlID`, `GetDlgItem`, `SetWindowTextW`/`GetWindowTextW`, `GetWindowLongPtr`/`SetWindowLongPtr` | Per-control enable/disable during workflows, focus handling, and per-control state storage |
+| `MessageBoxW` | Yes/No/Cancel confirmations and simple notices |
+| `CreatePopupMenu`/`AppendMenuW`/`InsertMenuW`/`TrackPopupMenu`, `GetMenu`, `EnableMenuItem`, `CheckMenuItem`, `DrawMenuBar` | The categorised "Operations" menu and the output control's right-click Copy/Select-All menu |
+| `OpenClipboard`/`EmptyClipboard`/`SetClipboardData`/`CloseClipboard` (`CF_UNICODETEXT`) | Copy from the output log |
+| `SetTimer`/`KillTimer`, `SetCapture`/`ReleaseCapture`, `GetCursorPos`, `ScreenToClient`/`ClientToScreen` | Click-drag text selection and auto-scroll in the custom output control |
+| `SetLayeredWindowAttributes` (`WS_EX_LAYERED`), `AdjustWindowRect`, `GetSystemMetrics`, `BringWindowToTop`, `SetForegroundWindow` | The translucent floating prompt dialog and its centering |
+
+### High-DPI and multi-monitor scaling
+
+| API | Used for |
+|---|---|
+| `SetProcessDpiAwarenessContext` (per-monitor-v2) | Declares DPI awareness so the UI renders crisply |
+| `GetDpiForSystem`, `GetDpiForWindow`, `WM_DPICHANGED` handling | Computes and updates the UI scale factor when moved between monitors |
+| `MonitorFromRect`, `GetMonitorInfoW` | Per-monitor work-area and scaling decisions |
+| `SystemParametersInfoW` (`SPI_GETWORKAREA`, `SPI_GETSCREENREADER`, `SPI_GETHIGHCONTRAST`, `SPI_GETWHEELSCROLLLINES`) | Work-area sizing, screen-reader auto-detection, High Contrast detection, and mouse-wheel scroll amount |
+
+### Graphics — GDI and GDI+
+
+Linked against `gdiplus.lib`. The window background, panels, buttons, and the custom console output control are all custom-drawn.
+
+| API | Used for |
+|---|---|
+| GDI+ (`GdiplusStartup`/`GdiplusShutdown`, `Graphics`, `Image::FromStream`, `GraphicsPath`, gradient/solid brushes, pens, fonts) | All the styled UI rendering: gradient panels, rounded rectangles, the embedded PNG artwork, the title text, and tech-accent decorations |
+| GDI (`BeginPaint`/`EndPaint`, `CreateCompatibleDC`/`CreateCompatibleBitmap`, `BitBlt`, `SelectObject`, `DeleteDC`/`DeleteObject`) | Double-buffered painting to avoid flicker |
+| `CreateFontW`/`CreateFontIndirectW`, `CreateSolidBrush`/`CreatePatternBrush`, `CreatePen`, `FillRect`, `RoundRect`, `DrawTextW`, `ExtTextOutW`, `SetTextColor`/`SetBkColor`/`SetBkMode` | Fonts, brushes, and text rendering in the custom output control and owner-drawn buttons |
+| `GetTextExtentPoint32W`, `GetTextMetricsW`, `GetGlyphIndicesW`, `GetObjectW` | Monospaced cell metrics and per-glyph font-fallback (Cascadia Mono → Segoe UI → Segoe UI Symbol → Segoe UI Emoji) so box-drawing and symbol glyphs render |
+| `WM_DRAWITEM` owner-draw (`DRAWITEMSTRUCT`) | Custom-painted command buttons and dialog buttons |
+
+### COM — folder picker and disc-burning fallback
+
+Linked against `ole32.lib`.
+
+| API | Used for |
+|---|---|
+| `CoInitializeEx`/`CoUninitialize`, `CoCreateInstance` | COM lifetime and object creation for the dialogs and IMAPI |
+| `IFileOpenDialog` (with `FOS_PICKFOLDERS`), `IShellItem`, `SHCreateItemFromParsingName`, `CoTaskMemFree` (`shobjidl.h`/`shlobj.h`) | The native Windows folder picker for choosing output/source directories |
+| IMAPI2 (`IDiscMaster2`, `IDiscRecorder2`, `IRawCDImageCreator`, `IDiscFormat2RawCD`, `IDiscFormat2TrackAtOnce`) | Fallback disc-burning path (DAO, then TAO) when the drive rejects the raw SCSI CUE-sheet write |
+| `IStream`/`CreateStreamOnHGlobal`, `SAFEARRAY` helpers, `VARIANT` helpers, `BSTR` (`SysAllocString`/`SysFreeString`), `IConnectionPoint`/`IConnectionPointContainer`, `CoCreateFreeThreadedMarshaler` | Feeding track audio to IMAPI as streams, enumerating recorders, and receiving burn-progress callbacks |
+
+### Accessibility — UI Automation
+
+Linked against `uiautomationcore.lib`.
+
+| API | Used for |
+|---|---|
+| `IRawElementProviderSimple` / `UiaHostProviderFromHwnd` / `UiaReturnRawElementProvider` (`WM_GETOBJECT`) | Exposes a UIA root provider so screen readers see the window |
+| `UiaRaiseNotificationEvent`, `UiaClientsAreListening` | Speaks operation start/progress (25/50/75/100%)/completion announcements through NVDA, JAWS, or Narrator |
+
+### Audio — WinMM
+
+Linked against `winmm.lib`.
+
+| API | Used for |
+|---|---|
+| `waveOutOpen`/`waveOutClose`, `waveOutPrepareHeader`/`waveOutUnprepareHeader`, `waveOutWrite`, `waveOutReset` (`WAVEFORMATEX`, `WAVEHDR`) | Plays the synthesized menu-click sound and keeps the audio session warm with a looping-silence buffer to avoid startup latency |
+
+### Threading and synchronization
+
+| API | Used for |
+|---|---|
+| `<thread>` / `<mutex>` / `<atomic>` (std, backed by Win32 primitives) | Runs each workflow on a background worker thread so the UI stays responsive; cancellation flag and output-queue synchronization |
+| `WaitForSingleObject`, `GetExitCodeProcess` | Waiting on the spawned `flac.exe` process |
+| `TerminateProcess`/`GetCurrentProcess` | Last-resort force-exit on shutdown if a worker is wedged in a SCSI call |
+
+### Process and file system
+
+| API | Used for |
+|---|---|
+| `CreateProcessW` (with `CREATE_NO_WINDOW`), `CloseHandle` | Launches `flac.exe` to decode FLAC inputs to temporary WAV during the Write-Tracks workflow |
+| `GetModuleFileNameW`, `GetCurrentDirectoryW` | Determines the working/output directory |
+| `CreateDirectoryW`, `GetFileAttributesW`, `DeleteFileW` | Recursive output-directory creation and temp-file cleanup |
+| `FindFirstFileW`/`FindNextFileW`/`FindClose` (`WIN32_FIND_DATAW`) | Enumerating ripped track files in a folder |
+| `LoadLibraryW`, `GetModuleHandleW`, `GetProcAddress` | Loads `Msftedit.dll`; Wine detection via the presence of `ntdll!wine_get_version` |
+| `GetEnvironmentVariableW` | Honors the `OPTISCAN_ALLOW_VM` override |
+
+### Registry — environment detection
+
+| API | Used for |
+|---|---|
+| `RegOpenKeyExW`, `RegQueryValueExW`, `RegCloseKey` | Reads SMBIOS strings under `HARDWARE\DESCRIPTION\System\BIOS` to detect virtual machines (so quality scans aren't run where SCSI pass-through is unreliable) |
+
+### Text encoding and resources
+
+| API | Used for |
+|---|---|
+| `MultiByteToWideChar` / `WideCharToMultiByte` (`CP_UTF8`) | Converts between the UTF-8 console/stream layer and the wide-character Win32 UI throughout |
+| `FindResourceW`, `LoadResource`, `SizeofResource`, `LockResource`, `GlobalAlloc`/`GlobalLock`/`GlobalFree`/`GlobalUnlock` | Loads the embedded PNG artwork from the executable's resources into a GDI+ image |
+| `OutputDebugStringA` | Diagnostic logging of drive speed negotiation (visible in a debugger) |
+
+The target Windows platform is taken from the installed SDK (`SDKDDKVer.h`), and the project builds as Unicode for both Win32 and x64.
+
+---
+
 ## Building
 
-Requires **Visual Studio** with the **C++ Desktop Development** workload. Open `OptiScan.vcxproj` and build. No external dependencies beyond the Windows SDK (`winhttp.lib` is used for AccurateRip lookups and update checks and is included in the SDK).
+Requires **Visual Studio** with the **C++ Desktop Development** workload. Open `OptiScan.vcxproj` and build. There are no third-party dependencies — everything links against import libraries that ship with the Windows SDK, pulled in via `#pragma comment(lib, ...)` in the source. Those libraries are: `gdiplus.lib` and `comctl32.lib` (UI rendering and common controls), `winhttp.lib` and `wininet.lib` (AccurateRip lookups and the GitHub update check), `ole32.lib` (the folder picker and the IMAPI2 disc-burning fallback), `uiautomationcore.lib` (screen-reader announcements), and `winmm.lib` (the UI click sound).
+
+### Optional runtime dependency: `flac.exe`
+
+The core program has no runtime dependencies. The one exception is FLAC handling, which is delegated to the external `flac.exe` command-line encoder rather than an internal codec, so `flac.exe` must be on the system `PATH` for FLAC to work. Two workflows use it:
+
+- **Rip tracks (option 2)** — when FLAC output is selected, each track is ripped to a temporary WAV and then encoded to FLAC via `flac.exe`. If `flac.exe` isn't found, OptiScan warns and saves the tracks as WAV instead.
+- **Write tracks (option 4)** — when any source file is a FLAC, it is decoded to a temporary WAV via `flac.exe` before being burned. Here a missing `flac.exe` aborts the workflow.
+
+WAV ripping and all other operations work without it. Install it from the [FLAC project](https://xiph.org/flac/) and ensure `flac.exe` is on `PATH` if you need FLAC support.
 
 ---
 
