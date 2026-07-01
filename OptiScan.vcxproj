@@ -157,6 +157,7 @@
     <ClInclude Include="CDStructures.h" />
     <ClInclude Include="ConsoleBox.h" />
     <ClInclude Include="ConsoleColor.h" />
+    <ClInclude Include="Theme.h" />
     <ClInclude Include="ConsoleColors.h" />
     <ClInclude Include="ConsoleFormat.h" />
     <ClInclude Include="ConsoleGraph.h" />
@@ -255,6 +256,7 @@
     <ClCompile Include="GuiInput.cpp" />
     <ClCompile Include="GuiSink.cpp" />
     <ClCompile Include="OutputControl.cpp" />
+    <ClCompile Include="Theme.cpp" />
     <ClCompile Include="GuiWorker.cpp" />
     <ClCompile Include="MainMenu.cpp" />
     <ClCompile Include="MenuUI.cpp" />

@@ -13,6 +13,7 @@
 #include "GuiWorker.h"
 #include "InterruptHandler.h"
 #include "MainMenu.h"
+#include "Theme.h"
 #include "UiSound.h"
 #include <commctrl.h>
 #include <string>
@@ -175,6 +176,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     LoadLibraryW(L"Msftedit.dll");
 
     InitializeUiResources();
+
+    // Apply the persisted theme before any window paints (defaults to
+    // Catppuccin Frappé when nothing is saved).
+    InitializeTheme();
 
     // Initialize global strings
     LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
@@ -341,12 +346,38 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
    // without tabbing through the whole grid.
    BuildOperationsMenu(hWnd);
 
+   // Reflect the active theme in the View > Theme radio group.
+   if (HMENU bar = GetMenu(hWnd))
+   {
+       CheckMenuRadioItem(bar, IDM_THEME_GRAPHITE, IDM_THEME_ARCDARK,
+                          IDM_THEME_GRAPHITE + static_cast<int>(CurrentThemeId()),
+                          MF_BYCOMMAND);
+   }
+
    ShowWindow(hWnd, nCmdShow);
    UpdateWindow(hWnd);
 
    BindGuiSinksToMainWindow(hWnd);
 
    return TRUE;
+}
+
+// Apply a theme chosen from the View > Theme menu: switch + persist, update the
+// radio check, and note it in the log. Existing explicitly-coloured output
+// keeps its colours; heuristic-coloured lines and new output re-theme on the
+// repaint SetActiveTheme triggers.
+static void ApplyThemeFromMenu(HWND hWnd, ThemeId id)
+{
+    if (id == CurrentThemeId()) return;
+    ApplyThemeAndPersist(id);
+    if (HMENU bar = GetMenu(hWnd))
+    {
+        CheckMenuRadioItem(bar, IDM_THEME_GRAPHITE, IDM_THEME_ARCDARK,
+                           IDM_THEME_GRAPHITE + static_cast<int>(id), MF_BYCOMMAND);
+    }
+    WCHAR line[192];
+    wsprintfW(line, L"\r\n>>> Theme: %s\r\n", ThemeName(id));
+    AppendInfoText(hInfoEdit, line);
 }
 
 //
@@ -741,6 +772,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 break;
             case IDM_TOGGLE_ACCESSIBLE:
                 ApplyAccessibleMode(hWnd, !IsAccessibleMode(), /*focusEdit=*/true);
+                break;
+            case IDM_THEME_GRAPHITE:
+                ApplyThemeFromMenu(hWnd, ThemeId::Graphite);
+                break;
+            case IDM_THEME_CATPPUCCIN:
+                ApplyThemeFromMenu(hWnd, ThemeId::CatppuccinFrappe);
+                break;
+            case IDM_THEME_NORD:
+                ApplyThemeFromMenu(hWnd, ThemeId::Nord);
+                break;
+            case IDM_THEME_ARCDARK:
+                ApplyThemeFromMenu(hWnd, ThemeId::ArcDark);
                 break;
             case IDM_ABOUT:
                 DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);

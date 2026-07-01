@@ -2,6 +2,7 @@
 #include "GuiSink.h"
 #include "OutputControl.h"
 #include "AccessibleAnnounce.h"
+#include "Theme.h"
 
 #include <commctrl.h>
 #include <algorithm>
@@ -46,8 +47,9 @@ namespace {
     bool     g_sgrExplicit = false;
 
     // Default colour for non-explicit runs. The actual rendered colour is
-    // re-derived per line by OutputControl.
-    const COLORREF kDefault = RGB(216, 216, 211);
+    // re-derived per line by OutputControl, so this is only a fallback; kept
+    // in sync with the active theme's fg for consistency.
+    COLORREF kDefault = RGB(216, 216, 211);
 
     // ----------------------------------------------------------------------
     // Progress strip helpers (CR-overwritten line goes here, not into the log)
@@ -415,6 +417,11 @@ namespace {
 }  // namespace
 
 namespace GuiSink {
+
+    void ApplyTheme() {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        kDefault = ActiveTheme().fg;
+    }
 
     void SetOutputWindow(HWND hOutputControl) {
         std::lock_guard<std::mutex> lock(g_mutex);

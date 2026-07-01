@@ -28,6 +28,7 @@
     <ClInclude Include="CDStructures.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="ConsoleBox.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="ConsoleColor.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Theme.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="ConsoleColors.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="ConsoleFormat.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="ConsoleGraph.h"><Filter>Header Files</Filter></ClInclude>
@@ -127,6 +128,7 @@
     <ClCompile Include="GuiSink.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="GuiWorker.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="OutputControl.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Theme.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="MainMenu.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="MenuUI.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="OffsetCalibration.cpp"><Filter>Source Files</Filter></ClCompile>

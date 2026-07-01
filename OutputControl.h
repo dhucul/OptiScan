@@ -49,4 +49,9 @@ namespace OutputControl {
     // Wipe all content. Scroll resets to top and auto-follow re-engages.
     void Clear(HWND hCtrl);
 
+    // Re-seed the log colour roles from the active theme and repaint. Pass the
+    // control HWND (may be null before the control exists - statics still
+    // update, repaint is skipped).
+    void ApplyTheme(HWND hCtrl);
+
 }  // namespace OutputControl

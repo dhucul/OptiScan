@@ -58,4 +58,7 @@ namespace GuiSink {
     // tracking.
     void ClearOutput();
 
+    // Re-seed the fallback text colour from the active theme.
+    void ApplyTheme();
+
 }  // namespace GuiSink

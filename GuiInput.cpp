@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "GuiInput.h"
+#include "Theme.h"
 
 #include <windows.h>
 #include <commctrl.h>
@@ -13,18 +14,19 @@ namespace {
 
     std::atomic<HWND> g_hOwner{ nullptr };
 
-    // Graphite/slate palette aligned with the menu buttons and output panel.
-    // The prompt should read as a focused card, not a separate navy dialog.
-    const COLORREF DialogBack = RGB(8, 10, 14);
-    const COLORREF DialogPanel = RGB(28, 32, 38);
-    const COLORREF DialogEdit = RGB(20, 24, 30);
-    const COLORREF DialogText = RGB(214, 220, 224);
-    const COLORREF DialogPromptText = RGB(190, 198, 206);
-    const COLORREF DialogAccent = RGB(142, 152, 164);
-    const COLORREF DialogButtonTop = RGB(46, 50, 56);
-    const COLORREF DialogButtonBottom = RGB(24, 27, 33);
-    const COLORREF DialogButtonBorder = RGB(146, 156, 166);
-    const COLORREF DialogButtonText = RGB(214, 220, 224);
+    // Palette aligned with the menu buttons and output panel; seeded from the
+    // active theme (see GuiInput::ApplyTheme). Mutable so the runtime theme
+    // switch re-colours the prompt. Defaults are the Graphite values.
+    COLORREF DialogBack = RGB(8, 10, 14);
+    COLORREF DialogPanel = RGB(28, 32, 38);
+    COLORREF DialogEdit = RGB(20, 24, 30);
+    COLORREF DialogText = RGB(214, 220, 224);
+    COLORREF DialogPromptText = RGB(190, 198, 206);
+    COLORREF DialogAccent = RGB(142, 152, 164);
+    COLORREF DialogButtonTop = RGB(46, 50, 56);
+    COLORREF DialogButtonBottom = RGB(24, 27, 33);
+    COLORREF DialogButtonBorder = RGB(146, 156, 166);
+    COLORREF DialogButtonText = RGB(214, 220, 224);
     constexpr int kPanelCornerRadius = 18;
 
     HFONT g_hPromptFont = nullptr;
@@ -400,6 +402,26 @@ namespace GuiInput {
     void SetOwnerWindow(void* hwnd) {
         HWND owner = reinterpret_cast<HWND>(hwnd);
         g_hOwner.store(owner, std::memory_order_release);
+    }
+
+    void ApplyTheme() {
+        const Palette& p = ActiveTheme();
+        DialogBack         = p.dlgBack;
+        DialogPanel        = p.dlgPanel;
+        DialogEdit         = p.dlgEdit;
+        DialogText         = p.dlgText;
+        DialogPromptText   = p.dlgPrompt;
+        DialogAccent       = p.dlgAccent;
+        DialogButtonTop    = p.dlgBtnTop;
+        DialogButtonBottom = p.dlgBtnBottom;
+        DialogButtonBorder = p.dlgBtnBorder;
+        DialogButtonText   = p.dlgBtnText;
+        // Drop cached brushes so the next prompt rebuilds them from the new
+        // colours. The prompt window is modal and short-lived, so no live
+        // window holds these handles at switch time.
+        if (g_hBackBrush)  { DeleteObject(g_hBackBrush);  g_hBackBrush  = nullptr; }
+        if (g_hPanelBrush) { DeleteObject(g_hPanelBrush); g_hPanelBrush = nullptr; }
+        if (g_hEditBrush)  { DeleteObject(g_hEditBrush);  g_hEditBrush  = nullptr; }
     }
 
     int PromptInt(const char* title, const char* message,

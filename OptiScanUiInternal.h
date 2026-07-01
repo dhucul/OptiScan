@@ -24,17 +24,17 @@ extern Gdiplus::Image* gBackgroundImage;
 extern Gdiplus::Image* gOutputBackgroundImage;
 extern double gUiScale;
 
-extern const COLORREF AccentOrange;
-extern const COLORREF SoftOrange;
-extern const COLORREF AccentBlue;
-extern const COLORREF ConsoleGreen;
-extern const COLORREF WarmText;
-extern const COLORREF MenuTextOrange;
-extern const COLORREF MenuTextGrey;
-extern const COLORREF MenuNumberGrey;
-extern const COLORREF MutedText;
-extern const COLORREF PanelDark;
-extern const COLORREF OutputDark;
+extern COLORREF AccentOrange;
+extern COLORREF SoftOrange;
+extern COLORREF AccentBlue;
+extern COLORREF ConsoleGreen;
+extern COLORREF WarmText;
+extern COLORREF MenuTextOrange;
+extern COLORREF MenuTextGrey;
+extern COLORREF MenuNumberGrey;
+extern COLORREF MutedText;
+extern COLORREF PanelDark;
+extern COLORREF OutputDark;
 extern const BYTE PanelSurfaceAlpha;
 extern const LPCWSTR SectionLabels[SECTION_LABEL_COUNT];
 

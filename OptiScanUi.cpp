@@ -7,6 +7,7 @@
 #include "GuiInput.h"
 #include "GuiSink.h"
 #include "OutputControl.h"
+#include "Theme.h"
 #include <cmath>
 
 // Progress.h (pulled in elsewhere) does `#undef min` / `#undef max`, which
@@ -46,17 +47,20 @@ Gdiplus::Image* gOutputBackgroundImage;
 double gUiScale = 1.0;
 HMONITOR gUiMonitor = nullptr;
 
-extern const COLORREF AccentOrange = RGB(154, 164, 176);
-extern const COLORREF SoftOrange = RGB(146, 156, 166);
-extern const COLORREF AccentBlue = RGB(156, 168, 180);
-extern const COLORREF ConsoleGreen = RGB(148, 192, 166);
-extern const COLORREF WarmText = RGB(208, 215, 220);
-extern const COLORREF MenuTextOrange = RGB(198, 178, 150);
-extern const COLORREF MenuTextGrey = RGB(216, 222, 226);
-extern const COLORREF MenuNumberGrey = RGB(178, 188, 196);
-extern const COLORREF MutedText = RGB(118, 128, 138);
-extern const COLORREF PanelDark = RGB(6, 10, 14);
-extern const COLORREF OutputDark = RGB(14, 17, 22);   // Output background color chosen from the artwork.
+// Chrome colour table. Seeded from the active theme by OnThemeChangedUi();
+// mutable so the runtime theme switch can re-tint the window chrome. Defaults
+// are the Graphite values (overwritten before first paint by InitializeTheme).
+extern COLORREF AccentOrange = RGB(154, 164, 176);
+extern COLORREF SoftOrange = RGB(146, 156, 166);
+extern COLORREF AccentBlue = RGB(156, 168, 180);
+extern COLORREF ConsoleGreen = RGB(148, 192, 166);
+extern COLORREF WarmText = RGB(208, 215, 220);
+extern COLORREF MenuTextOrange = RGB(198, 178, 150);
+extern COLORREF MenuTextGrey = RGB(216, 222, 226);
+extern COLORREF MenuNumberGrey = RGB(178, 188, 196);
+extern COLORREF MutedText = RGB(118, 128, 138);
+extern COLORREF PanelDark = RGB(6, 10, 14);
+extern COLORREF OutputDark = RGB(14, 17, 22);   // Output background color.
 extern const BYTE PanelSurfaceAlpha = 92;
 
 extern const LPCWSTR CommandLabels[COMMAND_BUTTON_COUNT] =
@@ -296,6 +300,64 @@ LRESULT HandleControlColorEdit(HDC hdc)
     SetBkColor(hdc, OutputDark);
     SetBkMode(hdc, TRANSPARENT);
     return (INT_PTR)hDarkEditBrush;
+}
+
+// Single entry point for a theme change, called by SetActiveTheme(). Re-seeds
+// the chrome colour table, propagates to the other modules' colour tables,
+// rebuilds cached brushes that bake in the output background, and repaints.
+// Safe to call before the window / controls exist (all HWND/HBRUSH use is
+// guarded), so InitializeTheme() at startup lands the colours before first paint.
+void OnThemeChangedUi()
+{
+    const Palette& p = ActiveTheme();
+    AccentOrange   = p.chromeAccent;
+    SoftOrange     = p.chromeText;
+    AccentBlue     = p.chromeAccent;
+    ConsoleGreen   = p.ok;
+    WarmText       = p.fg;
+    MenuTextOrange = p.accentWarm;
+    MenuTextGrey   = p.btnLabel;
+    MenuNumberGrey = p.btnNumber;
+    MutedText      = p.dim;
+    PanelDark      = p.panelSurface;
+    OutputDark     = p.outputBg;
+
+    // Propagate to the log, prompt-dialog and stream-sink colour tables.
+    OutputControl::ApplyTheme(hInfoEdit);
+    GuiInput::ApplyTheme();
+    GuiSink::ApplyTheme();
+
+    // Rebuild cached brushes that baked in the old OutputDark.
+    if (hOutputSolidBrush)
+    {
+        DeleteObject(hOutputSolidBrush);
+        hOutputSolidBrush = CreateSolidBrush(OutputDark);
+    }
+    if (hDarkEditBrush)
+    {
+        DeleteObject(hDarkEditBrush);
+        hDarkEditBrush = nullptr;
+        if (hOutputBrushBitmap)
+        {
+            DeleteObject(hOutputBrushBitmap);
+            hOutputBrushBitmap = nullptr;
+        }
+        const int w = gOutputBrushWidth  > 0 ? gOutputBrushWidth  : ScalePx(960);
+        const int h = gOutputBrushHeight > 0 ? gOutputBrushHeight : ScalePx(420);
+        hDarkEditBrush = CreateOutputEditBrush(w, h);
+    }
+
+    // Repaint the whole window + owner-drawn children.
+    if (g_hMainWnd)
+    {
+        InvalidateRect(g_hMainWnd, nullptr, TRUE);
+        for (int i = 0; i < COMMAND_BUTTON_COUNT; ++i)
+        {
+            if (hInfoButtons[i]) InvalidateRect(hInfoButtons[i], nullptr, TRUE);
+        }
+        if (hProgressText)   InvalidateRect(hProgressText, nullptr, TRUE);
+        if (hAccessibleEdit) InvalidateRect(hAccessibleEdit, nullptr, TRUE);
+    }
 }
 
 void AppendInfoText(HWND hCtrl, LPCWSTR text)

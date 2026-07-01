@@ -2,7 +2,9 @@
 
 #include "framework.h"
 #include "OptiScanUiInternal.h"
+#include "Theme.h"
 
+#include <cmath>
 #include <cstring>
 #include <cwchar>
 
@@ -17,6 +19,159 @@
 static void AddRoundedRectangle(Gdiplus::GraphicsPath& path, int x, int y, int width, int height, int radius);
 static void SplitCommandLabel(LPCWSTR source, WCHAR* number, int numberLength, LPCWSTR* label);
 static void DrawTechAccents(Gdiplus::Graphics& graphics, const RECT& rc);
+
+// Build a GDI+ ARGB colour from a theme COLORREF (0x00BBGGRR) plus an alpha.
+// The chrome is drawn semi-transparent over the artwork, so alpha stays at the
+// paint site while the RGB comes from the active palette.
+static inline Gdiplus::Color ThemeArgb(BYTE a, COLORREF c)
+{
+    return Gdiplus::Color(a, GetRValue(c), GetGValue(c), GetBValue(c));
+}
+
+// Nudge a colour lighter (for pressed-button gradient stops).
+static inline COLORREF Lighten(COLORREF c, int amt)
+{
+    const int r = min(255, GetRValue(c) + amt);
+    const int g = min(255, GetGValue(c) + amt);
+    const int b = min(255, GetBValue(c) + amt);
+    return RGB(r, g, b);
+}
+
+// Soft radial glow via a path gradient (accent colour fading to transparent).
+static void PaintGlow(Gdiplus::Graphics& g, float cx, float cy, float r, BYTE alpha, COLORREF col)
+{
+    if (r < 1.0f) return;
+    Gdiplus::GraphicsPath path;
+    path.AddEllipse(cx - r, cy - r, r * 2, r * 2);
+    Gdiplus::PathGradientBrush pgb(&path);
+    pgb.SetCenterColor(ThemeArgb(alpha, col));
+    Gdiplus::Color surround[] = { ThemeArgb(0, col) };
+    int cnt = 1;
+    pgb.SetSurroundColors(surround, &cnt);
+    g.FillEllipse(&pgb, cx - r, cy - r, r * 2, r * 2);
+}
+
+// Paint the whole themed backdrop procedurally from the active palette into a
+// width x height area: diagonal gradient base, radial accent glows, turntable
+// concentric rings + glowing hub, EQ bars with warm accent caps, flowing wave
+// lines, faint tech dots, and an edge vignette. Replaces the fixed navy/gold
+// artwork so every theme looks native. Rendered once into a cached bitmap
+// (EnsureBackdropBitmap) since it's blitted many times per paint.
+static void PaintProceduralBackdrop(Gdiplus::Graphics& g, int width, int height)
+{
+    const Palette& p = ActiveTheme();
+    const float W = (float)width, H = (float)height;
+    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+
+    // 1. diagonal base gradient (slight lift -> base)
+    Gdiplus::Rect full(0, 0, width, height);
+    Gdiplus::LinearGradientBrush baseGrad(full,
+        ThemeArgb(255, Lighten(p.windowBase, 10)), ThemeArgb(255, p.windowBase), 45.0f);
+    g.FillRectangle(&baseGrad, full);
+
+    // 2. soft accent glows, top-left and bottom-right
+    PaintGlow(g, W * 0.06f, H * 0.30f, H * 0.75f, 26, p.chromeAccent);
+    PaintGlow(g, W * 0.93f, H * 0.92f, H * 0.90f, 20, p.chromeAccent);
+
+    // 3. turntable concentric rings + hub, lower-left
+    const float cx = W * 0.10f, cy = H * 0.52f;
+    const float ringStep = max(20.0f, H * 0.045f);
+    for (int i = 0; i < 11; ++i)
+    {
+        const float r = ringStep * 1.6f + i * ringStep;
+        int a = 78 - i * 6; if (a < 12) a = 12;
+        Gdiplus::Pen pen(ThemeArgb((BYTE)a, p.chromeAccent), max(1.0f, ScaleReal(1)));
+        g.DrawEllipse(&pen, cx - r, cy - r, r * 2, r * 2);
+    }
+    PaintGlow(g, cx, cy, max(10.0f, H * 0.022f), 200, Lighten(p.chromeAccent, 40));
+
+    // 4. EQ bars, right side (columns of stacked cells, warm accent caps)
+    const int   cols   = 16;
+    const float colW   = max(14.0f, W * 0.016f);
+    const float startX = W * 0.60f;
+    const float cellW  = colW * 0.55f;
+    const float cellH  = max(6.0f, H * 0.013f);
+    const float cellGap = cellH * 1.6f;
+    const float baseY  = H * 0.72f;
+    for (int c = 0; c < cols; ++c)
+    {
+        const float x = startX + c * colW;
+        const int peak = (int)(3 + std::fabs(std::sin(c * 0.7)) * 11 + (c % 4) * 2);
+        for (int k = 0; k < peak; ++k)
+        {
+            const float y = baseY - k * cellGap;
+            int cellA = 150 - k * 9; if (cellA < 20) cellA = 20;
+            const COLORREF col = (k >= peak - 2) ? p.accentWarm : p.graphBar;
+            Gdiplus::SolidBrush b(ThemeArgb((BYTE)cellA, col));
+            g.FillRectangle(&b, x, y, cellW, cellH);
+        }
+    }
+
+    // 5. flowing wave lines across the bottom
+    for (int w = 0; w < 5; ++w)
+    {
+        const float amp = (H * 0.03f) + w * (H * 0.009f);
+        const float yb  = H * 0.80f + w * (H * 0.013f);
+        const float ph  = w * 0.6f;
+        int a = 70 - w * 8;
+        Gdiplus::Pen pen(ThemeArgb((BYTE)a, p.chromeAccent), max(1.0f, ScaleReal(1)));
+        const float step = max(8.0f, W * 0.011f);
+        float px = 0.0f, py = yb + (float)std::sin(ph) * amp;
+        for (float x = step; x <= W; x += step)
+        {
+            const float y = yb + (float)std::sin(x * 0.006f + ph) * amp;
+            g.DrawLine(&pen, px, py, x, y);
+            px = x; py = y;
+        }
+    }
+    PaintGlow(g, W * 0.93f, H * 0.82f, max(24.0f, H * 0.05f), 170, Lighten(p.accentWarm, 20));
+
+    // 6. faint tech dots
+    for (int i = 0; i < 60; ++i)
+    {
+        const float x = 120.0f + (float)((i * 137) % max(1, width - 240));
+        const float y = 80.0f + (float)((i * 89) % max(1, height - 160));
+        const float sz = ScaleReal(2 + (i % 3));
+        Gdiplus::SolidBrush b(ThemeArgb(60, p.chromeAccent));
+        g.FillEllipse(&b, x, y, sz, sz);
+    }
+
+    // 7. edge vignette
+    Gdiplus::GraphicsPath vp;
+    vp.AddEllipse(-W * 0.2f, -H * 0.2f, W * 1.4f, H * 1.4f);
+    Gdiplus::PathGradientBrush vg(&vp);
+    vg.SetCenterColor(ThemeArgb(0, p.windowBase));
+    Gdiplus::Color vSurround[] = { Gdiplus::Color(120, 0, 0, 0) };
+    int vcnt = 1;
+    vg.SetSurroundColors(vSurround, &vcnt);
+    g.FillRectangle(&vg, full);
+}
+
+// Cached backdrop bitmap. Regenerated when the size or theme changes; blitted
+// (with per-button offset) by DrawBackgroundSurface so the procedural art is
+// painted once per frame instead of once per owner-drawn button.
+static Gdiplus::Bitmap* gBackdropBitmap = nullptr;
+static int gBackdropW = 0;
+static int gBackdropH = 0;
+static int gBackdropThemeId = -1;
+
+static void EnsureBackdropBitmap(int width, int height)
+{
+    width = max(1, width);
+    height = max(1, height);
+    const int tid = (int)CurrentThemeId();
+    if (gBackdropBitmap && gBackdropW == width && gBackdropH == height && gBackdropThemeId == tid)
+    {
+        return;
+    }
+    delete gBackdropBitmap;
+    gBackdropBitmap = new Gdiplus::Bitmap(width, height, PixelFormat32bppPARGB);
+    Gdiplus::Graphics g(gBackdropBitmap);
+    PaintProceduralBackdrop(g, width, height);
+    gBackdropW = width;
+    gBackdropH = height;
+    gBackdropThemeId = tid;
+}
 
 static Gdiplus::Image* LoadPngFromResource(WORD resourceId)
 {
@@ -118,62 +273,17 @@ void DestroyUiResources()
         hOutputBrushBitmap = nullptr;
     }
 
+    delete gBackdropBitmap;
+    gBackdropBitmap = nullptr;
+
     Gdiplus::GdiplusShutdown(gGdiPlusToken);
 }
 
-HBRUSH CreateOutputEditBrush(int width, int height)
+HBRUSH CreateOutputEditBrush(int /*width*/, int /*height*/)
 {
-    if (!gOutputBackgroundImage)
-    {
-        return CreateSolidBrush(OutputDark);
-    }
-
-    const int tileWidth = max(1, width);
-    const int tileHeight = max(1, height);
-    Gdiplus::Bitmap tile(tileWidth, tileHeight, PixelFormat32bppPARGB);
-    Gdiplus::Graphics tileGraphics(&tile);
-    tileGraphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-    tileGraphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-
-    Gdiplus::SolidBrush baseBrush(Gdiplus::Color(255, GetRValue(OutputDark), GetGValue(OutputDark), GetBValue(OutputDark)));
-    tileGraphics.FillRectangle(&baseBrush, 0, 0, tileWidth, tileHeight);
-
-    const int imageWidth = (int)gOutputBackgroundImage->GetWidth();
-    const int imageHeight = (int)gOutputBackgroundImage->GetHeight();
-    Gdiplus::Rect destination(0, 0, tileWidth, tileHeight);
-    tileGraphics.DrawImage(
-        gOutputBackgroundImage,
-        destination,
-        0,
-        0,
-        imageWidth,
-        imageHeight,
-        Gdiplus::UnitPixel);
-
-    Gdiplus::SolidBrush toneBrush(Gdiplus::Color(BackgroundAlpha(84), GetRValue(OutputDark), GetGValue(OutputDark), GetBValue(OutputDark)));
-    tileGraphics.FillRectangle(&toneBrush, 0, 0, tileWidth, tileHeight);
-
-    Gdiplus::Pen faintLine(Gdiplus::Color(BackgroundAlpha(22), 150, 160, 166), max(1.0f, ScaleReal(1)));
-    for (int y = ScalePx(28); y < tileHeight; y += ScalePx(28))
-    {
-        tileGraphics.DrawLine(&faintLine, 0, y, tileWidth, y);
-    }
-
-    HBITMAP bitmap = nullptr;
-    if (tile.GetHBITMAP(Gdiplus::Color(255, GetRValue(OutputDark), GetGValue(OutputDark), GetBValue(OutputDark)), &bitmap) != Gdiplus::Ok || !bitmap)
-    {
-        return CreateSolidBrush(OutputDark);
-    }
-
-    HBRUSH brush = CreatePatternBrush(bitmap);
-    if (!brush)
-    {
-        DeleteObject(bitmap);
-        return CreateSolidBrush(OutputDark);
-    }
-
-    hOutputBrushBitmap = bitmap;
-    return brush;
+    // The accessible mirror EDIT sits on a plain themed dark surface (its
+    // content is text; the procedural artwork lives on the main window).
+    return CreateSolidBrush(OutputDark);
 }
 
 void UpdateOutputEditBrush(int width, int height)
@@ -213,41 +323,24 @@ void UpdateOutputEditBrush(int width, int height)
 // OutputControl that paints itself, so all of that custom paint plumbing is
 // gone.
 
-static void DrawBackgroundSurface(Gdiplus::Graphics& graphics, const RECT& viewport, int offsetX, int offsetY, bool showFailureText)
+static void DrawBackgroundSurface(Gdiplus::Graphics& graphics, const RECT& viewport, int offsetX, int offsetY, bool /*showFailureText*/)
 {
     const int width = max(1, viewport.right - viewport.left);
     const int height = max(1, viewport.bottom - viewport.top);
 
-    Gdiplus::SolidBrush baseBrush(Gdiplus::Color(255, 3, 4, 5));
-    graphics.FillRectangle(&baseBrush, -offsetX, -offsetY, width, height);
-
-    if (gBackgroundImage)
+    EnsureBackdropBitmap(width, height);
+    if (gBackdropBitmap)
     {
-        const int imageWidth = (int)gBackgroundImage->GetWidth();
-        const int imageHeight = (int)gBackgroundImage->GetHeight();
-        const int drawHeight = (imageWidth > 0)
-            ? max(1, (int)((long long)width * imageHeight / imageWidth))
-            : height;
-        Gdiplus::Rect destination(-offsetX, -offsetY, width, drawHeight);
-        graphics.DrawImage(
-            gBackgroundImage,
-            destination,
-            0,
-            0,
-            imageWidth,
-            imageHeight,
-            Gdiplus::UnitPixel);
+        // Blit the full backdrop at the (negative) offset so owner-drawn
+        // buttons get the slice that lines up under them.
+        graphics.DrawImage(gBackdropBitmap, -offsetX, -offsetY,
+                           0, 0, width, height, Gdiplus::UnitPixel);
     }
-    else if (showFailureText)
+    else
     {
-        Gdiplus::FontFamily statusFamily(L"Segoe UI");
-        Gdiplus::Font statusFont(&statusFamily, ScaleReal(32), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
-        Gdiplus::SolidBrush statusBrush(Gdiplus::Color(255, 154, 164, 176));
-        graphics.DrawString(L"Background image did not load", -1, &statusFont, Gdiplus::PointF(ScaleReal(70), ScaleReal(82)), &statusBrush);
+        Gdiplus::SolidBrush baseBrush(ThemeArgb(255, ActiveTheme().windowBase));
+        graphics.FillRectangle(&baseBrush, -offsetX, -offsetY, width, height);
     }
-
-    Gdiplus::SolidBrush veil(Gdiplus::Color(BackgroundAlpha(12), 0, 0, 0));
-    graphics.FillRectangle(&veil, -offsetX, -offsetY, width, height);
 }
 
 void DrawMainBackground(HWND hWnd, HDC hdc)
@@ -262,14 +355,14 @@ void DrawMainBackground(HWND hWnd, HDC hdc)
 
     DrawBackgroundSurface(graphics, rc, 0, 0, true);
 
-    Gdiplus::Pen borderPen(Gdiplus::Color(150, 126, 178, 212), max(1.0f, ScaleReal(1)));
+    Gdiplus::Pen borderPen(ThemeArgb(150, ActiveTheme().chromeAccent), max(1.0f, ScaleReal(1)));
     Gdiplus::Pen softPen(Gdiplus::Color(70, 255, 255, 255), max(1.0f, ScaleReal(1)));
-    Gdiplus::SolidBrush panelBrush(Gdiplus::Color(BackgroundAlpha(PanelSurfaceAlpha), 6, 10, 14));
-    Gdiplus::SolidBrush panelShade(Gdiplus::Color(110, 126, 178, 212));
-    Gdiplus::SolidBrush titleOrange(Gdiplus::Color(255, 198, 178, 150));
-    Gdiplus::SolidBrush titleBlue(Gdiplus::Color(255, 156, 168, 180));
-    Gdiplus::SolidBrush titleWhite(Gdiplus::Color(255, 216, 222, 226));
-    Gdiplus::SolidBrush muted(Gdiplus::Color(255, 136, 148, 160));
+    Gdiplus::SolidBrush panelBrush(ThemeArgb(BackgroundAlpha(PanelSurfaceAlpha), ActiveTheme().panelSurface));
+    Gdiplus::SolidBrush panelShade(ThemeArgb(110, ActiveTheme().chromeAccent));
+    Gdiplus::SolidBrush titleOrange(ThemeArgb(255, ActiveTheme().accentWarm));
+    Gdiplus::SolidBrush titleBlue(ThemeArgb(255, ActiveTheme().chromeAccent));
+    Gdiplus::SolidBrush titleWhite(ThemeArgb(255, ActiveTheme().bright));
+    Gdiplus::SolidBrush muted(ThemeArgb(255, ActiveTheme().dim));
 
     const int margin = ScalePx(18);
     graphics.DrawRectangle(&softPen, margin, margin, max(0, rc.right - (margin * 2)), max(0, rc.bottom - (margin * 2)));
@@ -298,29 +391,8 @@ void DrawMainBackground(HWND hWnd, HDC hdc)
 
     Gdiplus::GraphicsPath outputPanel;
     AddRoundedRectangle(outputPanel, layoutMargin, outputTop - ScalePx(42), panelWidth, outputHeight + ScalePx(42), ScalePx(18));
-    if (gOutputBackgroundImage)
-    {
-        graphics.SetClip(&outputPanel);
-
-        const int imageWidth = (int)gOutputBackgroundImage->GetWidth();
-        const int imageHeight = (int)gOutputBackgroundImage->GetHeight();
-        Gdiplus::Rect outputPanelRect(layoutMargin, outputTop - ScalePx(42), panelWidth, outputHeight + ScalePx(42));
-        graphics.DrawImage(
-            gOutputBackgroundImage,
-            outputPanelRect,
-            0,
-            0,
-            imageWidth,
-            imageHeight,
-            Gdiplus::UnitPixel);
-
-        graphics.FillPath(&panelBrush, &outputPanel);
-        graphics.ResetClip();
-    }
-    else
-    {
-        graphics.FillPath(&panelBrush, &outputPanel);
-    }
+    // Translucent panel fill over the procedural backdrop painted above.
+    graphics.FillPath(&panelBrush, &outputPanel);
     graphics.DrawPath(&borderPen, &outputPanel);
 
     const int consoleInset = ScalePx(22);
@@ -332,49 +404,27 @@ void DrawMainBackground(HWND hWnd, HDC hdc)
 
     Gdiplus::GraphicsPath consoleFrame;
     AddRoundedRectangle(consoleFrame, consoleLeft - ScalePx(2), consoleTop - ScalePx(2), consoleWidth + ScalePx(4), consoleHeight + ScalePx(4), ScalePx(12));
-    Gdiplus::SolidBrush consoleFrameBrush(Gdiplus::Color(BackgroundAlpha(64), 4, 5, 6));
-    Gdiplus::Pen consoleBorder(Gdiplus::Color(88, 126, 178, 212), 1.0f);
+    Gdiplus::SolidBrush consoleFrameBrush(ThemeArgb(BackgroundAlpha(64), ActiveTheme().consoleBase));
+    Gdiplus::Pen consoleBorder(ThemeArgb(88, ActiveTheme().chromeAccent), 1.0f);
 
-    if (gOutputBackgroundImage)
-    {
-        graphics.SetClip(&consoleFrame);
-
-        const int imageWidth = (int)gOutputBackgroundImage->GetWidth();
-        const int imageHeight = (int)gOutputBackgroundImage->GetHeight();
-
-        Gdiplus::Rect outputTextureRect(consoleLeft - ScalePx(2), consoleTop - ScalePx(2), consoleWidth + ScalePx(4), consoleHeight + ScalePx(4));
-        graphics.DrawImage(
-            gOutputBackgroundImage,
-            outputTextureRect,
-            0,
-            0,
-            imageWidth,
-            imageHeight,
-            Gdiplus::UnitPixel);
-
-        Gdiplus::SolidBrush outputTone(Gdiplus::Color(BackgroundAlpha(112), 4, 5, 6));
-        graphics.FillPath(&outputTone, &consoleFrame);
-        graphics.ResetClip();
-    }
-    else
-    {
-        graphics.FillPath(&consoleFrameBrush, &consoleFrame);
-    }
+    // Darken the console frame slightly over the procedural backdrop so the
+    // log text panel reads as a recessed surface.
+    graphics.FillPath(&consoleFrameBrush, &consoleFrame);
 
     graphics.DrawPath(&consoleBorder, &consoleFrame);
 
     Gdiplus::Rect consoleHeaderRect(consoleLeft, consoleTop, consoleWidth, consoleHeaderHeight);
     Gdiplus::LinearGradientBrush consoleHeaderBrush(
         consoleHeaderRect,
-        Gdiplus::Color(BackgroundAlpha(50), 12, 16, 18),
-        Gdiplus::Color(BackgroundAlpha(34), 5, 7, 8),
+        ThemeArgb(BackgroundAlpha(50), ActiveTheme().outputBg),
+        ThemeArgb(BackgroundAlpha(34), ActiveTheme().consoleBase),
         Gdiplus::LinearGradientModeVertical);
     graphics.FillRectangle(&consoleHeaderBrush, consoleHeaderRect);
 
-    Gdiplus::Pen consoleRule(Gdiplus::Color(68, 126, 178, 212), 1.0f);
+    Gdiplus::Pen consoleRule(ThemeArgb(68, ActiveTheme().chromeAccent), 1.0f);
     graphics.DrawLine(&consoleRule, consoleLeft + ScalePx(12), consoleTop + consoleHeaderHeight, consoleLeft + consoleWidth - ScalePx(12), consoleTop + consoleHeaderHeight);
 
-    Gdiplus::SolidBrush consoleDot(Gdiplus::Color(135, 126, 178, 212));
+    Gdiplus::SolidBrush consoleDot(ThemeArgb(135, ActiveTheme().chromeAccent));
     for (int i = 0; i < 3; ++i)
     {
         graphics.FillEllipse(&consoleDot, consoleLeft + ScalePx(14) + (i * ScalePx(16)), consoleTop + ScalePx(15), ScalePx(7), ScalePx(7));
@@ -382,10 +432,10 @@ void DrawMainBackground(HWND hWnd, HDC hdc)
 
     Gdiplus::FontFamily consoleFamily(L"Segoe UI");
     Gdiplus::Font consoleMini(&consoleFamily, ScaleReal(15), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
-    Gdiplus::SolidBrush consoleText(Gdiplus::Color(185, 178, 188, 196));
+    Gdiplus::SolidBrush consoleText(ThemeArgb(185, ActiveTheme().chromeText));
     graphics.DrawString(L"READY", -1, &consoleMini, Gdiplus::PointF((Gdiplus::REAL)(consoleLeft + ScalePx(72)), (Gdiplus::REAL)(consoleTop + ScalePx(11))), &consoleText);
 
-    Gdiplus::SolidBrush consoleBar(Gdiplus::Color(92, 126, 178, 212));
+    Gdiplus::SolidBrush consoleBar(ThemeArgb(92, ActiveTheme().chromeAccent));
     for (int i = 0; i < 18; ++i)
     {
         const int barHeight = ScalePx(7 + ((i % 4) * 3));
@@ -434,9 +484,8 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
     const bool clearCommand = commandIndex == kClearButtonIndex;
     const bool exitCommand = commandIndex == kExitButtonIndex;
 
-    // Dimmed-grey text for disabled buttons. Picked so it's visibly dim
-    // against the dark button background but still legible.
-    const COLORREF DisabledText = RGB(96, 100, 104);
+    // Dimmed text for disabled buttons; from the active theme.
+    const COLORREF DisabledText = ActiveTheme().disabledText;
 
     Gdiplus::Graphics graphics(hdc);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
@@ -457,23 +506,23 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
     Gdiplus::GraphicsPath buttonPath;
     AddRoundedRectangle(buttonPath, rc.left, rc.top, rc.right - rc.left - ScalePx(1), rc.bottom - rc.top - ScalePx(1), ScalePx(7));
 
-    Gdiplus::Color topColor = pressed ? Gdiplus::Color(240, 52, 58, 68) : Gdiplus::Color(220, 38, 44, 54);
-    Gdiplus::Color bottomColor = pressed ? Gdiplus::Color(240, 22, 27, 36) : Gdiplus::Color(220, 16, 20, 28);
+    Gdiplus::Color topColor = pressed ? ThemeArgb(240, Lighten(ActiveTheme().btnTop, 14)) : ThemeArgb(220, ActiveTheme().btnTop);
+    Gdiplus::Color bottomColor = pressed ? ThemeArgb(240, Lighten(ActiveTheme().btnBottom, 8)) : ThemeArgb(220, ActiveTheme().btnBottom);
     Gdiplus::Rect buttonRect(rc.left, rc.top, max(1, rc.right - rc.left), max(1, rc.bottom - rc.top));
     Gdiplus::LinearGradientBrush buttonBrush(buttonRect, topColor, bottomColor, Gdiplus::LinearGradientModeVertical);
     graphics.FillPath(&buttonBrush, &buttonPath);
 
     Gdiplus::Pen borderPen(
-        focused ? Gdiplus::Color(235, 218, 224, 230) : Gdiplus::Color(130, 158, 168, 178),
+        focused ? ThemeArgb(235, ActiveTheme().btnBorderFocus) : ThemeArgb(130, ActiveTheme().btnBorder),
         focused ? max(1.0f, ScaleReal(2)) : max(1.0f, ScaleReal(1)));
     graphics.DrawPath(&borderPen, &buttonPath);
 
     Gdiplus::GraphicsPath accentPath;
     AddRoundedRectangle(accentPath, rc.left + ScalePx(1), rc.top + ScalePx(1), ScalePx(5), rc.bottom - rc.top - ScalePx(2), ScalePx(4));
-    Gdiplus::SolidBrush accentBrush(exitCommand ? Gdiplus::Color(230, 190, 118, 118) : Gdiplus::Color(120, 166, 176, 188));
+    Gdiplus::SolidBrush accentBrush(exitCommand ? ThemeArgb(230, ActiveTheme().error) : ThemeArgb(120, ActiveTheme().btnStripe));
     graphics.FillPath(&accentBrush, &accentPath);
 
-    Gdiplus::Pen glowPen(Gdiplus::Color(clearCommand ? 120 : 82, 166, 176, 188), max(1.0f, ScaleReal(1)));
+    Gdiplus::Pen glowPen(ThemeArgb(clearCommand ? 120 : 82, ActiveTheme().btnStripe), max(1.0f, ScaleReal(1)));
     graphics.DrawLine(&glowPen, (INT)(rc.left + ScalePx(18)), (INT)(rc.bottom - ScalePx(2)), (INT)(rc.right - ScalePx(12)), (INT)(rc.bottom - ScalePx(2)));
 
     WCHAR number[8];
@@ -483,14 +532,14 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
     SetBkMode(hdc, TRANSPARENT);
     SelectObject(hdc, hHeaderFont);
     SetTextColor(hdc, disabled ? DisabledText
-                                : (exitCommand ? RGB(202, 132, 130) : MenuNumberGrey));
+                                : (exitCommand ? ActiveTheme().error : MenuNumberGrey));
 
     RECT numberRect = { rc.left + ScalePx(18), rc.top, rc.left + ScalePx(72), rc.bottom };
     DrawTextW(hdc, number, -1, &numberRect, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
 
     SelectObject(hdc, hCommandFont);
     SetTextColor(hdc, disabled ? DisabledText
-                                : (exitCommand ? RGB(214, 142, 138) : MenuTextGrey));
+                                : (exitCommand ? Lighten(ActiveTheme().error, 12) : MenuTextGrey));
 
     RECT textRect = { rc.left + ScalePx(78), rc.top, rc.right - ScalePx(14), rc.bottom };
     DrawTextW(hdc, label, -1, &textRect, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
@@ -498,12 +547,12 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
 
 static void DrawTechAccents(Gdiplus::Graphics& graphics, const RECT& rc)
 {
-    Gdiplus::Pen faintLine(Gdiplus::Color(70, 220, 232, 238), max(1.0f, ScaleReal(1)));
-    Gdiplus::Pen orangeLine(Gdiplus::Color(150, 126, 178, 212), max(1.0f, ScaleReal(2)));
-    Gdiplus::Pen dimOrange(Gdiplus::Color(88, 126, 178, 212), max(1.0f, ScaleReal(1)));
-    Gdiplus::SolidBrush orangeDot(Gdiplus::Color(180, 126, 178, 212));
-    Gdiplus::SolidBrush darkGlow(Gdiplus::Color(86, 126, 178, 212));
-    Gdiplus::SolidBrush softPanelGlow(Gdiplus::Color(22, 126, 178, 212));
+    Gdiplus::Pen faintLine(ThemeArgb(70, ActiveTheme().cyan), max(1.0f, ScaleReal(1)));
+    Gdiplus::Pen orangeLine(ThemeArgb(150, ActiveTheme().chromeAccent), max(1.0f, ScaleReal(2)));
+    Gdiplus::Pen dimOrange(ThemeArgb(88, ActiveTheme().chromeAccent), max(1.0f, ScaleReal(1)));
+    Gdiplus::SolidBrush orangeDot(ThemeArgb(180, ActiveTheme().chromeAccent));
+    Gdiplus::SolidBrush darkGlow(ThemeArgb(86, ActiveTheme().chromeAccent));
+    Gdiplus::SolidBrush softPanelGlow(ThemeArgb(22, ActiveTheme().chromeAccent));
 
     const int width = rc.right - rc.left;
     const int height = rc.bottom - rc.top;

@@ -50,4 +50,8 @@ namespace GuiInput {
     // `initialDir` (if non-empty and existing) is shown as the starting folder.
     std::wstring PromptForFolder(const wchar_t* title,
                                  const std::wstring& initialDir = std::wstring());
+
+    // Re-seed the prompt-dialog colours from the active theme and drop cached
+    // brushes so the next prompt is drawn in the new theme.
+    void ApplyTheme();
 }

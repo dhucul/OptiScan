@@ -10,6 +10,12 @@
 #define IDM_ABOUT				104
 #define IDM_EXIT				105
 #define IDM_TOGGLE_ACCESSIBLE	106
+// Theme selector menu items. Kept contiguous and in ThemeId order so
+// (IDM_THEME_GRAPHITE + (int)ThemeId) maps id -> command.
+#define IDM_THEME_GRAPHITE		110
+#define IDM_THEME_CATPPUCCIN	111
+#define IDM_THEME_NORD			112
+#define IDM_THEME_ARCDARK		113
 #define IDI_OPTISCAN   		107
 #define IDI_SMALL				108
 #define IDC_OPTISCAN   		109

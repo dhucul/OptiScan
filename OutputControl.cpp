@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "OutputControl.h"
+#include "Theme.h"
 
 #include <windows.h>
 #include <windowsx.h>
@@ -11,21 +12,22 @@
 namespace {
 
     // ------------------------------------------------------------------------
-    // Palette. Mirrors the GuiSink Log* / OptiScan Theme constants so the
-    // heuristic colours match the rest of the app.
+    // Palette. Seeded from the active theme's Palette (see ApplyTheme below).
+    // Mutable so the runtime theme switch can re-colour the log. Defaults are
+    // the Graphite values; OutputControl::ApplyTheme() overwrites them.
     // ------------------------------------------------------------------------
-    const COLORREF LogDefault    = RGB(216, 216, 211);
-    const COLORREF LogDim        = RGB(118, 128, 138);
-    const COLORREF LogHeading    = RGB(198, 198, 192);
-    const COLORREF LogCommand    = RGB(198, 178, 150);
-    const COLORREF LogOk         = RGB(148, 192, 166);
-    const COLORREF LogWarn       = RGB(210, 174, 112);
-    const COLORREF LogError      = RGB(222, 126, 122);
-    const COLORREF LogInfo       = RGB(204, 204, 198);
-    const COLORREF LogGraphFrame = RGB(150, 160, 170);
-    const COLORREF LogGraphBar   = RGB(174, 182, 190);
-    const COLORREF PanelDark     = RGB(14, 17, 22);
-    const COLORREF SelectionBg   = RGB(58, 66, 78);
+    COLORREF LogDefault    = RGB(216, 216, 211);
+    COLORREF LogDim        = RGB(118, 128, 138);
+    COLORREF LogHeading    = RGB(198, 198, 192);
+    COLORREF LogCommand    = RGB(198, 178, 150);
+    COLORREF LogOk         = RGB(148, 192, 166);
+    COLORREF LogWarn       = RGB(210, 174, 112);
+    COLORREF LogError      = RGB(222, 126, 122);
+    COLORREF LogInfo       = RGB(204, 204, 198);
+    COLORREF LogGraphFrame = RGB(150, 160, 170);
+    COLORREF LogGraphBar   = RGB(174, 182, 190);
+    COLORREF PanelDark     = RGB(14, 17, 22);
+    COLORREF SelectionBg   = RGB(58, 66, 78);
 
     enum : UINT_PTR {
         IDM_COPY       = 1001,
@@ -383,25 +385,16 @@ namespace {
         if (!s.bgDc) return;
         Gdiplus::Graphics graphics(s.bgDc);
         graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-        graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
 
+        // Solid themed dark surface for the log text (the procedural artwork
+        // lives on the main window; the log panel stays clean for legibility).
+        // A faint grid keeps a hint of texture.
         Gdiplus::SolidBrush baseBrush(Gdiplus::Color(255,
             GetRValue(PanelDark), GetGValue(PanelDark), GetBValue(PanelDark)));
         graphics.FillRectangle(&baseBrush, 0, 0, width, height);
 
-        if (s.backgroundImage) {
-            const int iw = (int)s.backgroundImage->GetWidth();
-            const int ih = (int)s.backgroundImage->GetHeight();
-            Gdiplus::Rect dest(0, 0, width, height);
-            graphics.DrawImage(s.backgroundImage, dest, 0, 0, iw, ih,
-                               Gdiplus::UnitPixel);
-        }
-
-        Gdiplus::SolidBrush veil(Gdiplus::Color(s.backgroundToneAlpha,
-            GetRValue(PanelDark), GetGValue(PanelDark), GetBValue(PanelDark)));
-        graphics.FillRectangle(&veil, 0, 0, width, height);
-
-        Gdiplus::Pen faintLine(Gdiplus::Color(s.backgroundGridAlpha, 150, 160, 166), 1.0f);
+        Gdiplus::Pen faintLine(Gdiplus::Color(s.backgroundGridAlpha,
+            GetRValue(LogGraphFrame), GetGValue(LogGraphFrame), GetBValue(LogGraphFrame)), 1.0f);
         for (int y = 28; y < height; y += 28) {
             graphics.DrawLine(&faintLine, 0, y, width, y);
         }
@@ -1142,6 +1135,31 @@ namespace OutputControl {
         s->selecting = false;
         UpdateScrollbar(*s);
         Repaint(*s);
+    }
+
+    void ApplyTheme(HWND hCtrl) {
+        // Re-seed the per-line colour roles from the active theme. Segments
+        // without an explicit SGR colour re-derive at paint time via the
+        // heuristic, so a repaint re-colours the bulk of existing output.
+        const Palette& p = ActiveTheme();
+        LogDefault    = p.fg;
+        LogDim        = p.dim;
+        LogHeading    = p.bright;
+        LogCommand    = p.accentWarm;
+        LogOk         = p.ok;
+        LogWarn       = p.warn;
+        LogError      = p.error;
+        LogInfo       = p.bright;
+        LogGraphFrame = p.graphFrame;
+        LogGraphBar   = p.graphBar;
+        PanelDark     = p.outputBg;
+        SelectionBg   = p.selection;
+        // Force the cached background (base fill + tinted artwork + veil) to
+        // re-render with the new theme, then repaint.
+        if (State* s = hCtrl ? GetState(hCtrl) : nullptr) {
+            ReleaseCaches(*s);
+            Repaint(*s);
+        }
     }
 
 }  // namespace OutputControl

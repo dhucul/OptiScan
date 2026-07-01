@@ -146,6 +146,23 @@ OptiScan is usable with screen readers (NVDA, JAWS, Narrator) and fully operable
 
 ---
 
+## Appearance & Themes
+
+OptiScan ships with a runtime theme switcher. Pick a theme from **View ▸ Theme** and the entire UI re-colours live — window chrome, command buttons, input dialogs, the log/console text roles, and the C1/C2/CU/BLER graph colours — and the choice is remembered for next launch (per user).
+
+| Theme | Look |
+|---|---|
+| **Catppuccin Frappé** *(default)* | Soft pastel dark — lavender/blue base with peach and mauve accents |
+| **Graphite** | The original cool graphite/slate with a warm-tan accent |
+| **Nord** | Arctic slate with frost-blue accents and aurora status colours |
+| **Arc-Dark** | Flat blue-grey dark with the signature Arc blue accent |
+
+Each theme also draws its own **procedural backdrop** — a palette-tinted turntable/EQ/waveform motif rendered from the active colours, rather than a fixed image — so every theme looks native rather than recoloured. Graph severity colours (green → yellow → red), the Red Book reference line, and log status tags (`[OK]`/`[WARN]`/`[ERROR]`) all follow the active palette.
+
+Windows **High Contrast** themes are honoured: when High Contrast is active the app defers to the system colours instead of applying its own.
+
+---
+
 ## Rip Modes
 
 OptiScan offers five rip modes with increasing verification. The mode determines how many re-read passes are performed and how errors are handled.
