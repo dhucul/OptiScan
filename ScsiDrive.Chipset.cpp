@@ -34,6 +34,13 @@ static const ChipsetMapping knownChipsets[] = {
 	{ "PLEXTOR",  "PX-708",   ChipsetFamily::Plextor,   "Plextor Custom (Sanyo LC8970x)",  false, "" },
 	{ "PLEXTOR",  "PX-W",     ChipsetFamily::Plextor,   "Plextor Custom (Sanyo LC897xx)",  false, "" },
 	{ "PLEXTOR",  "DVDR",     ChipsetFamily::MediaTek,  "MediaTek (LiteOn OEM)",           false, "" },
+	// PX-880/890/891 era: Philips-LiteOn (PLDS) OEM sold under the Plextor badge.
+	// The "PLUS" models report the model with no "DVDR" prefix (e.g. "PX-891SAF PLUS"),
+	// so they miss the "DVDR" row above and would otherwise fall to the classic-Plextor
+	// catch-all.  Firmware VPD confirms OEM = "PLDS CORPORATION" (MediaTek chassis).
+	{ "PLEXTOR",  "PX-891",   ChipsetFamily::MediaTek,  "MediaTek (Philips-LiteOn OEM)",   false, "" },
+	{ "PLEXTOR",  "PX-890",   ChipsetFamily::MediaTek,  "MediaTek (Philips-LiteOn OEM)",   false, "" },
+	{ "PLEXTOR",  "PX-880",   ChipsetFamily::MediaTek,  "MediaTek (Philips-LiteOn OEM)",   false, "" },
 	{ "PLEXTOR",  "",         ChipsetFamily::Plextor,   "Plextor Custom",                  false, "" },
 
 	// LiteOn / PLDS — MediaTek-based since ~2006
