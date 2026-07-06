@@ -11,7 +11,8 @@
 #  Produces:  installer\Output\OptiScan-<version>-Setup.exe
 # ============================================================================
 $ErrorActionPreference = 'Stop'
-Set-Location $PSScriptRoot
+# This script lives in installer\; the solution is one level up at the repo root.
+Set-Location (Split-Path -Parent $PSScriptRoot)
 
 # --- Locate MSBuild via vswhere (portable across VS versions) ---------------
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
