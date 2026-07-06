@@ -96,9 +96,10 @@ extern const LPCWSTR CommandLabels[COMMAND_BUTTON_COUNT] =
     L"29. Pioneer CD Check (audio quality)",
     L"30. Jitter / beta scan (LiteOn)",
     L"31. Erase CD-RW (rewritable)",
-    L"32. Batch run (multiple ops, 1 prescan)",
-    L"33. Clear info box",
-    L"34. Exit"
+    L"32. FE/TE servo scan (experimental, LiteOn)",
+    L"33. Batch run (multiple ops, 1 prescan)",
+    L"34. Clear info box",
+    L"35. Exit"
 };
 
 extern const LPCWSTR SectionLabels[SECTION_LABEL_COUNT] =

@@ -269,6 +269,18 @@ bool ScsiDrive::DetectChipset(ChipsetInfo& info) {
 		bool acceptsLiteOnDF  = false;
 		bool acceptsPioneer   = false;
 
+		// A vendor opcode counts as *recognized* when the drive returns GOOD, a
+		// recovered error, OR ILLEGAL REQUEST / INVALID FIELD IN CDB (sk=5,
+		// asc=0x24): in the last case the drive parsed the opcode and only
+		// objected to a field value, so it clearly implements the command. A
+		// truly-unsupported opcode returns INVALID COMMAND OPCODE (sk=5,
+		// asc=0x20), which must stay rejected. This asc=24-vs-asc=20 distinction
+		// was validated on the PLEXTOR PX-891SAF PLUS (PLDS/MediaTek): its 0xDF
+		// scan opcodes answer asc=24 to a probe with unfilled fields.
+		auto opcodeRecognized = [](bool ok, BYTE sk, BYTE asc) {
+			return ok || sk <= 0x01 || (sk == 0x05 && asc == 0x24);
+		};
+
 		// ── Probe Plextor 0xD8 (vendor read) ──
 		// Genuine Plextor AND some LiteOn drives accept this, so D8 alone
 		// is not conclusive — but D8-rejected + F3-accepted = MediaTek.
@@ -278,7 +290,7 @@ bool ScsiDrive::DetectChipset(ChipsetInfo& info) {
 			BYTE sk = 0, asc = 0, ascq = 0;
 			bool ok = SendSCSIWithSense(cdb, 12, buf.data(),
 				static_cast<DWORD>(buf.size()), &sk, &asc, &ascq);
-			acceptsPlextorD8 = ok || (sk <= 0x01);
+			acceptsPlextorD8 = opcodeRecognized(ok, sk, asc);
 		}
 
 		// ── Probe Plextor 0xE9 (Q-Check init) ──
@@ -290,7 +302,7 @@ bool ScsiDrive::DetectChipset(ChipsetInfo& info) {
 			cdb[9] = 150;
 			BYTE sk = 0, asc = 0, ascq = 0;
 			bool ok = SendSCSIWithSense(cdb, 12, nullptr, 0, &sk, &asc, &ascq);
-			acceptsPlextorE9 = ok || (sk <= 0x01);
+			acceptsPlextorE9 = opcodeRecognized(ok, sk, asc);
 			// Stop any scan we may have started
 			if (acceptsPlextorE9) PlextorQCheckStop();
 		}
@@ -305,7 +317,7 @@ bool ScsiDrive::DetectChipset(ChipsetInfo& info) {
 			BYTE sk = 0, asc = 0, ascq = 0;
 			bool ok = SendSCSIWithSense(cdb, 12, buf.data(), 0x10,
 				&sk, &asc, &ascq);
-			acceptsLiteOnF3 = ok || (sk <= 0x01);
+			acceptsLiteOnF3 = opcodeRecognized(ok, sk, asc);
 		}
 
 		// ── Probe LiteOn/MediaTek 0xDF (old scan) ──
@@ -317,7 +329,7 @@ bool ScsiDrive::DetectChipset(ChipsetInfo& info) {
 			BYTE sk = 0, asc = 0, ascq = 0;
 			bool ok = SendSCSIWithSense(cdb, 12, nullptr, 0,
 				&sk, &asc, &ascq);
-			acceptsLiteOnDF = ok || (sk <= 0x01);
+			acceptsLiteOnDF = opcodeRecognized(ok, sk, asc);
 			// Clean up
 			if (acceptsLiteOnDF) {
 				BYTE stop[12] = {};
@@ -339,7 +351,7 @@ bool ScsiDrive::DetectChipset(ChipsetInfo& info) {
 			BYTE sk = 0, asc = 0, ascq = 0;
 			bool ok = SendSCSIWithSense(cdb, 10, buf.data(), 32,
 				&sk, &asc, &ascq);
-			acceptsPioneer = ok || (sk <= 0x01);
+			acceptsPioneer = opcodeRecognized(ok, sk, asc);
 		}
 
 		// ── Resolve the chipset based on probe results ──

@@ -114,6 +114,29 @@ struct JitterResult {
 	std::vector<JitterSample> samples;
 };
 
+// ── Single focus/tracking-error time-slice from a LiteOn FE/TE scan ─────────
+struct FeTeSample {
+	DWORD lba = 0;          // Approximate LBA at this time slice
+	int fe = 0;             // Focus-error amplitude (raw, tentative units)
+	int te = 0;             // Tracking-error amplitude (raw, tentative units)
+};
+
+// ── Focus/Tracking-error scan result (LiteOn 0xDF/0x08 vendor command) ──────
+// Servo-level physical measurement. Field interpretation is tentative — see
+// ScsiDrive.LiteOnFeTe.cpp. Magnitudes are relative, not absolute.
+struct FeTeResult {
+	bool supported = false;
+	DWORD totalSectors = 0;
+	DWORD totalSeconds = 0;
+
+	long long totalFe = 0, totalTe = 0;
+	double avgFe = 0.0, avgTe = 0.0;
+	int maxFe = 0, maxTe = 0;
+	int maxFeSampleIndex = -1, maxTeSampleIndex = -1;
+
+	std::vector<FeTeSample> samples;
+};
+
 // ── BLER (Block Error Rate) scan result ─────────────────────────────────────
 // Captures the output of a detailed error-rate scan.  BLER measures raw error
 // frequency before ECC correction.  Red Book spec: < 220 errors/second avg.

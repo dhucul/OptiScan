@@ -951,6 +951,28 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			break;
 		}
 
+			// ── 32. FE/TE servo scan (LiteOn, experimental) ─────────
+		case 32: {
+			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
+			int speed = copier.SelectScanSpeed();
+			if (speed == -1) break;
+			FeTeResult fr;
+			if (copier.RunFeTeScan(disc, fr, speed)) {
+				std::wstring logPath = workDir + L"\\fete_scan.csv";
+				if (copier.SaveFeTeLog(fr, logPath)) {
+					Console::Success("FE/TE log saved to: ");
+					std::wcout << logPath << L"\n";
+				}
+			}
+			else if (!fr.supported) {
+				Console::Warning("FE/TE scan requires LiteOn/MediaTek 0xDF/0x08 servo support.\n");
+			}
+			else {
+				Console::Error("FE/TE scan failed.\n");
+			}
+			break;
+		}
+
 			// ── 30. Recovery rip (drive-independent) ────────────────
 			// Stable op id 30; surfaced as GUI button 5 (Ripping section) via
 			// ButtonToMenuChoice. Rebuilds hard sectors from cross-read

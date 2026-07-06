@@ -470,7 +470,8 @@ void DrawMainBackground(HWND hWnd, HDC hdc)
 void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
 {
     if (!drawItem || drawItem->CtlType != ODT_BUTTON ||
-        drawItem->CtlID < IDC_INFO_BUTTON1 || drawItem->CtlID > IDC_INFO_BUTTON34)
+        drawItem->CtlID < IDC_INFO_BUTTON1 ||
+        drawItem->CtlID > IDC_INFO_BUTTON1 + COMMAND_BUTTON_COUNT - 1)
     {
         return;
     }

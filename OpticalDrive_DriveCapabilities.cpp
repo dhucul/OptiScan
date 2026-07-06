@@ -261,6 +261,44 @@ void OpticalDrive::PrintDriveCapabilities(const DriveCapabilities& caps) {
 		}
 	}
 
+	// --- Hardware quality-scan backends ---
+	// Which of the hardware C1/C2/CU, jitter, and FE/TE scans (menu options 6,
+	// 9, 25, 30, 32) can actually run depends on the drive's vendor commands, not
+	// just the capability flags above. Probe live and report so the user knows
+	// which scans to expect. The probes read the disc, so one must be loaded.
+	{
+		ScsiDrive& d = GetDriveRef();
+		std::cout << "\n  Hardware quality-scan backends:\n";
+		if (!d.TestUnitReady()) {
+			std::cout << "    (Load a disc and re-run to detect scan backends.)\n";
+		}
+		else {
+			// Same precedence RunQCheckScan uses: Plextor Q-Check, then Pioneer,
+			// then LiteOn/MediaTek. Jitter and FE/TE are LiteOn-only.
+			bool qcheck  = d.SupportsQCheck();
+			bool pioneer = !qcheck && d.SupportsPioneerScan();
+			bool liteon  = !qcheck && !pioneer && d.SupportsLiteOnScan();
+			bool jitter  = liteon && d.SupportsLiteOnJitter();
+			bool fete    = liteon && d.SupportsLiteOnFeTe();
+
+			const char* method = qcheck ? "Plextor Q-Check (0xE9/0xEB)"
+				: pioneer ? "Pioneer (0x3B/0x3C)"
+				: liteon  ? "LiteOn/MediaTek (0xDF)"
+				: nullptr;
+
+			auto row = [](const char* label, bool ok, const char* note) {
+				std::cout << "    [" << (ok ? "YES" : " no") << "] " << label;
+				if (ok && note && *note) std::cout << "  -- " << note;
+				std::cout << "\n";
+			};
+			row("C1/C2/CU quality scan (opt 6)", method != nullptr, method ? method : "");
+			row("Jitter / beta scan (opt 30)", jitter, "LiteOn 0xDF/0x1B");
+			row("Focus/tracking-error scan (opt 32)", fete, "LiteOn 0xDF/0x08, experimental");
+			if (!method)
+				std::cout << "    No hardware error-scan; software C2 scan (opt 7/8) via READ CD still works.\n";
+		}
+	}
+
 	std::cout << std::string(60, '=') << "\n";
 }
 

@@ -83,6 +83,9 @@ public:
 	bool RunJitterScan(const DiscInfo& disc, JitterResult& result, int scanSpeed = 8);
 	void PrintJitterReport(const JitterResult& result);
 	bool SaveJitterLog(const JitterResult& result, const std::wstring& filename);
+	bool RunFeTeScan(const DiscInfo& disc, FeTeResult& result, int scanSpeed = 8);
+	void PrintFeTeReport(const FeTeResult& result);
+	bool SaveFeTeLog(const FeTeResult& result, const std::wstring& filename);
 	bool RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanSpeed = 8);
 	void PrintC2ScanReport(const BlerResult& result, const DiscInfo& disc, int scanSpeed);
 	void PrintC2Chart(const BlerResult& result, int width = 60, int height = 10);

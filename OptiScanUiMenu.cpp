@@ -76,7 +76,7 @@ void BuildOperationsMenu(HWND hWnd)
     if (!bar) return;
 
     struct Category { const wchar_t* name; int first; int last; };
-    // Ranges are button indices (0-based). Clear (32) and Exit (33) are left
+    // Ranges are button indices (0-based). Clear (33) and Exit (34) are left
     // out: Exit lives in the File menu, Clear in the View menu, and both
     // remain reachable via Tab.
     static const Category categories[] = {
@@ -84,7 +84,7 @@ void BuildOperationsMenu(HWND hWnd)
         { L"Disc &Quality", 5,  11 },
         { L"Disc I&nfo",    12, 17 },
         { L"Dri&ve",        18, 24 },
-        { L"&Utility",      25, 31 },
+        { L"&Utility",      25, 32 },
     };
 
     HMENU operations = CreatePopupMenu();

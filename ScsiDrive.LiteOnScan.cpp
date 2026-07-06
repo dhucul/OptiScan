@@ -1,9 +1,18 @@
 ﻿// ============================================================================
 // ScsiDrive.LiteOnScan.cpp - LiteOn/MediaTek CD quality scan
 //
-// Protocol derived from QPXTool (plugins/liteon/qscan_liteon.cpp):
+// OLD-method (0xDF) protocol HARDWARE-VERIFIED on a PLEXTOR PX-891SAF PLUS
+// (a MediaTek/PLDS drive) by reverse-engineering Vinpower's libqscan_liteon.dll
+// and running a live C1/C2 scan of a burned CD-R. The init sequence, the
+// per-block command triplet, and the C1/C2/CU field offsets below all match.
 //
-// NEW method (0xF3):
+// CRITICAL: a MediaTek/PLDS drive tallies C1/C2 in its CIRC decoder ONLY for
+// sectors the host actively reads — it does NOT scan the disc autonomously
+// after the DF/A0 arm. So each interval must READ the disc (LiteOnScanDriveHead)
+// before DF/82/05 is read, otherwise the counters stay idle at zero (which is
+// exactly the "0xDF accepted but trial reads returned all zeros" failure mode).
+//
+// NEW method (0xF3):  (from QPXTool; not exercised on the PX-891, which is OLD-path)
 //   Init:  seek to startLBA, then 0xF3/0x0E probe (16-byte read)
 //   Block: 0xF3/0x0E — returns 16 bytes per time slice:
 //          byte[1]=min, byte[2]=sec, byte[3]=frame (MSF position)
@@ -12,8 +21,9 @@
 //
 // OLD method (0xDF):
 //   Init:  seek to startLBA, then 0xDF/0xA3, 0xDF/0xA0 sequence (5 commands)
-//   Block: 0xDF/0x82/0x09 (read), 0xDF/0x82/0x05 (getdata), 0xDF/0x97 (reset)
-//          bytes[0-1]=BLER/C1, bytes[2-3]=E22/C2, byte[4]=CU
+//   Block: READ the interval (drive the head), then
+//          0xDF/0x82/0x09 (latch), 0xDF/0x82/0x05 (getdata), 0xDF/0x97 (reset)
+//          bytes[0-1]=C1/BLER (BE16), bytes[2-3]=C2/E22 (BE16), byte[4]=CU
 //          LBA += 75 per block
 //   End:   0xDF/0xA3/0x01
 //
@@ -32,6 +42,24 @@ static bool s_liteonNewMethod = false;
 
 // Current LBA tracking for old method
 static DWORD s_liteonLBA = 0;
+
+// ── Head-driving reads (shared by the C1/C2, jitter and FE/TE scans) ────────
+// The MediaTek/PLDS error counters only advance for sectors the host reads, so
+// the scan must sweep the disc itself. These reads exist purely to move the
+// head; the returned data is discarded (only the drive's internal tally,
+// fetched via DF/82/05 etc., matters).
+
+void ScsiDrive::LiteOnScanDriveHead(DWORD lba, DWORD sectors) {
+	// Chunk <= 16 sectors per read (16 audio sectors = 0x9300 B) to stay under
+	// the 16-bit ATAPI transfer ceiling (0xFFFE). Errors are ignored — a
+	// defective sector is itself a scan result the drive counts.
+	constexpr DWORD CHUNK = 16;
+	std::vector<BYTE> buf(CHUNK * AUDIO_SECTOR_SIZE);
+	for (DWORD off = 0; off < sectors; off += CHUNK) {
+		DWORD n = (sectors - off < CHUNK) ? (sectors - off) : CHUNK;
+		ReadCdAudio(lba + off, n, 0x00, buf.data(), n * AUDIO_SECTOR_SIZE);
+	}
+}
 
 bool ScsiDrive::SupportsLiteOnScan() {
 	if (m_liteonScanProbed >= 0)
@@ -58,11 +86,14 @@ bool ScsiDrive::SupportsLiteOnScan() {
 	OutputDebugStringA(dbg);
 
 	if (ok || sk <= 0x01) {
-		// Verify the response contains actual scan data — MSF position
-		// and/or error counts in bytes 1-7.  Drives that accept 0xF3 but
-		// don't implement measurement mode return all zeros.
+		// Verify the response contains actual ERROR-MEASUREMENT data (C1/C2 in
+		// bytes 4-7), not merely an MSF position (bytes 1-3). The new (0xF3)
+		// method must scan autonomously to be usable here — this poll path does
+		// not drive the head. A MediaTek/PLDS drive that only reports position
+		// (or all zeros) without host reads correctly falls through to the OLD
+		// (0xDF) method below, which DOES drive the head.
 		bool hasData = false;
-		for (int i = 1; i <= 7; i++) {
+		for (int i = 4; i <= 7; i++) {
 			if (buf[i] != 0) { hasData = true; break; }
 		}
 
@@ -73,7 +104,7 @@ bool ScsiDrive::SupportsLiteOnScan() {
 			memset(cdb, 0, 12); cdb[0] = 0xF3; cdb[1] = 0x0E;
 			ok = SendSCSIWithSense(cdb, 12, buf.data(), 0x10, &sk, &asc, &ascq);
 			if (ok || sk <= 0x01) {
-				for (int i = 1; i <= 7; i++) {
+				for (int i = 4; i <= 7; i++) {
 					if (buf[i] != 0) { hasData = true; break; }
 				}
 			}
@@ -120,11 +151,17 @@ bool ScsiDrive::SupportsLiteOnScan() {
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0xA0; cdb[4] = 0x02;
 		SendSCSIWithSense(cdb, 12, buf256.data(), 256, &sk, &asc, &ascq);
 
-		// Trial reads — check up to 3 blocks for non-zero C1/C2/CU.
-		// Even pristine discs produce some C1 during startup / seek settle.
+		// Trial reads — check a few blocks for non-zero C1/C2/CU.
+		// CRITICAL: a MediaTek/PLDS drive tallies errors only for sectors the
+		// host reads, so each trial must drive the head first (same as the real
+		// scan). Without this the counters stay zero and a fully-capable drive
+		// (e.g. the PX-891SAF PLUS) is wrongly reported as unsupported. Sampling
+		// a few regions makes a hit likely even on a clean disc.
 		bool hasData = false;
 		for (int trial = 0; trial < 3 && !hasData; trial++) {
-			// Read interval
+			LiteOnScanDriveHead(static_cast<DWORD>(trial) * 150, 75);
+
+			// Latch interval counters
 			memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0x82; cdb[2] = 0x09;
 			SendSCSIWithSense(cdb, 12, buf256.data(), 256, &sk, &asc, &ascq);
 
@@ -250,11 +287,15 @@ bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
 		return true;
 	}
 	else {
-		// OLD: three-command sequence per block
+		// OLD: drive the head over this interval, then read the tallied counts.
+		// Without the read the MediaTek counters never advance (verified on the
+		// PX-891SAF PLUS). One interval = one CD second = 75 sectors.
+		LiteOnScanDriveHead(s_liteonLBA, 75);
+
 		std::vector<BYTE> buf(256, 0);
 		BYTE cdb[12] = {};
 
-		// 1. Read interval: 0xDF/0x82/0x09
+		// 1. Latch interval counters: 0xDF/0x82/0x09
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0x82; cdb[2] = 0x09;
 		bool ok = SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq);
 		if (!ok && sk > 0x01) { scanDone = true; return false; }

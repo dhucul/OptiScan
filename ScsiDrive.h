@@ -74,6 +74,7 @@ private:
 	int m_qcheckProbed = -1;           // -1 = not probed, 0 = unsupported, 1 = supported
 	int m_liteonScanProbed = -1;       // -1 = not probed, 0 = unsupported, 1 = supported
 	int m_liteonJitterProbed = -1;     // -1 = not probed, 0 = unsupported, 1 = supported
+	int m_liteonFeTeProbed = -1;       // -1 = not probed, 0 = unsupported, 1 = supported
 	int m_pioneerScanProbed = -1;      // -1 = not probed, 0 = unsupported, 1 = supported
 
 	// Lowest read-speed multiplier the drive will actually honor, discovered by
@@ -174,6 +175,16 @@ public:
 	bool LiteOnJitterStart(DWORD startLBA, DWORD endLBA);
 	bool LiteOnJitterPoll(int& jitter, int& beta, DWORD& currentLBA, bool& scanDone);
 	bool LiteOnJitterStop();
+
+	// ── LiteOn/MediaTek focus/tracking-error scan (0xDF/0x08 vendor command) ─
+	// Servo-level measurement of focus error (FE) and tracking error (TE)
+	// amplitude. Uses DF 08 02 <type> <lba> to init and DF 08 01 to read a
+	// slice, with DF 02 09 for position. CDB[4..7] must carry the LBA — the
+	// drive returns sk=5 asc=24 (INVALID FIELD IN CDB) when it is left zero.
+	bool SupportsLiteOnFeTe();
+	bool LiteOnFeTeStart(DWORD startLBA, DWORD endLBA);
+	bool LiteOnFeTePoll(int& fe, int& te, DWORD& currentLBA, bool& scanDone);
+	bool LiteOnFeTeStop();
 
 	// ── Pioneer quality scan (0x3B/0x3C vendor commands) ─────
 	// Uses Pioneer's two-phase WRITE/READ BUFFER protocol to perform
@@ -312,6 +323,12 @@ private:
 	// (caching the accepted form) when the drive rejects 0xF8. Shared by
 	// ReadSector, ReadSectorAudioOnly, and ReadSectorsAudioOnly.
 	bool ReadCdAudio(DWORD lba, DWORD count, BYTE subSelect, BYTE* buffer, DWORD bufferSize);
+
+	// Reads the audio interval [lba, lba+sectors) purely to move the head so a
+	// LiteOn vendor scan accumulates real error/servo counts. Chunked <= 16
+	// sectors per read (0xFFFE ATAPI transfer ceiling). Read failures are ignored
+	// — a defective sector is itself a scan result the drive counts.
+	void LiteOnScanDriveHead(DWORD lba, DWORD sectors);
 
 	// Lazily probe and cache the READ CD form (expected sector type + main
 	// channel) the drive accepts for CD-DA, using a throwaway 1-sector read at

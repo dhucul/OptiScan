@@ -272,6 +272,7 @@ int ButtonToMenuChoice(int btnIndex) {
     if (btnIndex == 4) return 30;                             // Recovery rip → op id 30
     if (btnIndex >= 5 && btnIndex <= 29) return btnIndex;     // shifted display, original op id
     if (btnIndex == 30) return 31;                            // Erase CD-RW → op id 31
+    if (btnIndex == 31) return 32;                            // FE/TE servo scan → op id 32
     return -1;                                                // Batch/Clear/Exit
 }
 

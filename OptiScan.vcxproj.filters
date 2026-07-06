@@ -90,6 +90,7 @@
     <ClCompile Include="OpticalDrive_FileOutput.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="OpticalDrive_Fingerprinting.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="OpticalDrive_HiddenTracks.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="OpticalDrive_FeTeScan.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="OpticalDrive_JitterScan.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="OpticalDrive_MenuSelection.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="OpticalDrive_Metadata.cpp"><Filter>Source Files</Filter></ClCompile>
@@ -141,6 +142,7 @@
     <ClCompile Include="ScsiDrive.Chipset.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="ScsiDrive.Core.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="ScsiDrive.HideCDR.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="ScsiDrive.LiteOnFeTe.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="ScsiDrive.LiteOnJitter.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="ScsiDrive.LiteOnScan.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="ScsiDrive.Offset.cpp"><Filter>Source Files</Filter></ClCompile>

@@ -11,6 +11,10 @@
 //            buf[6..7] = beta   (BE16, signed) — pit/land asymmetry
 //   End:   no explicit stop required (mirrors the new-method BLER path).
 //
+// Like the C1/C2 scan, each poll first READs the interval (LiteOnScanDriveHead)
+// so the servo measures jitter/beta at the head's actual position — the drive
+// does not sweep on its own.
+//
 // Mutually exclusive with LiteOnScan* on the same drive — don't run both
 // measurement sessions concurrently.
 // ============================================================================
@@ -124,6 +128,10 @@ bool ScsiDrive::LiteOnJitterStart(DWORD startLBA, DWORD /*endLBA*/) {
 
 bool ScsiDrive::LiteOnJitterPoll(int& jitter, int& beta,
 	DWORD& currentLBA, bool& scanDone) {
+	// Drive the head over this interval first so the servo actually measures
+	// jitter/beta at this position — same requirement as the C1/C2 scan.
+	LiteOnScanDriveHead(s_jitterLBA, 75);
+
 	BYTE cdb[12] = {};
 	cdb[0] = 0xDF; cdb[1] = 0x1B; cdb[2] = 0xA2;
 	cdb[4] = static_cast<BYTE>((s_jitterLBA >> 24) & 0xFF);

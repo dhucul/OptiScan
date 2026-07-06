@@ -226,7 +226,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             if (focused && IsChild(g_hMainWnd, focused))
             {
                 const int ctrlId = GetDlgCtrlID(focused);
-                if (ctrlId >= IDC_INFO_BUTTON1 && ctrlId <= IDC_INFO_BUTTON34)
+                if (ctrlId >= IDC_INFO_BUTTON1 && ctrlId <= IDC_INFO_BUTTON1 + COMMAND_BUTTON_COUNT - 1)
                 {
                     SendMessageW(g_hMainWnd, WM_COMMAND,
                                  MAKEWPARAM(ctrlId, BN_CLICKED), (LPARAM)focused);
@@ -502,6 +502,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             case IDC_INFO_BUTTON32:
             case IDC_INFO_BUTTON33:
             case IDC_INFO_BUTTON34:
+            case IDC_INFO_BUTTON35:
                 if (HIWORD(wParam) == BN_CLICKED)
                 {
                     // The screen reader already announces the button press, so
