@@ -234,20 +234,28 @@ PioneerPureReadOffGuard::PioneerPureReadOffGuard(ScsiDrive& drive, bool active)
     : m_pioneer(drive), m_active(active) {
     if (!m_active) return;
 
-    bool realTime = false;
-    if (!m_pioneer.GetPureReadMode(m_previousMode, realTime))
+    if (!m_pioneer.GetPureReadMode(m_previousMode, m_previousRealTime))
         return;
 
-    m_restore = (m_previousMode != PureReadMode::Off);
-    if (!m_restore ||
-        !m_pioneer.SetPureReadMode(PureReadMode::Off, false, false)) {
-        m_restore = false;
+    // Nothing to change (and nothing to restore) if both the PureRead mode and
+    // the Real-Time PureRead flag are already off. This is also what makes the
+    // guard nest correctly: an inner guard reads back Off/off and no-ops.
+    if (m_previousMode == PureReadMode::Off && !m_previousRealTime)
+        return;
+
+    // Force both error-hiding features off for the scan. Only arm the restore
+    // if the write actually took, so a failed Set doesn't leave us "restoring"
+    // to a state we never left.
+    if (m_pioneer.SetPureReadMode(PureReadMode::Off, /*realTimeEnabled=*/false,
+                                  /*eepSave=*/false)) {
+        m_restore = true;
     }
 }
 
 PioneerPureReadOffGuard::~PioneerPureReadOffGuard() {
     if (m_restore) {
-        m_pioneer.SetPureReadMode(m_previousMode, false, false);
+        m_pioneer.SetPureReadMode(m_previousMode, m_previousRealTime,
+                                  /*eepSave=*/false);
     }
 }
 

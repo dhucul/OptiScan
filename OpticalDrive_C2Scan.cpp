@@ -2,6 +2,7 @@
 #include "OpticalDrive.h"
 #include "ConsoleGraph.h"
 #include "InterruptHandler.h"
+#include "PioneerVendor.h"
 #include <iostream>
 #include <iomanip>
 #include <vector>
@@ -75,13 +76,27 @@ static std::string GetASCDescription(BYTE asc, BYTE ascq) {
 bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanSpeed) {
 	// Lock the tray for the scan so an accidental eject can't abort it.
 	DriveDoorLockGuard doorLock(m_drive);
+
+	// Pioneer PureRead interpolates/re-reads to hide errors after retries, which
+	// would mask the raw C2 errors this scan measures. Force it Off for the whole
+	// scan (previous mode restored on scope exit); no-ops on non-Pioneer drives.
+	// Consistent with the Q-Check, BLER, Disc-Rot and Disc-Balance scans. If the
+	// per-sector path below hands off to the Pioneer vendor scan (RunQCheckScan),
+	// that scan's own guard nests harmlessly — it sees PureRead already Off.
+	PioneerVendor pioneerProbe(m_drive);
+	PioneerPureReadOffGuard pioneerPureReadGuard(m_drive, pioneerProbe.IsPioneerDrive());
+
 	std::cout << "\n=== C2 Error Scan (Quick) ===\n";
 	std::cout << "Quick disc health check using C2 error reporting.\n";
 	std::cout << "C2 errors indicate uncorrectable data corruption.\n\n";
 
-	// On Pioneer BD burners the per-sector READ CD C2 area reads all-zero, so the
-	// scan below would call the disc clean no matter its condition. Route to the
-	// Pioneer vendor quality scan (option 6 path) for real C2 on those drives.
+	// Pioneer BD burners don't populate the per-sector READ CD C2 error-pointer
+	// bitmap — it reads all-zero regardless of disc condition, so the naive
+	// per-sector scan below would call any disc perfect. This does NOT mean the
+	// drive can't measure C2: its CIRC decoder reports real C1/C2/CU through the
+	// vendor quality scan (0x3B/0x3C). Reroute to that path (same as menu option
+	// 6) for accurate results. The per-sector code below is only reached on
+	// (older) drives that lack the vendor scan.
 	if (RunPioneerVendorC2Fallback(disc, result, scanSpeed, "C2 Error Scan"))
 		return true;
 
@@ -385,9 +400,10 @@ bool OpticalDrive::RunPioneerVendorC2Fallback(const DiscInfo& disc, BlerResult& 
 
 	Console::Warning("  [Pioneer] ");
 	std::cout << (featureLabel ? featureLabel : "This scan")
-		<< ": the per-sector READ CD C2 area reads all-zero on Pioneer BD\n"
-		<< "            burners, so it cannot see real C2 on this drive. Running the\n"
-		<< "            Pioneer vendor quality scan (option 6 path) instead.\n";
+		<< ": this drive doesn't populate the per-sector C2 error-pointer\n"
+		<< "            bitmap (it reads all-zero), so switching to the Pioneer vendor\n"
+		<< "            quality scan (option 6 path), which measures real C1/C2/CU from\n"
+		<< "            the drive's own error decoder.\n";
 
 	QCheckResult qc;
 	if (!RunQCheckScan(disc, qc, scanSpeed)) {

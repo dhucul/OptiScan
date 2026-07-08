@@ -1,6 +1,7 @@
 ﻿	#define NOMINMAX
 #include "OpticalDrive.h"
 #include "InterruptHandler.h"
+#include "PioneerVendor.h"
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -13,9 +14,22 @@
 bool OpticalDrive::RunBlerScan(const DiscInfo& disc, BlerResult& result, int scanSpeed) {
 	// Lock the tray for the scan so an accidental eject can't abort it.
 	DriveDoorLockGuard doorLock(m_drive);
-	// On Pioneer BD burners the per-sector READ CD C2 area reads all-zero, so the
-	// per-sector BLER path below would miss real C2. Route to the Pioneer vendor
-	// quality scan (option 6 path) for true C1/C2/CU on those drives.
+
+	// Pioneer PureRead interpolates/re-reads to hide errors after retries, which
+	// would mask the raw C1/C2 errors this scan measures. Force it Off for the whole
+	// scan (previous mode restored on scope exit); no-ops on non-Pioneer drives.
+	// Consistent with the Q-Check, C2, Disc-Rot and Disc-Balance scans. If the
+	// per-sector path below hands off to the Pioneer vendor scan (RunQCheckScan),
+	// that scan's own guard nests harmlessly — it sees PureRead already Off.
+	PioneerVendor pioneerProbe(m_drive);
+	PioneerPureReadOffGuard pioneerPureReadGuard(m_drive, pioneerProbe.IsPioneerDrive());
+
+	// Pioneer BD burners don't populate the per-sector READ CD C2 error-pointer
+	// bitmap (it reads all-zero regardless of disc condition), so the naive
+	// per-sector BLER path below would miss real errors. The drive CAN still
+	// measure C2 — via the vendor quality scan (0x3B/0x3C), which reads its CIRC
+	// decoder's real C1/C2/CU. Reroute to that (same as menu option 6). The
+	// per-sector code below is only reached on (older) drives without the vendor scan.
 	if (RunPioneerVendorC2Fallback(disc, result, scanSpeed, "BLER Scan"))
 		return true;
 

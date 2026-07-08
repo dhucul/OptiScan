@@ -1,6 +1,7 @@
 ﻿#define NOMINMAX
 #include "OpticalDrive.h"
 #include "InterruptHandler.h"
+#include "PioneerVendor.h"
 #include <iostream>
 #include <iomanip>
 #include <vector>
@@ -43,6 +44,16 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 		std::cout << "ERROR: C2 support required for disc balance check.\n";
 		return false;
 	}
+
+	// Pioneer PureRead interpolates/re-reads to hide errors after retries, which
+	// would mask the per-sector C2 variance this balance check relies on to detect
+	// wobble. Force it Off for the whole sweep (restored on scope exit); no-ops on
+	// non-Pioneer drives. Consistent with the Q-Check, C2, BLER and Disc-Rot scans.
+	// NOTE: unlike those scans we deliberately do NOT force Performance speed mode
+	// here — this check sweeps read speed on purpose, so the drive's speed must
+	// stay under our control.
+	PioneerVendor pioneerProbe(m_drive);
+	PioneerPureReadOffGuard pioneerPureReadGuard(m_drive, pioneerProbe.IsPioneerDrive());
 
 	// Probe hardware quality-scan availability early — these probes print
 	// diagnostics, so do them before the progress bar starts.  Prefer
