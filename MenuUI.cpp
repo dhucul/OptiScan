@@ -190,9 +190,10 @@ void PrintHelpMenu() {
 	PrintSection("Disc Info");
 
 	PrintEntry({ "13. Audio Content Analysis",
-		"Analyzes audio characteristics: silence detection, clipping, levels.\n"
-		"   Detects pre-emphasis, HDCD encoding, and dynamic range.\n"
-		"   Reports peak levels and average loudness per track.",
+		"Analyzes audio characteristics: silence detection, clipping, DC offset,\n"
+		"   and per-track RMS/peak levels.\n"
+		"   (Pre-emphasis is verified separately by the Subchannel Integrity Check,\n"
+		"   option 16, from the Q control field.)",
 		"Understanding the audio mastering of the disc." });
 
 	PrintEntry({ "14. Disc Fingerprint (CDDB/MusicBrainz/AccurateRip IDs)",
@@ -213,8 +214,11 @@ void PrintHelpMenu() {
 	PrintEntry({ "16. Subchannel Integrity Check",
 		"Verifies the integrity of subchannel data (Q-channel timing, etc.).\n"
 		"   Subchannel errors can cause incorrect track indexing or timing issues.\n"
-		"   Reports total error count across all sectors.",
-		"Diagnosing timing/indexing issues or verifying subchannel extraction." });
+		"   Reports total error count across all sectors, then cross-checks the\n"
+		"   in-track Q control field: pre-emphasis (vs. the TOC), 4-channel, and\n"
+		"   copy-permit flags per track.",
+		"Diagnosing timing/indexing issues, verifying subchannel extraction, or\n"
+		"confirming whether a track needs de-emphasis for accurate audio." });
 
 	PrintEntry({ "17. Verify Subchannel Burn Status",
 		"Samples sectors across the disc and reads raw subchannel data to determine\n"

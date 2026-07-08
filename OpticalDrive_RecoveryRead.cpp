@@ -264,6 +264,9 @@ bool OpticalDrive::RescueSectorConsensus(DWORD lba, BYTE* audioOut,
 bool OpticalDrive::ReadDiscRecovery(DiscInfo& disc, const RecoveryRipConfig& config,
 	RecoveryRipResult& result, std::function<void(int, int)> progress) {
 
+	// Lock the tray for the duration of the recovery rip (auto-unlocked on return).
+	DriveDoorLockGuard doorLock(m_drive);
+
 	if (config.maxSpeed > 0) m_drive.SetSpeed(config.maxSpeed);
 
 	DWORD total = 0;

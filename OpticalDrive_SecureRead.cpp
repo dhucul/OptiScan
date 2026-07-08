@@ -17,6 +17,9 @@
 bool OpticalDrive::ReadDiscSecure(DiscInfo& disc, const SecureRipConfig& config,
 	SecureRipResult& result, std::function<void(int, int)> progress) {
 
+	// Lock the tray for the duration of the secure rip (auto-unlocked on return).
+	DriveDoorLockGuard doorLock(m_drive);
+
 	SecureRipConfig effectiveConfig = config;
 	effectiveConfig.cacheDefeat = disc.enableCacheDefeat;
 	if (!disc.enableC2Detection) effectiveConfig.useC2 = false;
@@ -24,6 +27,36 @@ bool OpticalDrive::ReadDiscSecure(DiscInfo& disc, const SecureRipConfig& config,
 	// Apply the configured speed cap — higher speeds degrade read accuracy
 	if (effectiveConfig.maxSpeed > 0) {
 		m_drive.SetSpeed(effectiveConfig.maxSpeed);
+	}
+
+	// EXPERIMENTAL (opt-in via OPTISCAN_DRIVE_READ_RETRY): cap the drive's internal
+	// read-retry count so it surfaces read errors/C2 to the host quickly instead of
+	// grinding through firmware re-reads — letting this engine's multi-pass and
+	// byte-consensus recovery do the work. Snapshotted and restored on return.
+	const bool tuneRetry = (effectiveConfig.driveReadRetryOverride >= 0);
+	ReadErrorRecoveryGuard errRecoveryGuard(m_drive, effectiveConfig.driveReadRetryOverride,
+		tuneRetry);
+	if (tuneRetry) {
+		if (errRecoveryGuard.honored()) {
+			if (errRecoveryGuard.originalRetry() == effectiveConfig.driveReadRetryOverride)
+				std::cout << "  [experimental] Drive read-retry count already "
+					<< effectiveConfig.driveReadRetryOverride << ".\n";
+			else
+				std::cout << "  [experimental] Drive read-retry count set to "
+					<< effectiveConfig.driveReadRetryOverride
+					<< " (was " << errRecoveryGuard.originalRetry()
+					<< "); will be restored after the rip.\n";
+		}
+		else if (errRecoveryGuard.applied()) {
+			std::cout << "  [experimental] Requested drive read-retry "
+				<< effectiveConfig.driveReadRetryOverride
+				<< ", but the drive reports " << errRecoveryGuard.effectiveRetry()
+				<< " (clamped/ignored).\n";
+		}
+		else {
+			std::cout << "  [experimental] Drive did not accept a read-retry override "
+				<< "(Read Error Recovery page 0x01 unavailable on this drive).\n";
+		}
 	}
 
 	DWORD total = 0;

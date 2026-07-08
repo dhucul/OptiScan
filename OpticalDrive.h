@@ -311,6 +311,16 @@ private:
 	bool RunPioneerVendorC2Fallback(const DiscInfo& disc, BlerResult& result,
 		int scanSpeed, const char* featureLabel);
 
+	// Pioneer CU cross-check for the vendor quality scan (option 6). The Pioneer
+	// 0x3B/0x3C vendor scan reports C1 (BLER) and the E22 second-stage counter
+	// but no uncorrectable (E32/CU) figure. This runs the separate Pioneer CD
+	// Check (0xE6+0x300000) protocol over the same audio range to obtain a real
+	// uncorrectable measurement, filling the pioneerCdCheck* fields of `result`.
+	// Returns true only when the CD Check produced valid data. Quick no-op on
+	// non-Pioneer drives and on Pioneer firmware that dropped the protocol (e.g.
+	// BDR-S13U: the start command fails fast). Cancellable via ESC/Ctrl+C.
+	bool RunPioneerCdCheckCrosscheck(const DiscInfo& disc, QCheckResult& result);
+
 	// Disc rot analysis helpers
 	void ClassifyZone(DWORD lba, DWORD firstLBA, DWORD lastLBA, int c2Errors, DiscZoneStats& zones);
 	int CalculateClusterTolerance(int scanSpeed);

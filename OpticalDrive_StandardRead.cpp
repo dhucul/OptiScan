@@ -9,6 +9,9 @@
 // ============================================================================
 
 bool OpticalDrive::ReadDisc(DiscInfo& disc, int errorMode, std::function<void(int, int)> progress) {
+	// Lock the tray for the duration of the rip so an accidental eject-button
+	// press or OS eject can't interrupt it. Unlocked automatically on return.
+	DriveDoorLockGuard doorLock(m_drive);
 	DWORD total = 0;
 	for (size_t i = 0; i < disc.tracks.size(); i++) {
 		if (disc.selectedSession > 0 && disc.tracks[i].session != disc.selectedSession) continue;

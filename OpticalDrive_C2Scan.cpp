@@ -73,6 +73,8 @@ static std::string GetASCDescription(BYTE asc, BYTE ascq) {
 
 // Main C2 scanning function
 bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanSpeed) {
+	// Lock the tray for the scan so an accidental eject can't abort it.
+	DriveDoorLockGuard doorLock(m_drive);
 	std::cout << "\n=== C2 Error Scan (Quick) ===\n";
 	std::cout << "Quick disc health check using C2 error reporting.\n";
 	std::cout << "C2 errors indicate uncorrectable data corruption.\n\n";

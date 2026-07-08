@@ -11,6 +11,8 @@
 // ============================================================================
 
 bool OpticalDrive::RunBlerScan(const DiscInfo& disc, BlerResult& result, int scanSpeed) {
+	// Lock the tray for the scan so an accidental eject can't abort it.
+	DriveDoorLockGuard doorLock(m_drive);
 	// On Pioneer BD burners the per-sector READ CD C2 area reads all-zero, so the
 	// per-sector BLER path below would miss real C2. Route to the Pioneer vendor
 	// quality scan (option 6 path) for true C1/C2/CU on those drives.

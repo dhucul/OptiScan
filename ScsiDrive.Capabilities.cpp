@@ -364,12 +364,17 @@ bool ScsiDrive::DetectCapabilities(DriveCapabilities& caps) {
 					if (pageLen >= 15) {
 						// Bytes 8-9: Max read speed (kB/s)
 						caps.maxReadSpeedKB = (page[8] << 8) | page[9];
+						// Bytes 12-13: Buffer Size Supported (KB). This is the
+						// drive's DRAM cache size; it feeds the Buffer Size display
+						// and the large-buffer scoring bonus in the accuracy rating
+						// (both of which were dead until this field was populated).
+						caps.bufferSizeKB = (page[12] << 8) | page[13];
 						// Bytes 14-15: Current read speed (kB/s)
 						caps.currentReadSpeedKB = (page[14] << 8) | page[15];
-						
+
 						char dbgStr[256];
-						snprintf(dbgStr, sizeof(dbgStr), "Mode Page 2A: maxReadSpeedKB=%d, currentReadSpeedKB=%d\n", 
-							caps.maxReadSpeedKB, caps.currentReadSpeedKB);
+						snprintf(dbgStr, sizeof(dbgStr), "Mode Page 2A: maxReadSpeedKB=%d, currentReadSpeedKB=%d, bufferSizeKB=%d\n",
+							caps.maxReadSpeedKB, caps.currentReadSpeedKB, caps.bufferSizeKB);
 						OutputDebugStringA(dbgStr);
 					}
 
@@ -608,6 +613,28 @@ bool ScsiDrive::DetectCapabilities(DriveCapabilities& caps) {
 	// Derive max write speed from descriptors if Mode Page 2A didn't report it
 	if (caps.maxWriteSpeedKB == 0 && !caps.supportedWriteSpeeds.empty()) {
 		caps.maxWriteSpeedKB = caps.supportedWriteSpeeds.back();
+	}
+
+	// ── Buffer size fallback: READ BUFFER CAPACITY (0x5C) ────────────
+	// Mode Page 2A byte 12-13 is the usual source, but some drives (and some
+	// USB bridge chipsets) report zero there. Ask the drive directly with
+	// READ BUFFER CAPACITY(10): the 12-byte parameter data carries the total
+	// buffer length in bytes at offset 4-7. Convert to KB and sanity-clamp to
+	// a plausible optical-drive cache range so a garbage response can't skew
+	// the accuracy grade. This is the Pioneer opcode chart's section-6 command.
+	if (caps.bufferSizeKB == 0) {
+		BYTE rbcCdb[10] = { 0x5C, 0, 0, 0, 0, 0, 0, 0, 12, 0 };
+		BYTE rbc[12] = {};
+		if (SendSCSI(rbcCdb, 10, rbc, sizeof(rbc))) {
+			DWORD totalBytes = (static_cast<DWORD>(rbc[4]) << 24)
+				| (static_cast<DWORD>(rbc[5]) << 16)
+				| (static_cast<DWORD>(rbc[6]) << 8)
+				|  static_cast<DWORD>(rbc[7]);
+			DWORD kb = totalBytes / 1024;
+			// Real optical-drive buffers are ~64 KB .. 128 MB.
+			if (kb >= 64 && kb <= 128u * 1024u)
+				caps.bufferSizeKB = static_cast<int>(kb);
+		}
 	}
 
 	DWORD ret;

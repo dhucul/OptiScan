@@ -7,6 +7,7 @@
 #include <iostream>
 #include <fstream>
 #include <iomanip>
+#include <cstdlib>
 
 
 // ============================================================================
@@ -381,6 +382,29 @@ SecureRipConfig OpticalDrive::GetSecureRipConfig(SecureRipMode mode) {
 		config.cacheDefeat = true;
 		config.maxSpeed = 2;
 		break;
+	}
+
+	// EXPERIMENTAL opt-in: OPTISCAN_DRIVE_READ_RETRY=<n> caps the drive's internal
+	// Read Error Recovery retry count (mode page 0x01) during the secure rip so the
+	// host's own multi-pass/consensus engine controls recovery. Off unless set.
+	// Only meaningful for the secure modes (they use ReadDiscSecure).
+	if (mode == SecureRipMode::Fast || mode == SecureRipMode::Standard ||
+		mode == SecureRipMode::Paranoid) {
+		char buf[16] = {};
+		size_t len = 0;
+		if (getenv_s(&len, buf, sizeof(buf), "OPTISCAN_DRIVE_READ_RETRY") == 0
+			&& len > 1) {
+			int v = std::atoi(buf);
+			if (v >= 0 && v <= 255) {
+				config.driveReadRetryOverride = v;
+				std::cout << "  [experimental] OPTISCAN_DRIVE_READ_RETRY=" << v
+					<< " -> will cap the drive's internal read-retry count for this rip.\n";
+			}
+			else {
+				std::cout << "  [experimental] Ignoring OPTISCAN_DRIVE_READ_RETRY='"
+					<< buf << "' (expected an integer 0-255).\n";
+			}
+		}
 	}
 
 	return config;

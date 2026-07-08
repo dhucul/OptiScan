@@ -67,6 +67,8 @@ void RecalculateQCheckTotals(QCheckResult& result) {
 }  // namespace
 
 bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int scanSpeed) {
+	// Lock the tray for the multi-phase scan so an accidental eject can't abort it.
+	DriveDoorLockGuard doorLock(m_drive);
 	std::cout << "\n=== Disc Rot Detection Scan ===\n";
 	std::cout << "This scan checks for physical disc degradation patterns.\n\n";
 
@@ -267,6 +269,37 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 		std::cout << "  (Disc rot detection limited to C2 errors only)\n\n";
 	}
 
+	// ── Phase 0b: Pioneer uncorrectable cross-check (CD Check 0xE6) ───
+	// On Pioneer the vendor scan (Phase 0) has no CU counter and the per-sector
+	// READ CD C2 area (Phase 1 below) reads all-zero, so uncorrectable data would
+	// otherwise be invisible here. The CD Check protocol measures it directly.
+	// Data loss is the strongest rot signal, so a non-zero result escalates the
+	// verdict after the pattern analysis. Fast no-op on firmware that dropped the
+	// protocol (e.g. BDR-S13U).
+	//
+	// Gate it: this is a full extra 1x pass, and uncorrectable (E32) errors can't
+	// exist without C2/E22 activity, so if Phase 0 scanned pristine (no E22, low
+	// C1) there is nothing for it to find. Skip it there to avoid doubling the
+	// scan time; run it on any hint of trouble.
+	if (usePioneer && !g_interrupt.IsInterrupted()) {
+		const bool phase0LooksClean = hasC1
+			&& c1Result.totalC2 == 0
+			&& c1Result.avgC1PerSecond < 50.0
+			&& c1Result.maxC1PerSecond < 50;
+		if (phase0LooksClean) {
+			std::cout << "  Phase 0 scanned clean (no C2/E22, low C1) - skipping the CD Check\n"
+				<< "  uncorrectable cross-check to save a full pass.\n\n";
+		}
+		else {
+			if (RunPioneerCdCheckCrosscheck(disc, c1Result)) {
+				result.pioneerCdCheckRun = true;
+				result.pioneerCdCheckC1Frames = c1Result.pioneerCdCheckC1Frames;
+				result.pioneerCdCheckC2Bytes = c1Result.pioneerCdCheckC2Bytes;
+			}
+			std::cout << "\n";
+		}
+	}
+
 	std::cout << "Phase 1: C2 error distribution scan...\n";
 	m_drive.SetSpeed(scanSpeed);
 
@@ -436,6 +469,14 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 	// ── Factor C1 data into rot assessment ───────────────────────────
 	if (hasC1) {
 		AnalyzeC1RotPatterns(c1Result, firstLBA, lastLBA, result);
+	}
+
+	// ── Factor the Pioneer CD Check cross-check into the verdict ──────
+	// Uncorrectable bytes are actual data loss — the strongest rot signal — so
+	// force the risk to at least HIGH (never downgrade an existing CRITICAL).
+	if (result.pioneerCdCheckRun && result.pioneerCdCheckC2Bytes > 0
+		&& result.rotRiskLevel != "CRITICAL") {
+		result.rotRiskLevel = "HIGH";
 	}
 
 	if (result.rotRiskLevel == "NONE") {
@@ -753,6 +794,22 @@ void OpticalDrive::PrintDiscRotReport(const DiscRotAnalysis& analysis) {
 	}
 	Reset();
 
+	// Pioneer CD Check (0xE6) uncorrectable cross-check — real data-loss signal
+	// that the vendor scan and per-sector C2 can't see on Pioneer drives.
+	if (analysis.pioneerCdCheckRun) {
+		std::cout << "  Uncorrectable:       ";
+		if (analysis.pioneerCdCheckC2Bytes > 0) {
+			SetColorRGB(Theme::RedR, Theme::RedG, Theme::RedB);
+			std::cout << Sym::Cross << " YES  - " << analysis.pioneerCdCheckC2Bytes
+				<< " C2-uncorrectable byte(s), worst window (Pioneer CD Check) - data loss\n";
+		}
+		else {
+			SetColorRGB(Theme::GreenR, Theme::GreenG, Theme::GreenB);
+			std::cout << Sym::Check << " NO   - No uncorrectable data reported (Pioneer CD Check 0xE6)\n";
+		}
+		Reset();
+	}
+
 	std::cout << "\n";
 	Heading("  Risk Assessment\n");
 	Reset();
@@ -813,6 +870,13 @@ bool OpticalDrive::SaveDiscRotLog(const DiscRotAnalysis& analysis, const std::ws
 	fprintf(f, "# Progressive Pattern:   %s\n", analysis.progressivePattern ? "YES" : "NO");
 	fprintf(f, "# Pinhole Pattern:       %s\n", analysis.pinholePattern ? "YES" : "NO");
 	fprintf(f, "# Read Instability:      %s\n", analysis.readInstability ? "YES" : "NO");
+	if (analysis.pioneerCdCheckRun) {
+		// Pioneer CD Check (0xE6) uncorrectable cross-check — real data-loss
+		// measurement the vendor scan / per-sector C2 can't provide on Pioneer.
+		fprintf(f, "# Uncorrectable (CDChk): %s (C1 uncorr=%d frames, C2 uncorr=%d bytes, worst window)\n",
+			analysis.pioneerCdCheckC2Bytes > 0 ? "YES - data loss" : "NO",
+			analysis.pioneerCdCheckC1Frames, analysis.pioneerCdCheckC2Bytes);
+	}
 	fprintf(f, "#\n");
 
 	fprintf(f, "# ==============================\n");

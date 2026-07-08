@@ -702,6 +702,51 @@ bool ScsiDrive::ReadSectorQRaw(DWORD lba, int& qTrack, int& qIndex) {
 	return false;
 }
 
+// Reads the Q-subchannel CONTROL nibble from a raw P-W subchannel read at `lba`.
+// Mirrors ReadSectorQRaw's read + de-interleave + CRC check, but keeps the high
+// nibble of Q byte 0 (the control field) instead of the ADR/position. Returns
+// false if the read fails, the CRC is bad on both attempts, or the frame is not
+// an ADR=1 position frame (control only accompanies position frames).
+bool ScsiDrive::ReadSectorQControl(DWORD lba, int& control) {
+	control = 0;
+	BYTE buffer[RAW_SECTOR_SIZE];
+
+	BYTE cdb[12] = {};
+	cdb[0] = SCSI_READ_CD;
+	cdb[1] = m_cddaSectorType;
+	cdb[2] = (lba >> 24) & 0xFF;
+	cdb[3] = (lba >> 16) & 0xFF;
+	cdb[4] = (lba >> 8) & 0xFF;
+	cdb[5] = lba & 0xFF;
+	cdb[8] = 1;
+	cdb[9] = m_cddaMainChannelFlags;
+	cdb[10] = 0x01;  // Raw subchannel
+
+	// Retry once on CRC failure — transient subchannel errors are common.
+	for (int attempt = 0; attempt < 2; attempt++) {
+		if (!SendSCSI(cdb, 12, buffer, RAW_SECTOR_SIZE, true, 5)) return false;
+
+		// De-interleave the 96-byte raw P-W block into the 12-byte Q channel
+		// (same bit extraction ParseRawSubchannel uses).
+		const BYTE* sub = buffer + AUDIO_SECTOR_SIZE;
+		BYTE qchannel[12] = {};
+		for (int i = 0; i < 96; i++) {
+			int byteIdx = i / 8;
+			int bitIdx = 7 - (i % 8);
+			if (sub[i] & 0x40) qchannel[byteIdx] |= (1 << bitIdx);
+		}
+
+		uint16_t calcCrc = SubchannelCRC16(qchannel, 10);
+		uint16_t storedCrc = (static_cast<uint16_t>(qchannel[10]) << 8) | qchannel[11];
+		if (calcCrc != storedCrc) continue;   // unreliable — retry once
+
+		if ((qchannel[0] & 0x0F) != 1) return false;  // not a position frame
+		control = (qchannel[0] >> 4) & 0x0F;           // high nibble = CONTROL
+		return true;
+	}
+	return false;
+}
+
 // Single-read Q subchannel helper (raw with formatted fallback, no voting)
 bool ScsiDrive::ReadSectorQSingle(DWORD lba, int& qTrack, int& qIndex) {
 	if (ReadSectorQRaw(lba, qTrack, qIndex)) {

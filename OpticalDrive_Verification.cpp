@@ -444,6 +444,94 @@ bool OpticalDrive::VerifySubchannelIntegrity(DiscInfo& disc, int& errorCount, in
 	else if (errorRate <= 10.0) Console::Warning("HIGH\n");
 	else                        Console::Error("SEVERE\n");
 
+	// ── Q Control Field Cross-Check (pre-emphasis / channel mode) ───────
+	// The Q-subchannel CONTROL nibble carries the authoritative *in-track*
+	// pre-emphasis, 4-channel, and copy-permit flags. The TOC keeps its own copy
+	// in the lead-in, and on some pressings the two disagree — where they do, the
+	// in-track flag is what players honor for de-emphasis. Sample the control
+	// field a few times per audio track (majority vote; it is constant within a
+	// track) and compare pre-emphasis against the TOC-derived flag.
+	std::cout << "\n=== Q Control Field (pre-emphasis / channel mode) ===\n";
+	{
+		int preemphMismatches = 0;
+		int fourChannelTracks = 0;
+		int unreadableTracks = 0;
+		bool anyAudio = false;
+		bool cancelled = false;
+
+		for (const auto& t : disc.tracks) {
+			if (!t.isAudio) continue;
+			anyAudio = true;
+
+			if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
+				cancelled = true;
+				std::cout << "  (cancelled)\n";
+				break;
+			}
+
+			// Majority-vote the control nibble over a few mid-track sectors.
+			DWORD mid = t.startLBA + (t.endLBA - t.startLBA) / 2;
+			int votes[16] = {};
+			int total = 0, best = -1, bestN = 0;
+			for (int k = 0; k < 5; k++) {
+				DWORD sampleLba = mid + static_cast<DWORD>(k);
+				if (sampleLba > t.endLBA) break;
+				int ctrl = 0;
+				if (m_drive.ReadSectorQControl(sampleLba, ctrl) && ctrl >= 0 && ctrl < 16) {
+					votes[ctrl]++;
+					total++;
+					if (votes[ctrl] > bestN) { bestN = votes[ctrl]; best = ctrl; }
+				}
+			}
+
+			std::cout << "  Track " << std::setw(2) << t.trackNumber << ": ";
+			if (total == 0 || best < 0) {
+				unreadableTracks++;
+				std::cout << "(control field unreadable on this drive)\n";
+				continue;
+			}
+
+			bool preemph = (best & 0x01) != 0;   // bit 0 = pre-emphasis
+			bool copyOk  = (best & 0x02) != 0;   // bit 1 = digital copy permitted
+			bool dataBit = (best & 0x04) != 0;   // bit 2 = data track (0 for audio)
+			bool fourCh  = (best & 0x08) != 0;   // bit 3 = 4-channel audio
+
+			std::cout << "pre-emphasis=" << (preemph ? "YES" : "no");
+			if (preemph != t.hasPreemphasis) {
+				preemphMismatches++;
+				std::cout << " [!] TOC says " << (t.hasPreemphasis ? "YES" : "no");
+			}
+			if (fourCh) { fourChannelTracks++; std::cout << ", 4-channel audio"; }
+			if (dataBit) std::cout << ", DATA flag set (unexpected for an audio track)";
+			std::cout << ", copy " << (copyOk ? "permitted" : "prohibited") << "\n";
+		}
+
+		if (!anyAudio) {
+			std::cout << "  (no audio tracks)\n";
+		}
+		else if (!cancelled) {
+			if (preemphMismatches > 0) {
+				std::string warn = std::to_string(preemphMismatches) +
+					" track(s) have an in-track pre-emphasis flag that disagrees with the TOC.\n";
+				Console::Warning(warn.c_str());
+				std::cout << "  The in-track Q flag is authoritative: a track flagged pre-emphasis\n"
+					<< "  here must be de-emphasized on playback for tonally-accurate audio.\n";
+			}
+			else if (unreadableTracks == 0) {
+				Console::Success("In-track pre-emphasis flags match the TOC on all audio tracks.\n");
+			}
+			if (fourChannelTracks > 0) {
+				std::cout << "  Note: " << fourChannelTracks
+					<< " track(s) flagged 4-channel audio (rare).\n";
+			}
+			if (unreadableTracks > 0) {
+				std::cout << "  " << unreadableTracks
+					<< " track(s) had no readable raw Q control field\n"
+					<< "  (this drive may not return the raw P-W subchannel).\n";
+			}
+		}
+	}
+
 	return true;
 }
 

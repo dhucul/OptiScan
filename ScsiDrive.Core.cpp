@@ -7,6 +7,7 @@
 #include <vector>
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 
 namespace {
 	// Allow reasonable tolerance because many drives quantize/approximate speed.
@@ -131,6 +132,9 @@ void ScsiDrive::Close() {
 		CloseHandle(m_handle);
 		m_handle = INVALID_HANDLE_VALUE;
 	}
+	// Closing the handle releases any drive-held door lock; drop the ref-count so
+	// a stale value can't suppress the lock CDB after the next Open().
+	m_doorLockCount = 0;
 }
 
 bool ScsiDrive::Reopen() {
@@ -424,11 +428,141 @@ int ScsiDrive::GetLowestHonoredSpeed(bool apply) {
 	return lowest;
 }
 
+// PREVENT ALLOW MEDIUM REMOVAL (0x1E). Reference-counted: the physical lock CDB
+// is sent only when the count transitions 0->1, and the unlock CDB only when it
+// returns 1->0, so nested DriveDoorLockGuard scopes compose. Prevent=1 sets the
+// door-locked bit. A drive that doesn't support it answers CHECK CONDITION,
+// which we swallow — locking is best-effort convenience, never a hard gate.
+bool ScsiDrive::PreventMediumRemoval(bool prevent) {
+	if (m_handle == INVALID_HANDLE_VALUE) return false;
+
+	bool issue;
+	BYTE preventBit;
+	if (prevent) {
+		issue = (m_doorLockCount++ == 0);   // send lock only on the first acquire
+		preventBit = 0x01;
+	}
+	else {
+		if (m_doorLockCount == 0) return true;          // already unlocked
+		issue = (--m_doorLockCount == 0);   // send unlock only on the last release
+		preventBit = 0x00;
+	}
+	if (!issue) return true;
+
+	BYTE cdb[6] = { 0x1E, 0x00, 0x00, 0x00, preventBit, 0x00 };
+	BYTE sk = 0, asc = 0, ascq = 0;
+	SendSCSIWithSense(cdb, 6, nullptr, 0, &sk, &asc, &ascq, /*dataIn=*/false);
+	return (sk == 0);
+}
+
 bool ScsiDrive::Eject() {
 	if (m_handle == INVALID_HANDLE_VALUE) return false;
+	// Force the tray unlocked first: a scan/rip guard may still hold a lock, and
+	// an intentional eject must always win. Reset the ref-count and send the raw
+	// unlock so the OS eject below isn't blocked by a door-locked drive.
+	if (m_doorLockCount > 0) {
+		m_doorLockCount = 0;
+		BYTE unlockCdb[6] = { 0x1E, 0x00, 0x00, 0x00, 0x00, 0x00 };
+		BYTE sk = 0, asc = 0, ascq = 0;
+		SendSCSIWithSense(unlockCdb, 6, nullptr, 0, &sk, &asc, &ascq, /*dataIn=*/false);
+	}
 	DWORD bytesReturned;
 	return DeviceIoControl(m_handle, IOCTL_STORAGE_EJECT_MEDIA,
 		nullptr, 0, nullptr, 0, &bytesReturned, nullptr) != 0;
+}
+
+// ── Read Error Recovery mode page (0x01) — EXPERIMENTAL ─────────────────────
+// Reads mode page 0x01 via MODE SENSE(10) with block descriptors disabled, so the
+// page sits at a fixed offset. Copies the whole page (page code..end) into `page`,
+// sets `pageBytes` to the total page size, and returns the Read Retry Count (byte
+// 3). Returns false if the drive won't return the page or it looks malformed.
+bool ScsiDrive::ReadErrorRecoveryPage(BYTE* page, int& pageBytes, BYTE& retryCount) {
+	pageBytes = 0;
+	retryCount = 0;
+	if (m_handle == INVALID_HANDLE_VALUE) return false;
+
+	// MODE SENSE(10): DBD=1 (no block descriptors), PC=0 (current values), page 0x01.
+	BYTE cdb[10] = { 0x5A, 0x08, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 64, 0x00 };
+	BYTE buf[64] = {};
+	if (!SendSCSI(cdb, 10, buf, sizeof(buf), /*dataIn=*/true)) return false;
+
+	// 8-byte header; block-descriptor length is bytes 6-7 (0 when DBD honored).
+	int blockDescLen = (static_cast<int>(buf[6]) << 8) | buf[7];
+	int off = 8 + blockDescLen;
+	if (off + 2 > static_cast<int>(sizeof(buf))) return false;
+	if ((buf[off] & 0x3F) != 0x01) return false;          // not the Read Error Recovery page
+
+	int total = static_cast<int>(buf[off + 1]) + 2;        // page length field + the 2-byte header
+	if (total < 4 || total > 32 || off + total > static_cast<int>(sizeof(buf)))
+		return false;
+
+	memcpy(page, buf + off, total);
+	pageBytes = total;
+	retryCount = buf[off + 3];                             // byte 3 = Read Retry Count
+	return true;
+}
+
+// Writes a modified mode page 0x01 back via MODE SELECT(10). `page` is `pageBytes`
+// long (as returned by ReadErrorRecoveryPage). The 8-byte parameter-list header is
+// zeroed and the PS/SPF bits are cleared (both must be 0 on MODE SELECT).
+bool ScsiDrive::WriteErrorRecoveryPage(const BYTE* page, int pageBytes) {
+	if (m_handle == INVALID_HANDLE_VALUE) return false;
+	if (pageBytes < 4 || pageBytes > 32) return false;
+
+	BYTE param[8 + 32] = {};
+	memcpy(param + 8, page, pageBytes);
+	param[8] &= 0x3F;                    // clear PS/SPF — reserved as 0 on MODE SELECT
+	int total = 8 + pageBytes;
+
+	BYTE cdb[10] = {};
+	cdb[0] = 0x55;                       // MODE SELECT(10)
+	cdb[1] = 0x10;                       // PF=1 (page format), SP=0 (do not save to NV)
+	cdb[7] = static_cast<BYTE>((total >> 8) & 0xFF);
+	cdb[8] = static_cast<BYTE>(total & 0xFF);
+
+	BYTE sk = 0, asc = 0, ascq = 0;
+	return SendSCSIWithSense(cdb, 10, param, total, &sk, &asc, &ascq, /*dataIn=*/false)
+		&& sk == 0;
+}
+
+// ── ReadErrorRecoveryGuard ──────────────────────────────────────────────────
+ReadErrorRecoveryGuard::ReadErrorRecoveryGuard(ScsiDrive& drive, int desiredRetry, bool active)
+	: m_drive(drive) {
+	if (!active || desiredRetry < 0 || desiredRetry > 255) return;
+
+	BYTE page[32] = {};
+	int bytes = 0;
+	BYTE origRetry = 0;
+	if (!m_drive.ReadErrorRecoveryPage(page, bytes, origRetry)) return;  // page unavailable
+	m_origRetry = origRetry;
+	memcpy(m_savedPage, page, bytes);
+	m_savedBytes = bytes;
+
+	if (static_cast<int>(origRetry) == desiredRetry) {
+		// Already at the requested value — nothing to change, nothing to restore.
+		m_effRetry = origRetry;
+		m_honored = true;
+		return;
+	}
+
+	page[3] = static_cast<BYTE>(desiredRetry);            // byte 3 = Read Retry Count
+	if (!m_drive.WriteErrorRecoveryPage(page, bytes)) return;
+	m_applied = true;
+
+	// Read back so we can report whether the drive honored (or clamped) the value.
+	BYTE verify[32] = {};
+	int vbytes = 0;
+	BYTE effRetry = 0;
+	if (m_drive.ReadErrorRecoveryPage(verify, vbytes, effRetry)) {
+		m_effRetry = effRetry;
+		m_honored = (static_cast<int>(effRetry) == desiredRetry);
+	}
+}
+
+ReadErrorRecoveryGuard::~ReadErrorRecoveryGuard() {
+	if (m_applied && m_savedBytes > 0) {
+		m_drive.WriteErrorRecoveryPage(m_savedPage, m_savedBytes);  // restore original page
+	}
 }
 
 bool ScsiDrive::TestUnitReady() {

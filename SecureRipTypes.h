@@ -29,6 +29,15 @@ struct SecureRipConfig {
 	bool c2Guided = true;
 	bool cacheDefeat = true;
 	int maxSpeed = 0;
+
+	// EXPERIMENTAL (opt-in via the OPTISCAN_DRIVE_READ_RETRY env var). When >= 0,
+	// the secure-rip path overrides the drive's internal Read Error Recovery retry
+	// count (mode page 0x01, byte 3) for the duration of the rip. A low value makes
+	// the drive surface read errors/C2 to the host quickly instead of grinding
+	// through internal re-reads, so OptiScan's own multi-pass/consensus engine
+	// controls recovery. -1 leaves the drive's default untouched. Drive-dependent:
+	// firmware may clamp or ignore it (the applied value is read back and reported).
+	int driveReadRetryOverride = -1;
 };
 
 // ── Per-sector log entry from a secure rip ──────────────────────────────────

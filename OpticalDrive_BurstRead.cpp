@@ -8,6 +8,9 @@
 // ============================================================================
 
 bool OpticalDrive::ReadDiscBurst(DiscInfo& disc, std::function<void(int, int)> progress, int speedOverride, int errorMode) {
+	// Lock the tray for the duration of the read (auto-unlocked on return, before
+	// any caller-level eject such as the disc swap in Compare Disc CRCs).
+	DriveDoorLockGuard doorLock(m_drive);
 	DWORD total = 0;
 	for (size_t i = 0; i < disc.tracks.size(); i++) {
 		if (disc.selectedSession > 0 && disc.tracks[i].session != disc.selectedSession) continue;

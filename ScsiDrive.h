@@ -23,6 +23,7 @@ private:
 	int m_maxRetries = 5;
 	int m_retryDelayMs = 100;
 	bool m_c2Functional = true;        // C2 pointer data is actually populated
+	int m_doorLockCount = 0;           // Ref-count for PreventMediumRemoval (tray lock)
 
 	// Current Pioneer SET CD SPEED byte-10 mode (bits 0-5 of speed-mode value).
 	// Sticky for the lifetime of the open handle so that SetSpeed/Quiet/Perf
@@ -134,6 +135,11 @@ public:
 	bool ReadSectorQAdaptive(DWORD lba, int& qTrack, int& qIndex,
 		DWORD pregapLBA, DWORD startLBA);
 	bool ReadSectorQAnyType(DWORD lba, int& qTrack, int& qIndex);
+	// Reads the Q-subchannel CONTROL nibble (bit0=pre-emphasis, bit1=copy
+	// permitted, bit2=data track, bit3=4-channel) from an ADR=1 position frame.
+	// This is the authoritative *in-track* copy of the flags; the TOC's lead-in
+	// copy can disagree. Returns false if no CRC-valid ADR=1 frame is read.
+	bool ReadSectorQControl(DWORD lba, int& control);
 
 	// ── Enhanced C2 reading ──────────────────────────────────
 	bool ReadSectorWithC2Ex(DWORD lba, BYTE* audio, BYTE* subchannel, int& c2Errors,
@@ -259,6 +265,13 @@ public:
 	// ── Media control ────────────────────────────────────────
 	bool Eject();
 	bool SpinDown();
+	// PREVENT ALLOW MEDIUM REMOVAL (0x1E): lock (prevent=true) or unlock the
+	// tray. Locking during a long rip/scan stops an accidental eject-button or
+	// OS eject from interrupting the operation. Reference-counted so nested
+	// guards compose; the physical lock is issued only on the outermost lock and
+	// released only on the outermost unlock. Harmless no-op on drives that reject
+	// it. Eject() force-clears the lock first, so an intentional eject always works.
+	bool PreventMediumRemoval(bool prevent);
 	bool GetMediaProfile(WORD& profileCode, std::string& profileName);
 	bool RequestSenseProgress(BYTE& senseKey, BYTE& asc, BYTE& ascq, int& progressPercent);
 
@@ -274,6 +287,15 @@ public:
 		BYTE* senseKey, BYTE* asc, BYTE* ascq, bool dataIn = true,
 		DWORD timeoutSec = 60);
 	bool SeekToLBA(DWORD lba);
+
+	// ── Read Error Recovery mode page (0x01) — EXPERIMENTAL ──
+	// MODE SENSE(10)/MODE SELECT(10) accessors for the drive's Read Error Recovery
+	// parameters. ReadErrorRecoveryPage returns the raw page bytes (>= 4) plus the
+	// Read Retry Count (byte 3); WriteErrorRecoveryPage writes a modified page back.
+	// Used by ReadErrorRecoveryGuard to cap the drive's internal retries so the host
+	// controls recovery during a secure rip. `page` buffers must be >= 32 bytes.
+	bool ReadErrorRecoveryPage(BYTE* page, int& pageBytes, BYTE& retryCount);
+	bool WriteErrorRecoveryPage(const BYTE* page, int pageBytes);
 
 	// ── Enhanced error handling ──────────────────────────────
 	bool GetMediaStatus(DriveHealthCheck& status);
@@ -349,4 +371,56 @@ private:
 	bool ParseRawSubchannel(const BYTE* sub, int& qTrack, int& qIndex);
 	bool ProbeC1BlockErrors();
 	bool ProbeC2Liveness();
+};
+
+// ── RAII: lock the drive tray for the duration of a scope ───────────────────
+// Locks the tray on construction (PREVENT ALLOW MEDIUM REMOVAL) and unlocks it
+// on destruction, so a long rip or scan can't be interrupted by an accidental
+// eject-button press or an OS eject. Reference-counted in ScsiDrive, so nested
+// guards compose correctly. Harmless no-op on drives that reject the command.
+class DriveDoorLockGuard {
+public:
+    // Construction always acquires (increments the ref-count) and destruction
+    // always releases (decrements it), so the count stays balanced even when the
+    // physical lock CDB is rejected by the drive — otherwise a rejected first
+    // lock would leak the count and silently disable locking for the session.
+    explicit DriveDoorLockGuard(ScsiDrive& drive) : m_drive(drive) {
+        m_drive.PreventMediumRemoval(true);
+    }
+    ~DriveDoorLockGuard() {
+        m_drive.PreventMediumRemoval(false);
+    }
+    DriveDoorLockGuard(const DriveDoorLockGuard&) = delete;
+    DriveDoorLockGuard& operator=(const DriveDoorLockGuard&) = delete;
+private:
+    ScsiDrive& m_drive;
+};
+
+// ── RAII: temporarily override the drive's Read Error Recovery retry count ───
+// EXPERIMENTAL. Snapshots mode page 0x01, sets the Read Retry Count (byte 3) to
+// `desiredRetry`, and restores the original page on destruction. A low retry
+// count makes the drive surface read errors/C2 to the host quickly instead of
+// grinding through internal re-reads, so the host's multi-pass/consensus engine
+// does the recovery. Drive-dependent: firmware may clamp or ignore the value, so
+// the guard reads the page back and records whether the change was honored. Pass
+// active=false (or desiredRetry<0) to no-op the whole thing.
+class ReadErrorRecoveryGuard {
+public:
+    ReadErrorRecoveryGuard(ScsiDrive& drive, int desiredRetry, bool active);
+    ~ReadErrorRecoveryGuard();
+    ReadErrorRecoveryGuard(const ReadErrorRecoveryGuard&) = delete;
+    ReadErrorRecoveryGuard& operator=(const ReadErrorRecoveryGuard&) = delete;
+
+    bool applied() const { return m_applied; }         // MODE SELECT was accepted
+    bool honored() const { return m_honored; }         // read-back matched desired
+    int  originalRetry() const { return m_origRetry; } // -1 if the page couldn't be read
+    int  effectiveRetry() const { return m_effRetry; } // read-back value (-1 if unknown)
+private:
+    ScsiDrive& m_drive;
+    bool m_applied = false;
+    bool m_honored = false;
+    int  m_origRetry = -1;
+    int  m_effRetry = -1;
+    int  m_savedBytes = 0;
+    BYTE m_savedPage[32] = {};
 };

@@ -60,6 +60,30 @@ struct QCheckResult {
 	int totalCU = 0;
 	int maxCUPerSecond = 0;
 
+	// Whether the scan backend actually measures CU (uncorrectable) errors.
+	// Plextor Q-Check and LiteOn/MediaTek report a real E32/CU counter; the
+	// Pioneer 0x3B/0x3C vendor scan does NOT — it only exposes C1 (BLER) and
+	// the E22 second-stage counter, so its CU is always 0 by omission, not by
+	// measurement. When false, the report must not present CU == 0 as a clean
+	// bill of health (that would imply an uncorrectable check that never ran).
+	bool cuMeasured = true;
+
+	// Pioneer CD Check (0xE6) uncorrectable cross-check. The 0x3B/0x3C vendor
+	// quality scan exposes no CU, so on Pioneer drives that implement the CD
+	// Check protocol we run it over the same audio range to obtain a genuine
+	// uncorrectable measurement. pioneerCdCheckRun is true only when the CD
+	// Check produced valid data (older Pioneer drives support it; the BDR-S13U
+	// appears to have dropped it, in which case this stays false).
+	bool pioneerCdCheckRun = false;
+	int  pioneerCdCheckC1Frames = 0;   // worst-window C1 uncorrectable frame count
+	int  pioneerCdCheckC2Bytes  = 0;   // worst-window C2 uncorrectable byte count (real data loss)
+	// True when the CD Check cross-check was deliberately skipped because the
+	// vendor scan already found the disc pristine (no C2/E22, low C1) — there is
+	// no C2 activity for uncorrectable errors to hide beneath, so the extra
+	// full-disc pass would only confirm zero. Distinguishes "clean, skipped" from
+	// "attempted but the drive doesn't implement CD Check" in the report.
+	bool pioneerCdCheckSkippedClean = false;
+
 	// Per-second time-series data
 	std::vector<QCheckSample> samples;
 
@@ -206,6 +230,17 @@ struct DiscRotAnalysis {
 	double pioneerE22AvgPerSecond = 0.0;        // Average Pioneer E22 diagnostic count in Phase 0
 	int pioneerE22Peak = 0;                     // Peak Pioneer E22 diagnostic count in Phase 0
 	std::string pioneerE22Rating;               // Ideal / Good / Acceptable / Concerning
+
+	// Pioneer CD Check (0xE6) uncorrectable cross-check. On Pioneer drives the
+	// vendor scan (Phase 0) and the per-sector READ CD C2 area (Phase 1) are both
+	// blind to uncorrectable (E32/CU) data, so this measures it directly. Data
+	// loss is the strongest rot signal, so a non-zero C2-uncorrectable count
+	// escalates the rot-risk verdict. pioneerCdCheckRun is true only when the CD
+	// Check produced valid data (older Pioneer drives support it; the BDR-S13U
+	// appears to have dropped it, in which case this stays false).
+	bool pioneerCdCheckRun = false;
+	int  pioneerCdCheckC1Frames = 0;            // worst-window C1 uncorrectable frame count
+	int  pioneerCdCheckC2Bytes  = 0;            // worst-window C2 uncorrectable byte count (real data loss)
 
 	// Heuristic disc-rot pattern flags
 	bool edgeConcentration = false;             // Errors concentrated at inner/outer edges
