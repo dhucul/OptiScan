@@ -69,22 +69,26 @@ bool ScsiDrive::SupportsLiteOnFeTe() {
 		return false;
 	}
 
-	// Trial read to confirm the drive actually produces servo data.
+	// Trial read to confirm the drive implements DF/08. Acceptance of the getdata
+	// command is the support signal; non-zero servo values only confirm it. A disc
+	// that isn't fully up to speed can momentarily read back zero, and requiring
+	// non-zero here wrongly reported a capable drive as unsupported until a rescan
+	// (same class of bug as the 0xDF C1/C2 probe).
 	std::this_thread::sleep_for(std::chrono::milliseconds(150));
 	memset(cdb, 0, 12);
 	cdb[0] = 0xDF; cdb[1] = 0x08; cdb[2] = 0x02; cdb[3] = 0x01;   // get data (LBA=0)
 	std::fill(buf.begin(), buf.end(), BYTE(0));
-	SendSCSIWithSense(cdb, 12, buf.data(), 0x10, &sk, &asc, &ascq);
+	bool gdOk = SendSCSIWithSense(cdb, 12, buf.data(), 0x10, &sk, &asc, &ascq);
 
 	bool hasData = false;
 	for (int i = 1; i < 8; i++) if (buf[i]) { hasData = true; break; }
-	if (hasData) {
+	if (hasData || gdOk || sk <= 0x01) {
 		std::cout << "  [LiteOnFeTe] Drive supports DF/08 focus/tracking-error scan\n" << std::flush;
 		m_liteonFeTeProbed = 1;
 		return true;
 	}
 
-	std::cout << "  [LiteOnFeTe] DF/08 accepted but produced no servo data\n" << std::flush;
+	std::cout << "  [LiteOnFeTe] DF/08/02 getdata rejected\n" << std::flush;
 	m_liteonFeTeProbed = 0;
 	return false;
 }

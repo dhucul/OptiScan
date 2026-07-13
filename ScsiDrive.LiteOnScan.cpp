@@ -151,12 +151,19 @@ bool ScsiDrive::SupportsLiteOnScan() {
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0xA0; cdb[4] = 0x02;
 		SendSCSIWithSense(cdb, 12, buf256.data(), 256, &sk, &asc, &ascq);
 
-		// Trial reads — check a few blocks for non-zero C1/C2/CU.
+		// Sweep a few intervals and read the tallied counters. Support is a
+		// property of the DRIVE, not the disc: a Q-Check-capable MediaTek/PLDS
+		// drive ACCEPTS the 0xDF/0x82 counter-read triplet even when the sampled
+		// sectors happen to be error-free. Earlier versions REQUIRED a non-zero
+		// C1/C2/CU here, which wrongly reported a fully-capable drive (e.g. the
+		// PX-891SAF PLUS) as unsupported whenever the first few seconds of the
+		// disc read clean or the drive wasn't yet up to speed — surfacing a false
+		// "Q-Check requires a classic Plextor drive" warning that only a rescan
+		// (which re-probes) cleared. So the getdata command being accepted is the
+		// support signal; non-zero counts are just an early confirmation.
 		// CRITICAL: a MediaTek/PLDS drive tallies errors only for sectors the
-		// host reads, so each trial must drive the head first (same as the real
-		// scan). Without this the counters stay zero and a fully-capable drive
-		// (e.g. the PX-891SAF PLUS) is wrongly reported as unsupported. Sampling
-		// a few regions makes a hit likely even on a clean disc.
+		// host reads, so each trial drives the head first (same as the real scan).
+		bool getDataAccepted = false;
 		bool hasData = false;
 		for (int trial = 0; trial < 3 && !hasData; trial++) {
 			LiteOnScanDriveHead(static_cast<DWORD>(trial) * 150, 75);
@@ -165,10 +172,13 @@ bool ScsiDrive::SupportsLiteOnScan() {
 			memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0x82; cdb[2] = 0x09;
 			SendSCSIWithSense(cdb, 12, buf256.data(), 256, &sk, &asc, &ascq);
 
-			// Get data
+			// Get data — acceptance here (GOOD or a recovered error) is what
+			// proves the drive implements the measurement mode.
 			std::fill(buf256.begin(), buf256.end(), BYTE(0));
 			memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0x82; cdb[2] = 0x05;
-			SendSCSIWithSense(cdb, 12, buf256.data(), 256, &sk, &asc, &ascq);
+			bool gdOk = SendSCSIWithSense(cdb, 12, buf256.data(), 256, &sk, &asc, &ascq);
+			if (gdOk || sk <= 0x01)
+				getDataAccepted = true;
 
 			// Check C1 (bytes 0-1), C2 (bytes 2-3), CU (byte 4)
 			for (int i = 0; i <= 4; i++) {
@@ -184,17 +194,34 @@ bool ScsiDrive::SupportsLiteOnScan() {
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0xA3; cdb[2] = 0x01;
 		SendSCSIWithSense(cdb, 12, buf256.data(), 256, &sk, &asc, &ascq);
 
-		if (hasData) {
+		if (hasData || getDataAccepted) {
 			m_liteonScanProbed = 1;
 			return true;
 		}
 
-		snprintf(dbg, sizeof(dbg), "LiteOnScan: 0xDF accepted but trial reads returned all zeros\n");
-		OutputDebugStringA(dbg);
+		// 0xDF/0xA3 armed but the 0x82/0x05 getdata was rejected on every trial —
+		// the drive doesn't actually implement the scan.
+		OutputDebugStringA("LiteOnScan: 0xDF armed but 0x82/0x05 getdata rejected\n");
+		m_liteonScanProbed = 0;
+		return false;
 	}
 
-	OutputDebugStringA("LiteOnScan: No supported scan commands found\n");
-	m_liteonScanProbed = 0;
+	// The 0xDF/0xA3 init was rejected. ILLEGAL REQUEST (sk=0x05) means the drive
+	// parsed the CDB and refuses the opcode → it genuinely isn't a MediaTek/PLDS
+	// scan drive, so cache the negative. Any OTHER sense (NOT READY / UNIT
+	// ATTENTION while the disc spins up, aborted, hardware) is transient and must
+	// NOT poison the cache — leaving m_liteonScanProbed at -1 re-probes on the
+	// next attempt, so a working drive is never stuck "unsupported" until the user
+	// runs a manual rescan.
+	if (sk == 0x05) {
+		OutputDebugStringA("LiteOnScan: 0xDF rejected (illegal request) - not a scan drive\n");
+		m_liteonScanProbed = 0;
+	}
+	else {
+		snprintf(dbg, sizeof(dbg),
+			"LiteOnScan: 0xDF init inconclusive (sk=0x%02X) - will re-probe\n", sk);
+		OutputDebugStringA(dbg);
+	}
 	return false;
 }
 

@@ -84,25 +84,29 @@ bool ScsiDrive::SupportsLiteOnJitter() {
 		return false;
 	}
 
-	// Trial block read — confirm the drive actually produces jitter data
-	// rather than just accepting the init command.
+	// Trial block read — the getdata command being ACCEPTED proves the drive
+	// implements the jitter scan. Non-zero jitter is only a confirmation: a disc
+	// that isn't fully up to speed (or a very short trial window) can momentarily
+	// read back zero, and requiring non-zero here wrongly reported a capable drive
+	// as unsupported and cached that until the next rescan (same class of bug as
+	// the 0xDF C1/C2 probe).
 	std::this_thread::sleep_for(std::chrono::milliseconds(200));
 	memset(cdb, 0, 12);
 	cdb[0] = 0xDF; cdb[1] = 0x1B; cdb[2] = 0xA2;
 	// LBA = 0 in CDB[4..7] (already zeroed)
 	std::fill(buf.begin(), buf.end(), BYTE(0));
-	SendSCSIWithSense(cdb, 12, buf.data(), 0x0C, &sk, &asc, &ascq);
+	bool gdOk = SendSCSIWithSense(cdb, 12, buf.data(), 0x0C, &sk, &asc, &ascq);
 
 	bool hasData = false;
 	for (int i = 1; i < 8; i++) if (buf[i]) { hasData = true; break; }
-	if (hasData) {
+	if (hasData || gdOk || sk <= 0x01) {
 		std::cout << "  [LiteOnJitter] Drive supports 0xDF/0x1B jitter scan\n";
 		m_liteonJitterProbed = 1;
 		return true;
 	}
 
-	OutputDebugStringA("LiteOnJitter: init accepted but trial block returned zeros\n");
-	std::cout << "  [LiteOnJitter] Drive accepts 0xDF/0x1B but does not produce data\n"
+	OutputDebugStringA("LiteOnJitter: 0xDF/0x1B/0xA2 getdata rejected\n");
+	std::cout << "  [LiteOnJitter] Drive rejected 0xDF/0x1B/0xA2 getdata\n"
 		<< std::flush;
 	m_liteonJitterProbed = 0;
 	return false;
