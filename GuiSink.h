@@ -50,6 +50,16 @@ namespace GuiSink {
     inline void AppendUtf8(const std::string& s) { AppendUtf8(s.data(), s.size()); }
     inline void AppendWide(const std::wstring& s) { AppendWide(s.data(), s.size()); }
 
+    // Append a pre-coloured line (fixed explicit colour, no ANSI/progress
+    // parsing) through the same FIFO queue as stream output. SAFE TO CALL FROM
+    // ANY THREAD: the OutputControl mutation and accessible-mirror update both
+    // happen on the UI thread during DrainOutputQueue, preserving ordering with
+    // surrounding cout/Console:: output. Used for op headers / batch markers.
+    void AppendDirectColored(const wchar_t* text, size_t len, COLORREF color);
+    inline void AppendDirectColored(const std::wstring& s, COLORREF color) {
+        AppendDirectColored(s.data(), s.size(), color);
+    }
+
     // Called on the UI thread (in response to the drain message) to move any
     // queued text into the bound output control.
     void DrainOutputQueue();

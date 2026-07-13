@@ -25,7 +25,23 @@ namespace {
     UINT g_drainMessage   = 0;
 
     std::mutex g_mutex;
-    std::deque<std::wstring> g_queue;   // text waiting for the UI thread
+
+    // One unit of output waiting for the UI thread. Two flavours:
+    //   * stream text  (direct == false) - cout/Console:: output that still
+    //     needs ANSI-SGR + progress-line parsing.
+    //   * direct line  (direct == true)  - a pre-coloured line (op headers,
+    //     batch markers) that must be appended verbatim with an explicit
+    //     colour, bypassing the parser. These used to be written to the
+    //     OutputControl directly from the calling thread, which raced with
+    //     the UI-thread drain and corrupted the log vectors; routing them
+    //     through the same FIFO makes every control mutation happen on the
+    //     UI thread while preserving ordering with surrounding stream output.
+    struct QueueItem {
+        std::wstring text;
+        bool         direct = false;
+        COLORREF     color  = 0;
+    };
+    std::deque<QueueItem> g_queue;      // output waiting for the UI thread
     bool g_drainPending = false;
 
     // UI-thread parser state. CR ('\r') starts a "progress" line; the chars
@@ -335,14 +351,14 @@ namespace {
     // ----------------------------------------------------------------------
     // Worker-thread enqueue.
     // ----------------------------------------------------------------------
-    void EnqueueAndNotify(std::wstring text) {
-        if (text.empty()) return;
+    void EnqueueItem(QueueItem item) {
+        if (item.text.empty()) return;
         HWND hWnd = nullptr;
         UINT msg = 0;
         bool needPost = false;
         {
             std::lock_guard<std::mutex> lock(g_mutex);
-            g_queue.push_back(std::move(text));
+            g_queue.push_back(std::move(item));
             hWnd = g_hDrainWindow;
             msg = g_drainMessage;
             if (!g_drainPending && hWnd && msg) {
@@ -351,6 +367,11 @@ namespace {
             }
         }
         if (needPost) PostMessageW(hWnd, msg, 0, 0);
+    }
+
+    void EnqueueAndNotify(std::wstring text) {
+        if (text.empty()) return;
+        EnqueueItem(QueueItem{ std::move(text), /*direct=*/false, 0 });
     }
 
     // ----------------------------------------------------------------------
@@ -475,20 +496,47 @@ namespace GuiSink {
         EnqueueAndNotify(std::wstring(wide, len));
     }
 
+    void AppendDirectColored(const wchar_t* text, size_t len, COLORREF color) {
+        if (!text || len == 0) return;
+        EnqueueItem(QueueItem{ std::wstring(text, len), /*direct=*/true, color });
+    }
+
     void DrainOutputQueue() {
-        std::deque<std::wstring> local;
+        std::deque<QueueItem> local;
         {
             std::lock_guard<std::mutex> lock(g_mutex);
             local.swap(g_queue);
             g_drainPending = false;
         }
         if (local.empty()) return;
-        std::wstring big;
-        size_t total = 0;
-        for (const auto& s : local) total += s.size();
-        big.reserve(total);
-        for (auto& s : local) big.append(s);
-        ProcessToOutput(big);
+
+        // Coalesce consecutive stream chunks into one ProcessToOutput call
+        // (the common case: a drain with no direct items runs the parser once,
+        // exactly as before). A direct item flushes the pending stream run
+        // first so its pre-coloured line lands in the correct FIFO position,
+        // then is appended verbatim - bypassing ANSI/progress parsing so its
+        // explicit colour and CR/LF survive. All of this runs on the UI thread.
+        std::wstring streamRun;
+        auto flushStream = [&]() {
+            if (!streamRun.empty()) {
+                ProcessToOutput(streamRun);
+                streamRun.clear();
+            }
+        };
+        for (auto& item : local) {
+            if (item.direct) {
+                flushStream();
+                if (g_hOutput) {
+                    OutputControl::Append(g_hOutput, item.text.c_str(),
+                                          item.text.size(), item.color,
+                                          /*isExplicit=*/true);
+                }
+                AppendToMirrorEdit(item.text);
+            } else {
+                streamRun.append(item.text);
+            }
+        }
+        flushStream();
     }
 
     void ClearOutput() {

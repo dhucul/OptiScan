@@ -361,13 +361,16 @@ void OnThemeChangedUi()
     }
 }
 
-void AppendInfoText(HWND hCtrl, LPCWSTR text)
+void AppendInfoText(HWND /*hCtrl*/, LPCWSTR text)
 {
-    if (!hCtrl || !text) return;
-    OutputControl::Append(hCtrl, text, MenuTextOrange, /*isExplicit=*/true);
-    // Op headers, batch step markers and cancellation notices are written
-    // straight to the OutputControl and bypass the GuiSink stream path, so
-    // mirror them into the accessible EDIT explicitly.
-    GuiSink::MirrorText(text, (size_t)lstrlenW(text));
+    if (!text) return;
+    // Op headers, batch step markers and cancellation notices are enqueued as
+    // a pre-coloured line and applied on the UI thread during the drain. This
+    // MUST NOT write to the OutputControl directly: AppendInfoText is called
+    // from worker threads (e.g. batch step headers), and mutating the control's
+    // vectors off the UI thread raced with the concurrent drain and corrupted
+    // the log (random heap-corruption crash in vector reallocation). The queue
+    // path also mirrors to the accessible EDIT, so no separate MirrorText call.
+    GuiSink::AppendDirectColored(text, (size_t)lstrlenW(text), MenuTextOrange);
 }
 
