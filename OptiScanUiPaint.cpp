@@ -655,6 +655,24 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
         size_t labelLength = wcslen(label);
         while (labelLength > 0 && (label[labelLength - 1] == L'*' || label[labelLength - 1] == L' '))
             label[--labelLength] = L'\0';
+        LPCWSTR displayLabel = label;
+        // Keep the complete wording in CommandLabels/Operations menus, but use
+        // concise card captions where the full diagnostic name is too wide.
+        switch (commandIndex)
+        {
+        case 2:  displayLabel = L"Write disc image files"; break;
+        case 3:  displayLabel = L"Write tracks with current pregaps"; break;
+        case 4:  displayLabel = L"Recovery rip"; break;
+        case 5:  displayLabel = L"Quality scan (C1/C2/CU)"; break;
+        case 11: displayLabel = L"Compare original and copy CRCs"; break;
+        case 13: displayLabel = L"Disc fingerprint IDs"; break;
+        case 16: displayLabel = L"Verify subchannel burn"; break;
+        case 28: displayLabel = L"Pioneer audio quality check"; break;
+        case 31: displayLabel = L"FE/TE servo scan (LiteOn)"; break;
+        case 32: displayLabel = L"Batch run"; break;
+        case 33: displayLabel = L"Clear output"; break;
+        default: break;
+        }
 
         Gdiplus::GraphicsPath card;
         AddRoundedRectangle(card, rc.left + ScalePx(1), rc.top + ScalePx(1),
@@ -700,6 +718,7 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
             DrawOpticalRingMark(graphics, rc.left + ScaleReal(66), rc.top + ScaleReal(66), ScaleReal(24), 210, true);
 
             Gdiplus::Font titleFont(&uiFamily, ScaleReal(27), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+            Gdiplus::Font badgeFont(&uiFamily, ScaleReal(18), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
             Gdiplus::Font descriptionFont(&uiFamily, ScaleReal(19), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
             Gdiplus::Font actionFont(&uiFamily, ScaleReal(18), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
             const wchar_t* description = commandIndex == 0
@@ -708,8 +727,16 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
                                      : L"Scan the disc surface and read quality.");
             const wchar_t* primaryTitle = commandIndex == 0 ? L"Copy disc"
                 : (commandIndex == 1 ? L"Rip tracks" : L"Quality scan");
+            const wchar_t* menuNumber = commandIndex == 0 ? L"1" : (commandIndex == 1 ? L"2" : L"6");
+            Gdiplus::GraphicsPath numberBadge;
+            AddRoundedRectangle(numberBadge, rc.left + ScalePx(128), rc.top + ScalePx(28),
+                                ScalePx(34), ScalePx(30), ScalePx(7));
+            Gdiplus::SolidBrush badgeBg(Gdiplus::Color(255, 235, 243, 255));
+            graphics.FillPath(&badgeBg, &numberBadge);
+            graphics.DrawString(menuNumber, -1, &badgeFont,
+                                Gdiplus::PointF(rc.left + ScaleReal(139), rc.top + ScaleReal(33)), &blue);
             graphics.DrawString(primaryTitle, -1, &titleFont,
-                                Gdiplus::PointF(rc.left + ScaleReal(128), rc.top + ScaleReal(27)), &ink);
+                                Gdiplus::PointF(rc.left + ScaleReal(176), rc.top + ScaleReal(27)), &ink);
             graphics.DrawString(description, -1, &descriptionFont,
                                 Gdiplus::PointF(rc.left + ScaleReal(128), rc.top + ScaleReal(66)), &secondary);
 
@@ -729,8 +756,14 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
             graphics.DrawString(number, -1, &numberFont,
                                 Gdiplus::PointF(rc.left + ScaleReal(14), rc.top + ScaleReal(15)),
                                 exitCommand ? &ink : &blue);
-            graphics.DrawString(label, -1, &labelFont,
-                                Gdiplus::PointF(rc.left + ScaleReal(54), rc.top + ScaleReal(14)), &ink);
+            Gdiplus::StringFormat labelFormat;
+            labelFormat.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
+            labelFormat.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
+            labelFormat.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+            Gdiplus::RectF labelRect(rc.left + ScaleReal(54), (Gdiplus::REAL)rc.top,
+                                    max(ScaleReal(20), (Gdiplus::REAL)(rc.right - rc.left) - ScaleReal(68)),
+                                    (Gdiplus::REAL)(rc.bottom - rc.top));
+            graphics.DrawString(displayLabel, -1, &labelFont, labelRect, &labelFormat, &ink);
         }
         return;
     }
