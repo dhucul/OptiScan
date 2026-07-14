@@ -14,7 +14,7 @@
 
 // Current application version — update this with each release.
 // Used by MainMenu.cpp via CheckForUpdates(APP_VERSION).
-const VersionInfo APP_VERSION = { 3, 13, 0 };
+const VersionInfo APP_VERSION = { 3, 14, 0 };
 
 static const wchar_t* GITHUB_HOST = L"api.github.com";
 static const wchar_t* RELEASE_PATH = L"/repos/dhucul/OptiScan/releases/latest";
