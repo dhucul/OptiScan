@@ -373,7 +373,9 @@ static void DrawProfessionalAppleBackground(Gdiplus::Graphics& graphics, const R
     Gdiplus::Font subtitle(&uiFamily, ScaleReal(21), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
     Gdiplus::Font sectionFont(&uiFamily, ScaleReal(24), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
     Gdiplus::SolidBrush ink(Gdiplus::Color(255, 23, 32, 42));
-    Gdiplus::SolidBrush muted(Gdiplus::Color(255, 102, 112, 133));
+    // Darker secondary ink keeps unselected navigation and drive-status text
+    // readable on the bright sidebar without competing with selected items.
+    Gdiplus::SolidBrush muted(Gdiplus::Color(255, 53, 64, 82));
     Gdiplus::SolidBrush mainInk(Gdiplus::Color(255, 255, 255, 255));
     Gdiplus::SolidBrush mainMuted(Gdiplus::Color(255, 210, 231, 255));
     Gdiplus::SolidBrush blue(Gdiplus::Color(255, 23, 105, 224));
@@ -392,7 +394,7 @@ static void DrawProfessionalAppleBackground(Gdiplus::Graphics& graphics, const R
             graphics.FillRectangle(&blue, ScalePx(18), y + ScalePx(10), ScalePx(5), ScalePx(38));
         }
         Gdiplus::Pen iconPen(i == selectedNav ? Gdiplus::Color(255, 23, 105, 224)
-                                    : Gdiplus::Color(255, 102, 112, 133), max(1.0f, ScaleReal(2)));
+                                    : Gdiplus::Color(255, 53, 64, 82), max(1.0f, ScaleReal(2)));
         graphics.DrawEllipse(&iconPen, ScaleReal(43), (Gdiplus::REAL)y + ScaleReal(17), ScaleReal(24), ScaleReal(24));
         graphics.DrawString(navLabels[i], -1, i == selectedNav ? &navSelected : &navFont,
                             Gdiplus::PointF(ScaleReal(88), (Gdiplus::REAL)y + ScaleReal(14)),
@@ -751,7 +753,7 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
         Gdiplus::SolidBrush ink(disabled ? Gdiplus::Color(255, 152, 162, 179)
                                          : (exitCommand ? Gdiplus::Color(255, 196, 35, 55)
                                                         : Gdiplus::Color(255, 23, 32, 42)));
-        Gdiplus::SolidBrush secondary(Gdiplus::Color(255, 102, 112, 133));
+        Gdiplus::SolidBrush secondary(Gdiplus::Color(255, 53, 64, 82));
         Gdiplus::SolidBrush blue(Gdiplus::Color(255, 23, 105, 224));
 
         if (primary)
