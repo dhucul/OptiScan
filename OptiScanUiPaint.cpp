@@ -428,6 +428,7 @@ static void DrawProfessionalAppleBackground(Gdiplus::Graphics& graphics, const R
     {
         const wchar_t* groupNames[] = { L"Rip & Copy", L"Disc Quality", L"Analysis", L"Drive Tools", L"Utilities" };
         const int groupCounts[] = { 3, 6, 6, 11, 6 };
+        const int overviewColumns = 6;
         int groupTitleTop = ScalePx(370);
         const int buttonHeight = ScalePx(56);
         const int rowGap = ScalePx(10);
@@ -436,14 +437,15 @@ static void DrawProfessionalAppleBackground(Gdiplus::Graphics& graphics, const R
             graphics.DrawString(groupNames[i], -1, &sectionFont,
                                 Gdiplus::PointF((Gdiplus::REAL)contentLeft, (Gdiplus::REAL)groupTitleTop), &mainInk);
             const int buttonTop = groupTitleTop + ScalePx(40);
-            groupBottom = buttonTop + ((groupCounts[i] + 4) / 5) * (buttonHeight + rowGap) - rowGap;
+            groupBottom = buttonTop + ((groupCounts[i] + overviewColumns - 1) / overviewColumns)
+                * (buttonHeight + rowGap) - rowGap;
             groupTitleTop = groupBottom + ScalePx(36);
         }
     }
 
     const int outputTop = selectedNav == 0
-        ? max(groupBottom + ScalePx(60), height - ScalePx(500))
-        : height - ScalePx(500);
+        ? max(groupBottom + ScalePx(60), height - ScalePx(650))
+        : height - ScalePx(650);
     const int outputBottom = height - ScalePx(40);
     Gdiplus::GraphicsPath outputCard;
     AddRoundedRectangle(outputCard, contentLeft, outputTop, contentWidth,
@@ -504,7 +506,7 @@ void DrawMainBackground(HWND hWnd, HDC hdc)
         (labelHeight + gap) +
         (7 * (buttonHeight + gap));
     const int minimumOutputTop = top + middleColumnHeight + ScalePx(32);
-    const int requestedOutputHeight = max(ScalePx(420), min(ScalePx(680), ((rc.bottom - rc.top) * 38) / 100));
+    const int requestedOutputHeight = max(ScalePx(520), min(ScalePx(820), ((rc.bottom - rc.top) * 46) / 100));
     const int outputTop = max(minimumOutputTop, rc.bottom - layoutMargin - requestedOutputHeight);
     const int outputHeight = max(ScalePx(300), rc.bottom - layoutMargin - outputTop);
     const int panelWidth = max(ScalePx(900), rc.right - rc.left - (layoutMargin * 2));

@@ -238,11 +238,13 @@ void LayoutMainControls(HWND hWnd)
             if (hInfoButtons[i]) ShowWindow(hInfoButtons[i], SW_HIDE);
 
         const int navIndex = GetProfessionalNavIndex();
-        int outputTop = rc.bottom - ScalePx(500);
+        int outputTop = rc.bottom - ScalePx(650);
         if (navIndex == 0)
         {
             const int columnGap = ScalePx(18);
-            const int columnWidth = max(ScalePx(240), (contentWidth - (columnGap * 4)) / 5);
+            const int overviewColumns = 6;
+            const int columnWidth = max(ScalePx(220),
+                (contentWidth - (columnGap * (overviewColumns - 1))) / overviewColumns);
             const int primaryTop = ScalePx(150);
             const int primaryHeight = ScalePx(170);
             const int primaryGap = ScalePx(24);
@@ -260,15 +262,16 @@ void LayoutMainControls(HWND hWnd)
             auto placeGroup = [&](const int* indices, int count, int buttonTop) {
                 for (int i = 0; i < count; ++i)
                 {
-                    const int row = i / 5;
-                    const int column = i % 5;
+                    const int row = i / overviewColumns;
+                    const int column = i % overviewColumns;
                     ShowWindow(hInfoButtons[indices[i]], SW_SHOWNOACTIVATE);
                     move(hInfoButtons[indices[i]],
                          contentLeft + column * (columnWidth + columnGap),
                          buttonTop + row * (buttonHeight + rowGap),
                          columnWidth, buttonHeight);
                 }
-                return buttonTop + ((count + 4) / 5) * (buttonHeight + rowGap) - rowGap;
+                return buttonTop + ((count + overviewColumns - 1) / overviewColumns)
+                    * (buttonHeight + rowGap) - rowGap;
             };
 
             const int ripCopy[] = { 2, 3, 4 };
@@ -358,7 +361,7 @@ void LayoutMainControls(HWND hWnd)
         (labelHeight + gap) +
         (7 * (buttonHeight + gap));
     const int minimumOutputTop = top + middleColumnHeight + ScalePx(32);
-    const int requestedOutputHeight = max(ScalePx(420), min(ScalePx(680), ((rc.bottom - rc.top) * 38) / 100));
+    const int requestedOutputHeight = max(ScalePx(520), min(ScalePx(820), ((rc.bottom - rc.top) * 46) / 100));
     const int outputTop = max(minimumOutputTop, rc.bottom - margin - requestedOutputHeight);
     const int outputHeight = max(ScalePx(300), rc.bottom - margin - outputTop);
     const int outputWidth = max(ScalePx(400), rc.right - rc.left - (margin * 2));
