@@ -66,8 +66,58 @@ static void PaintProceduralBackdrop(Gdiplus::Graphics& g, int width, int height)
     const float W = (float)width, H = (float)height;
     g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
 
-    // 1. diagonal base gradient (slight lift -> base)
+    // The professional light theme uses a saturated cobalt instrumentation
+    // canvas. Render it here as well as in the parent window so the slices
+    // underneath owner-drawn rounded buttons align perfectly.
     Gdiplus::Rect full(0, 0, width, height);
+    if (CurrentThemeId() == ThemeId::AppleLight)
+    {
+        Gdiplus::LinearGradientBrush cobalt(full,
+            Gdiplus::Color(255, 25, 119, 235), Gdiplus::Color(255, 5, 47, 132), 12.0f);
+        g.FillRectangle(&cobalt, full);
+
+        // Deepen the lower canvas without flattening the vivid upper-left.
+        Gdiplus::LinearGradientBrush depth(full,
+            Gdiplus::Color(0, 3, 28, 78), Gdiplus::Color(105, 2, 24, 71),
+            Gdiplus::LinearGradientModeVertical);
+        g.FillRectangle(&depth, full);
+
+        const float scanX = W * 1.015f;
+        const float scanY = H * 0.40f;
+        PaintGlow(g, scanX, scanY, min(W, H) * 0.34f, 92, RGB(0, 207, 255));
+
+        // Sparse measurement matrix, concentrated on the right half.
+        Gdiplus::SolidBrush dot(Gdiplus::Color(30, 103, 213, 255));
+        const int dotStep = max(ScalePx(24), 12);
+        for (int y = ScalePx(18); y < (int)(H * 0.82f); y += dotStep)
+            for (int x = (int)(W * 0.40f); x < width; x += dotStep)
+                g.FillEllipse(&dot, (Gdiplus::REAL)x, (Gdiplus::REAL)y, ScaleReal(2), ScaleReal(2));
+
+        // Radial scan geometry anchored just beyond the right edge.
+        const float maxRadius = min(W, H) * 0.62f;
+        for (int i = 1; i <= 11; ++i)
+        {
+            const float r = maxRadius * ((float)i / 11.0f);
+            Gdiplus::Pen arc(Gdiplus::Color((BYTE)(30 + (i % 3) * 12), 70, 205, 255),
+                              max(1.0f, ScaleReal(i % 4 == 0 ? 2 : 1)));
+            g.DrawEllipse(&arc, scanX - r, scanY - r, r * 2.0f, r * 2.0f);
+        }
+        Gdiplus::Pen ray(Gdiplus::Color(38, 86, 211, 255), max(1.0f, ScaleReal(1)));
+        for (int degrees = 150; degrees <= 210; degrees += 5)
+        {
+            const float radians = degrees * 3.14159265f / 180.0f;
+            g.DrawLine(&ray, scanX, scanY,
+                       scanX + std::cos(radians) * maxRadius,
+                       scanY + std::sin(radians) * maxRadius);
+        }
+
+        // Cyan horizon glow below the primary action cards.
+        Gdiplus::Pen horizon(Gdiplus::Color(105, 42, 221, 255), max(1.0f, ScaleReal(2)));
+        g.DrawLine(&horizon, W * 0.10f, H * 0.185f, W * 0.88f, H * 0.185f);
+        return;
+    }
+
+    // 1. diagonal base gradient (slight lift -> base)
     Gdiplus::LinearGradientBrush baseGrad(full,
         ThemeArgb(255, Lighten(p.windowBase, 10)), ThemeArgb(255, p.windowBase), 45.0f);
     g.FillRectangle(&baseGrad, full);
@@ -306,11 +356,7 @@ static void DrawProfessionalAppleBackground(Gdiplus::Graphics& graphics, const R
     const int contentWidth = max(ScalePx(900), contentRight - contentLeft);
     const int selectedNav = GetProfessionalNavIndex();
 
-    Gdiplus::Rect canvas(0, 0, width, height);
-    Gdiplus::LinearGradientBrush canvasBrush(canvas,
-        Gdiplus::Color(255, 248, 249, 251), Gdiplus::Color(255, 241, 244, 248),
-        Gdiplus::LinearGradientModeVertical);
-    graphics.FillRectangle(&canvasBrush, canvas);
+    DrawBackgroundSurface(graphics, rc, 0, 0, true);
 
     Gdiplus::SolidBrush sidebar(Gdiplus::Color(255, 255, 255, 255));
     graphics.FillRectangle(&sidebar, 0, 0, sidebarWidth, height);
@@ -328,6 +374,8 @@ static void DrawProfessionalAppleBackground(Gdiplus::Graphics& graphics, const R
     Gdiplus::Font sectionFont(&uiFamily, ScaleReal(24), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
     Gdiplus::SolidBrush ink(Gdiplus::Color(255, 23, 32, 42));
     Gdiplus::SolidBrush muted(Gdiplus::Color(255, 102, 112, 133));
+    Gdiplus::SolidBrush mainInk(Gdiplus::Color(255, 255, 255, 255));
+    Gdiplus::SolidBrush mainMuted(Gdiplus::Color(255, 210, 231, 255));
     Gdiplus::SolidBrush blue(Gdiplus::Color(255, 23, 105, 224));
     graphics.DrawString(L"OptiScan", -1, &brand, Gdiplus::PointF(ScaleReal(90), ScaleReal(42)), &ink);
 
@@ -371,12 +419,9 @@ static void DrawProfessionalAppleBackground(Gdiplus::Graphics& graphics, const R
         L"Rescan media, run batches, get help, and manage OptiScan."
     };
     graphics.DrawString(pageTitles[selectedNav], -1, &pageTitle,
-                        Gdiplus::PointF((Gdiplus::REAL)contentLeft, ScaleReal(48)), &ink);
+                        Gdiplus::PointF((Gdiplus::REAL)contentLeft, ScaleReal(48)), &mainInk);
     graphics.DrawString(pageSubtitles[selectedNav], -1, &subtitle,
-                        Gdiplus::PointF((Gdiplus::REAL)contentLeft, ScaleReal(98)), &muted);
-
-    // One quiet optical reference in otherwise unused chrome.
-    DrawOpticalRingMark(graphics, (Gdiplus::REAL)(contentRight - ScalePx(65)), ScaleReal(72), ScaleReal(58), 18, false);
+                        Gdiplus::PointF((Gdiplus::REAL)contentLeft, ScaleReal(98)), &mainMuted);
 
     int groupBottom = 0;
     if (selectedNav == 0)
@@ -389,7 +434,7 @@ static void DrawProfessionalAppleBackground(Gdiplus::Graphics& graphics, const R
         for (int i = 0; i < ARRAYSIZE(groupNames); ++i)
         {
             graphics.DrawString(groupNames[i], -1, &sectionFont,
-                                Gdiplus::PointF((Gdiplus::REAL)contentLeft, (Gdiplus::REAL)groupTitleTop), &ink);
+                                Gdiplus::PointF((Gdiplus::REAL)contentLeft, (Gdiplus::REAL)groupTitleTop), &mainInk);
             const int buttonTop = groupTitleTop + ScalePx(40);
             groupBottom = buttonTop + ((groupCounts[i] + 4) / 5) * (buttonHeight + rowGap) - rowGap;
             groupTitleTop = groupBottom + ScalePx(36);
