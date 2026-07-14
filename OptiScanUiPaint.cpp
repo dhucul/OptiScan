@@ -359,19 +359,24 @@ static void DrawProfessionalAppleBackground(Gdiplus::Graphics& graphics, const R
 
     DrawBackgroundSurface(graphics, rc, 0, 0, true);
 
-    Gdiplus::SolidBrush sidebar(Gdiplus::Color(255, 255, 255, 255));
+    // A lavender-tinted white keeps the navigation rail light while avoiding
+    // a stark paper-white edge against the saturated purple canvas.
+    Gdiplus::SolidBrush sidebar(Gdiplus::Color(255, 246, 243, 251));
     graphics.FillRectangle(&sidebar, 0, 0, sidebarWidth, height);
-    Gdiplus::Pen divider(Gdiplus::Color(255, 218, 223, 230), max(1.0f, ScaleReal(1)));
+    Gdiplus::Pen divider(Gdiplus::Color(255, 207, 201, 226), max(1.0f, ScaleReal(1)));
     graphics.DrawLine(&divider, sidebarWidth, 0, sidebarWidth, height);
 
     // Small, fixed brand lockup in the navigation rail.
     DrawOpticalRingMark(graphics, ScaleReal(55), ScaleReal(62), ScaleReal(22), 220, true);
     Gdiplus::FontFamily uiFamily(L"Segoe UI");
+    Gdiplus::FontFamily navFamily(L"Tahoma");
     Gdiplus::Font brand(&uiFamily, ScaleReal(30), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
-    Gdiplus::Font navFont(&uiFamily, ScaleReal(23), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
-    Gdiplus::Font navSelected(&uiFamily, ScaleReal(23), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+    Gdiplus::Font navFont(&navFamily, ScaleReal(23), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+    Gdiplus::Font navSelected(&navFamily, ScaleReal(23), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
     Gdiplus::Font pageTitle(&uiFamily, ScaleReal(38), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
     Gdiplus::Font subtitle(&uiFamily, ScaleReal(21), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+    Gdiplus::FontFamily sidebarDetailFamily(L"Tahoma");
+    Gdiplus::Font sidebarDetail(&sidebarDetailFamily, ScaleReal(20), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
     Gdiplus::Font sectionFont(&uiFamily, ScaleReal(24), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
     Gdiplus::SolidBrush ink(Gdiplus::Color(255, 23, 32, 42));
     // Darker secondary ink keeps unselected navigation and drive-status text
@@ -390,7 +395,7 @@ static void DrawProfessionalAppleBackground(Gdiplus::Graphics& graphics, const R
         {
             Gdiplus::GraphicsPath selectedPath;
             AddRoundedRectangle(selectedPath, ScalePx(18), y, sidebarWidth - ScalePx(36), ScalePx(58), ScalePx(10));
-            Gdiplus::SolidBrush selectedBg(Gdiplus::Color(255, 235, 243, 255));
+            Gdiplus::SolidBrush selectedBg(Gdiplus::Color(255, 232, 226, 247));
             graphics.FillPath(&selectedBg, &selectedPath);
             graphics.FillRectangle(&blue, ScalePx(18), y + ScalePx(10), ScalePx(5), ScalePx(38));
         }
@@ -403,13 +408,13 @@ static void DrawProfessionalAppleBackground(Gdiplus::Graphics& graphics, const R
     }
 
     // Drive status remains visible without competing with the command area.
-    Gdiplus::Pen sidebarRule(Gdiplus::Color(255, 225, 229, 235), 1.0f);
+    Gdiplus::Pen sidebarRule(Gdiplus::Color(255, 216, 210, 232), 1.0f);
     graphics.DrawLine(&sidebarRule, ScalePx(28), height - ScalePx(215), sidebarWidth - ScalePx(28), height - ScalePx(215));
     Gdiplus::SolidBrush ready(Gdiplus::Color(255, 27, 153, 105));
     graphics.FillEllipse(&ready, ScaleReal(34), (Gdiplus::REAL)(height - ScalePx(172)), ScaleReal(10), ScaleReal(10));
     graphics.DrawString(L"Drive ready", -1, &navSelected,
                         Gdiplus::PointF(ScaleReal(58), (Gdiplus::REAL)(height - ScalePx(187))), &ink);
-    graphics.DrawString(L"Optical drive connected", -1, &subtitle,
+    graphics.DrawString(L"Optical drive connected", -1, &sidebarDetail,
                         Gdiplus::PointF(ScaleReal(34), (Gdiplus::REAL)(height - ScalePx(142))), &muted);
 
     const wchar_t* pageTitles[] = { L"Overview", L"Rip & Copy", L"Disc Quality", L"Analysis", L"Drive Tools", L"Utilities" };
@@ -738,15 +743,17 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
             graphics.FillPath(&shadowBrush, &shadow);
         }
 
+        // Keep cards bright enough for dark text, but carry a subtle lavender
+        // cast so they sit naturally on the purple instrumentation field.
         const Gdiplus::Color face = exitCommand
-            ? Gdiplus::Color(255, 255, 247, 248)
-            : (pressed ? Gdiplus::Color(255, 235, 243, 255) : Gdiplus::Color(255, 255, 255, 255));
+            ? Gdiplus::Color(255, 253, 243, 247)
+            : (pressed ? Gdiplus::Color(255, 231, 226, 246) : Gdiplus::Color(255, 248, 246, 252));
         Gdiplus::SolidBrush faceBrush(face);
         graphics.FillPath(&faceBrush, &card);
         Gdiplus::Pen cardBorder(
             focused ? Gdiplus::Color(255, 23, 105, 224)
                     : (exitCommand ? Gdiplus::Color(255, 246, 184, 194)
-                                   : Gdiplus::Color(255, 208, 213, 221)),
+                                   : Gdiplus::Color(255, 207, 201, 226)),
             focused ? max(1.0f, ScaleReal(2)) : max(1.0f, ScaleReal(1)));
         graphics.DrawPath(&cardBorder, &card);
 
@@ -754,7 +761,7 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
         Gdiplus::SolidBrush ink(disabled ? Gdiplus::Color(255, 152, 162, 179)
                                          : (exitCommand ? Gdiplus::Color(255, 196, 35, 55)
                                                         : Gdiplus::Color(255, 23, 32, 42)));
-        Gdiplus::SolidBrush secondary(Gdiplus::Color(255, 53, 64, 82));
+        Gdiplus::SolidBrush secondary(Gdiplus::Color(255, 10, 10, 12));
         Gdiplus::SolidBrush blue(Gdiplus::Color(255, 23, 105, 224));
 
         if (primary)
@@ -769,7 +776,8 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
 
             Gdiplus::Font titleFont(&uiFamily, ScaleReal(27), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
             Gdiplus::Font badgeFont(&uiFamily, ScaleReal(18), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
-            Gdiplus::Font descriptionFont(&uiFamily, ScaleReal(19), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+            Gdiplus::FontFamily descriptionFamily(L"Tahoma");
+            Gdiplus::Font descriptionFont(&descriptionFamily, ScaleReal(20), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
             Gdiplus::Font actionFont(&uiFamily, ScaleReal(18), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
             const wchar_t* description = commandIndex == 0
                 ? L"Create an exact copy of the current disc."
