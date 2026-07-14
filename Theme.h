@@ -19,12 +19,13 @@
 
 enum class ThemeId : int {
     Graphite         = 0,   // original dark graphite/slate look
-    CatppuccinFrappe = 1,   // default
+    CatppuccinFrappe = 1,
     Nord             = 2,
     ArcDark          = 3,
+    AppleLight       = 4,   // soft-white Apple light theme (default)
 };
 
-constexpr int kThemeCount = 4;
+constexpr int kThemeCount = 5;
 
 // Every colour role the app needs. All COLORREF (0x00BBGGRR via RGB()). Alpha
 // for the semi-transparent GDI+ chrome is applied at the paint site, not here.
@@ -97,7 +98,7 @@ void SetActiveTheme(ThemeId id);
 void ApplyThemeAndPersist(ThemeId id);
 
 // Registry helpers (HKCU\Software\OptiScan\Theme). Load defaults to the
-// Catppuccin Frappé theme when the value is absent or invalid.
+// Apple Light theme when the value is absent or invalid.
 ThemeId LoadThemeIdFromRegistry();
 void    SaveThemeIdToRegistry(ThemeId id);
 

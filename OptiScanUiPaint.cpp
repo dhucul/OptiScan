@@ -69,79 +69,22 @@ static void PaintProceduralBackdrop(Gdiplus::Graphics& g, int width, int height)
         ThemeArgb(255, Lighten(p.windowBase, 10)), ThemeArgb(255, p.windowBase), 45.0f);
     g.FillRectangle(&baseGrad, full);
 
-    // 2. soft accent glows, top-left and bottom-right
-    PaintGlow(g, W * 0.06f, H * 0.30f, H * 0.75f, 26, p.chromeAccent);
-    PaintGlow(g, W * 0.93f, H * 0.92f, H * 0.90f, 20, p.chromeAccent);
+    // (The disc-arc and flowing-wave line motifs that used to live here were
+    //  removed — pale lines on the light base were undetectable. The aurora
+    //  colour field above is the design now.)
 
-    // 3. turntable concentric rings + hub, lower-left
-    const float cx = W * 0.10f, cy = H * 0.52f;
-    const float ringStep = max(20.0f, H * 0.045f);
-    for (int i = 0; i < 11; ++i)
-    {
-        const float r = ringStep * 1.6f + i * ringStep;
-        int a = 78 - i * 6; if (a < 12) a = 12;
-        Gdiplus::Pen pen(ThemeArgb((BYTE)a, p.chromeAccent), max(1.0f, ScaleReal(1)));
-        g.DrawEllipse(&pen, cx - r, cy - r, r * 2, r * 2);
-    }
-    PaintGlow(g, cx, cy, max(10.0f, H * 0.022f), 200, Lighten(p.chromeAccent, 40));
-
-    // 4. EQ bars, right side (columns of stacked cells, warm accent caps)
-    const int   cols   = 16;
-    const float colW   = max(14.0f, W * 0.016f);
-    const float startX = W * 0.60f;
-    const float cellW  = colW * 0.55f;
-    const float cellH  = max(6.0f, H * 0.013f);
-    const float cellGap = cellH * 1.6f;
-    const float baseY  = H * 0.72f;
-    for (int c = 0; c < cols; ++c)
-    {
-        const float x = startX + c * colW;
-        const int peak = (int)(3 + std::fabs(std::sin(c * 0.7)) * 11 + (c % 4) * 2);
-        for (int k = 0; k < peak; ++k)
-        {
-            const float y = baseY - k * cellGap;
-            int cellA = 150 - k * 9; if (cellA < 20) cellA = 20;
-            const COLORREF col = (k >= peak - 2) ? p.accentWarm : p.graphBar;
-            Gdiplus::SolidBrush b(ThemeArgb((BYTE)cellA, col));
-            g.FillRectangle(&b, x, y, cellW, cellH);
-        }
-    }
-
-    // 5. flowing wave lines across the bottom
-    for (int w = 0; w < 5; ++w)
-    {
-        const float amp = (H * 0.03f) + w * (H * 0.009f);
-        const float yb  = H * 0.80f + w * (H * 0.013f);
-        const float ph  = w * 0.6f;
-        int a = 70 - w * 8;
-        Gdiplus::Pen pen(ThemeArgb((BYTE)a, p.chromeAccent), max(1.0f, ScaleReal(1)));
-        const float step = max(8.0f, W * 0.011f);
-        float px = 0.0f, py = yb + (float)std::sin(ph) * amp;
-        for (float x = step; x <= W; x += step)
-        {
-            const float y = yb + (float)std::sin(x * 0.006f + ph) * amp;
-            g.DrawLine(&pen, px, py, x, y);
-            px = x; py = y;
-        }
-    }
-    PaintGlow(g, W * 0.93f, H * 0.82f, max(24.0f, H * 0.05f), 170, Lighten(p.accentWarm, 20));
-
-    // 6. faint tech dots
-    for (int i = 0; i < 60; ++i)
-    {
-        const float x = 120.0f + (float)((i * 137) % max(1, width - 240));
-        const float y = 80.0f + (float)((i * 89) % max(1, height - 160));
-        const float sz = ScaleReal(2 + (i % 3));
-        Gdiplus::SolidBrush b(ThemeArgb(60, p.chromeAccent));
-        g.FillEllipse(&b, x, y, sz, sz);
-    }
-
-    // 7. edge vignette
+    // 7. edge vignette. A black surround reads as a heavy grey smear on light
+    // themes, so scale the darkening by the base luminance: full on dark bases,
+    // a soft shadow on light ones.
+    const int baseLuma = (GetRValue(p.windowBase) * 299 +
+                          GetGValue(p.windowBase) * 587 +
+                          GetBValue(p.windowBase) * 114) / 1000;
+    const BYTE vignetteAlpha = baseLuma > 150 ? (BYTE)0 : (BYTE)120;
     Gdiplus::GraphicsPath vp;
     vp.AddEllipse(-W * 0.2f, -H * 0.2f, W * 1.4f, H * 1.4f);
     Gdiplus::PathGradientBrush vg(&vp);
     vg.SetCenterColor(ThemeArgb(0, p.windowBase));
-    Gdiplus::Color vSurround[] = { Gdiplus::Color(120, 0, 0, 0) };
+    Gdiplus::Color vSurround[] = { Gdiplus::Color(vignetteAlpha, 0, 0, 0) };
     int vcnt = 1;
     vg.SetSurroundColors(vSurround, &vcnt);
     g.FillRectangle(&vg, full);
@@ -172,6 +115,7 @@ static void EnsureBackdropBitmap(int width, int height)
     gBackdropH = height;
     gBackdropThemeId = tid;
 }
+
 
 static Gdiplus::Image* LoadPngFromResource(WORD resourceId)
 {
@@ -357,8 +301,14 @@ void DrawMainBackground(HWND hWnd, HDC hdc)
 
     Gdiplus::Pen borderPen(ThemeArgb(150, ActiveTheme().chromeAccent), max(1.0f, ScaleReal(1)));
     Gdiplus::Pen softPen(Gdiplus::Color(70, 255, 255, 255), max(1.0f, ScaleReal(1)));
-    Gdiplus::SolidBrush panelBrush(ThemeArgb(BackgroundAlpha(PanelSurfaceAlpha), ActiveTheme().panelSurface));
-    Gdiplus::SolidBrush panelShade(ThemeArgb(110, ActiveTheme().chromeAccent));
+    // Coloured panels: light themes fill the command/output panels with a solid
+    // light soft-blue so there is clear colour directly behind the white button
+    // cards. Dark themes keep the translucent panel veil.
+    const int pnlLum = (GetRValue(ActiveTheme().windowBase) * 299 + GetGValue(ActiveTheme().windowBase) * 587 +
+                        GetBValue(ActiveTheme().windowBase) * 114) / 1000;
+    Gdiplus::SolidBrush panelBrush(
+        pnlLum > 150 ? Gdiplus::Color(238, 205, 222, 245)   // #CDDEF5 light soft-blue
+                     : ThemeArgb(BackgroundAlpha(PanelSurfaceAlpha), ActiveTheme().panelSurface));
     Gdiplus::SolidBrush titleOrange(ThemeArgb(255, ActiveTheme().accentWarm));
     Gdiplus::SolidBrush titleBlue(ThemeArgb(255, ActiveTheme().chromeAccent));
     Gdiplus::SolidBrush titleWhite(ThemeArgb(255, ActiveTheme().bright));
@@ -443,8 +393,9 @@ void DrawMainBackground(HWND hWnd, HDC hdc)
         graphics.FillRectangle(&consoleBar, barX, consoleTop + ScalePx(22) - barHeight, ScalePx(4), barHeight);
     }
 
-    graphics.FillRectangle(&panelShade, layoutMargin + ScalePx(1), top - ScalePx(69), ScalePx(7), commandPanelHeight + ScalePx(68));
-    graphics.FillRectangle(&panelShade, layoutMargin + ScalePx(1), outputTop - ScalePx(41), ScalePx(7), outputHeight + ScalePx(40));
+    // (Removed the thick blue accent bar down the left edge of each panel — its
+    //  colour collided with the left-edge accent stripe on the first column of
+    //  buttons. The rounded panel border alone defines the edge now.)
     DrawTechAccents(graphics, rc);
 
     Gdiplus::FontFamily titleFamily(L"Segoe UI");
@@ -460,9 +411,44 @@ void DrawMainBackground(HWND hWnd, HDC hdc)
     graphics.MeasureString(L"Scan", -1, &brandFont, Gdiplus::PointF(0.0f, 0.0f), &brandFormat, &scanBounds);
 
     const Gdiplus::REAL brandX = ((Gdiplus::REAL)rc.right - optiBounds.Width - scanBounds.Width) / 2.0f;
+
+    // Soft halo behind the wordmark so the title stays crisp over the colourful
+    // aurora backdrop. (The old header waveform lines were removed — too faint.)
+    {
+        const Gdiplus::REAL waveY = ScaleReal(112);
+        const Gdiplus::REAL wcx = brandX + (optiBounds.Width + scanBounds.Width) / 2.0f;
+        const Gdiplus::REAL hw  = (optiBounds.Width + scanBounds.Width) * 0.66f + ScaleReal(30);
+        const Gdiplus::REAL hh  = ScaleReal(54);
+        Gdiplus::GraphicsPath hp;
+        hp.AddEllipse(wcx - hw, waveY - hh, hw * 2, hh * 2);
+        Gdiplus::PathGradientBrush hb(&hp);
+        hb.SetCenterColor(ThemeArgb(220, ActiveTheme().panelSurface));
+        Gdiplus::Color haloEdge[] = { ThemeArgb(0, ActiveTheme().panelSurface) };
+        int hcnt = 1;
+        hb.SetSurroundColors(haloEdge, &hcnt);
+        graphics.FillPath(&hb, &hp);
+    }
+
     graphics.DrawString(L"Opti", -1, &brandFont, Gdiplus::PointF(brandX, ScaleReal(82)), &brandFormat, &titleOrange);
-    graphics.DrawString(L"Scan", -1, &brandFont, Gdiplus::PointF(brandX + optiBounds.Width, ScaleReal(82)), &brandFormat, &titleOrange);
-    graphics.DrawLine(&borderPen, (rc.right / 2) - ScalePx(210), ScalePx(142), (rc.right / 2) + ScalePx(210), ScalePx(142));
+    graphics.DrawString(L"Scan", -1, &brandFont, Gdiplus::PointF(brandX + optiBounds.Width, ScaleReal(82)), &brandFormat, &titleWhite);
+
+    // Divider: a warm-accent hairline split around a small centred diamond node,
+    // replacing the old flat line for a more refined header.
+    {
+        Gdiplus::Pen hairPen(ThemeArgb(150, ActiveTheme().accentWarm), max(1.0f, ScaleReal(1)));
+        const int cxMid = rc.right / 2;
+        const int hy = ScalePx(142);
+        graphics.DrawLine(&hairPen, cxMid - ScalePx(210), hy, cxMid - ScalePx(12), hy);
+        graphics.DrawLine(&hairPen, cxMid + ScalePx(12), hy, cxMid + ScalePx(210), hy);
+
+        Gdiplus::SolidBrush node(ThemeArgb(220, ActiveTheme().btnStripe));
+        Gdiplus::GraphicsState st = graphics.Save();
+        graphics.TranslateTransform((Gdiplus::REAL)cxMid, (Gdiplus::REAL)hy);
+        graphics.RotateTransform(45.0f);
+        const Gdiplus::REAL d = ScaleReal(5);
+        graphics.FillRectangle(&node, -d / 2.0f, -d / 2.0f, d, d);
+        graphics.Restore(st);
+    }
     graphics.DrawString(L"COMMAND MENU", -1, &eyebrowFont, Gdiplus::PointF((Gdiplus::REAL)(layoutMargin + ScalePx(20)), (Gdiplus::REAL)(top - ScalePx(54))), &titleWhite);
     graphics.DrawString(L"OUTPUT LOG", -1, &eyebrowFont, Gdiplus::PointF((Gdiplus::REAL)(layoutMargin + ScalePx(24)), (Gdiplus::REAL)(outputTop - ScalePx(31))), &titleOrange);
 }
@@ -507,20 +493,36 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
     Gdiplus::GraphicsPath buttonPath;
     AddRoundedRectangle(buttonPath, rc.left, rc.top, rc.right - rc.left - ScalePx(1), rc.bottom - rc.top - ScalePx(1), ScalePx(7));
 
-    Gdiplus::Color topColor = pressed ? ThemeArgb(240, Lighten(ActiveTheme().btnTop, 14)) : ThemeArgb(220, ActiveTheme().btnTop);
-    Gdiplus::Color bottomColor = pressed ? ThemeArgb(240, Lighten(ActiveTheme().btnBottom, 8)) : ThemeArgb(220, ActiveTheme().btnBottom);
+    // Soft drop shadow so the (near-opaque) button lifts off the textured,
+    // deeper backdrop. Two low-alpha offset layers approximate a blur.
+    if (!pressed)
+    {
+        Gdiplus::GraphicsPath sp1, sp2;
+        AddRoundedRectangle(sp1, rc.left + ScalePx(1), rc.top + ScalePx(3), rc.right - rc.left - ScalePx(2), rc.bottom - rc.top - ScalePx(1), ScalePx(8));
+        AddRoundedRectangle(sp2, rc.left + ScalePx(2), rc.top + ScalePx(2), rc.right - rc.left - ScalePx(4), rc.bottom - rc.top - ScalePx(1), ScalePx(8));
+        Gdiplus::SolidBrush sb1(Gdiplus::Color(16, 26, 38, 62));
+        Gdiplus::SolidBrush sb2(Gdiplus::Color(24, 26, 38, 62));
+        graphics.FillPath(&sb1, &sp1);
+        graphics.FillPath(&sb2, &sp2);
+    }
+
+    // Frosted-glass fill: semi-translucent so the themed backdrop (disc arcs +
+    // waves) reads softly through the button faces, not just in the gaps. Border
+    // + drop shadow keep the cards defined so they still stand out.
+    Gdiplus::Color topColor = pressed ? ThemeArgb(240, Lighten(ActiveTheme().btnTop, 14)) : ThemeArgb(242, ActiveTheme().btnTop);
+    Gdiplus::Color bottomColor = pressed ? ThemeArgb(240, Lighten(ActiveTheme().btnBottom, 8)) : ThemeArgb(242, ActiveTheme().btnBottom);
     Gdiplus::Rect buttonRect(rc.left, rc.top, max(1, rc.right - rc.left), max(1, rc.bottom - rc.top));
     Gdiplus::LinearGradientBrush buttonBrush(buttonRect, topColor, bottomColor, Gdiplus::LinearGradientModeVertical);
     graphics.FillPath(&buttonBrush, &buttonPath);
 
     Gdiplus::Pen borderPen(
-        focused ? ThemeArgb(235, ActiveTheme().btnBorderFocus) : ThemeArgb(130, ActiveTheme().btnBorder),
+        focused ? ThemeArgb(235, ActiveTheme().btnBorderFocus) : ThemeArgb(165, ActiveTheme().btnBorder),
         focused ? max(1.0f, ScaleReal(2)) : max(1.0f, ScaleReal(1)));
     graphics.DrawPath(&borderPen, &buttonPath);
 
     Gdiplus::GraphicsPath accentPath;
     AddRoundedRectangle(accentPath, rc.left + ScalePx(1), rc.top + ScalePx(1), ScalePx(5), rc.bottom - rc.top - ScalePx(2), ScalePx(4));
-    Gdiplus::SolidBrush accentBrush(exitCommand ? ThemeArgb(230, ActiveTheme().error) : ThemeArgb(120, ActiveTheme().btnStripe));
+    Gdiplus::SolidBrush accentBrush(exitCommand ? ThemeArgb(230, ActiveTheme().error) : ThemeArgb(200, ActiveTheme().btnStripe));
     graphics.FillPath(&accentBrush, &accentPath);
 
     Gdiplus::Pen glowPen(ThemeArgb(clearCommand ? 120 : 82, ActiveTheme().btnStripe), max(1.0f, ScaleReal(1)));
@@ -548,65 +550,17 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
 
 static void DrawTechAccents(Gdiplus::Graphics& graphics, const RECT& rc)
 {
-    Gdiplus::Pen faintLine(ThemeArgb(70, ActiveTheme().cyan), max(1.0f, ScaleReal(1)));
-    Gdiplus::Pen orangeLine(ThemeArgb(150, ActiveTheme().chromeAccent), max(1.0f, ScaleReal(2)));
-    Gdiplus::Pen dimOrange(ThemeArgb(88, ActiveTheme().chromeAccent), max(1.0f, ScaleReal(1)));
-    Gdiplus::SolidBrush orangeDot(ThemeArgb(180, ActiveTheme().chromeAccent));
-    Gdiplus::SolidBrush darkGlow(ThemeArgb(86, ActiveTheme().chromeAccent));
+    // The old "circuit" clutter (horizontal lines, hexagons, and 38 scattered
+    // dots — several of which used the cool cyan role) has been retired. Depth
+    // now comes from the cleaner procedural backdrop (corner blooms + top-right
+    // disc emboss) painted behind the panels. All that remains here is a faint
+    // accent-tinted band behind each panel's eyebrow label.
     Gdiplus::SolidBrush softPanelGlow(ThemeArgb(22, ActiveTheme().chromeAccent));
-
     const int width = rc.right - rc.left;
     const int height = rc.bottom - rc.top;
-    const int left = ScalePx(88);
-    const int right = max(left + ScalePx(400), width - ScalePx(820));
-    const int lower = max(ScalePx(760), height - ScalePx(420));
 
     graphics.FillRectangle(&softPanelGlow, ScalePx(42), ScalePx(78), max(1, width - ScalePx(84)), ScalePx(62));
     graphics.FillRectangle(&softPanelGlow, ScalePx(42), height - ScalePx(420), max(1, width - ScalePx(84)), ScalePx(48));
-
-    for (int i = 0; i < 9; ++i)
-    {
-        const int y = ScalePx(220) + (i * ScalePx(58));
-        const int x1 = left + (i % 3) * ScalePx(54);
-        const int x2 = min(width - ScalePx(120), x1 + ScalePx(480) + (i * ScalePx(38)));
-        graphics.DrawLine(&faintLine, x1, y, x2, y);
-        graphics.DrawLine(&dimOrange, x2, y, x2 + ScalePx(56), y + ScalePx(22));
-        graphics.FillEllipse(&orangeDot, x2 - ScalePx(5), y - ScalePx(5), ScalePx(10), ScalePx(10));
-    }
-
-    for (int i = 0; i < 7; ++i)
-    {
-        const int y = ScalePx(185) + (i * ScalePx(76));
-        const int x = right + (i * ScalePx(34));
-        graphics.DrawLine(&orangeLine, x, y, min(width - ScalePx(95), x + ScalePx(260)), y);
-        graphics.DrawLine(&faintLine, min(width - ScalePx(95), x + ScalePx(260)), y, min(width - ScalePx(65), x + ScalePx(310)), y + ScalePx(34));
-        graphics.FillEllipse(&orangeDot, x - ScalePx(5), y - ScalePx(5), ScalePx(10), ScalePx(10));
-    }
-
-    for (int i = 0; i < 8; ++i)
-    {
-        const int cx = right - ScalePx(40) + (i * ScalePx(88));
-        const int cy = lower + ((i % 2) * ScalePx(54));
-        const int radius = ScalePx(34);
-        Gdiplus::Point points[6] =
-        {
-            Gdiplus::Point(cx + radius, cy),
-            Gdiplus::Point(cx + radius / 2, cy + ScalePx(29)),
-            Gdiplus::Point(cx - radius / 2, cy + ScalePx(29)),
-            Gdiplus::Point(cx - radius, cy),
-            Gdiplus::Point(cx - radius / 2, cy - ScalePx(29)),
-            Gdiplus::Point(cx + radius / 2, cy - ScalePx(29))
-        };
-        graphics.DrawPolygon(i == 1 ? &orangeLine : &dimOrange, points, 6);
-    }
-
-    for (int i = 0; i < 38; ++i)
-    {
-        const int x = ScalePx(120) + (i * ScalePx(87)) % max(1, width - ScalePx(240));
-        const int y = ScalePx(160) + (i * ScalePx(131)) % max(1, height - ScalePx(360));
-        const int dotSize = ScalePx(4 + (i % 3) * 2);
-        graphics.FillEllipse(&darkGlow, x, y, dotSize, dotSize);
-    }
 }
 
 static void AddRoundedRectangle(Gdiplus::GraphicsPath& path, int x, int y, int width, int height, int radius)

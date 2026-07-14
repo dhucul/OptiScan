@@ -185,10 +185,61 @@ const Palette kArcDark = {
     /* artTintStrength*/ 68,
 };
 
-// The live palette (defaults to Catppuccin Frappé; InitializeTheme() re-applies
+// --- Apple Light (soft-white, near-black text, blue accent) ------------------
+// First light theme. Surfaces are a soft off-white family (panels/log), body
+// text is Apple's near-black #1D1D1F, and Apple blue #0071E3 is the single
+// accent (numbers, stripes, wordmark, chrome) — deliberately no warm/orange.
+// Status colours stay the SF system palette (green/amber/red/blue) so log
+// severity still reads clearly. The procedural backdrop reads these live; the
+// edge vignette in OptiScanUiPaint.cpp softens itself on light themes.
+const Palette kAppleLight = {
+    /* fg            */ RGB( 29,  29,  31),  // #1D1D1F near-black body text
+    /* bright        */ RGB( 10,  10,  12),  // #0A0A0C headings
+    /* dim           */ RGB(110, 110, 115),  // #6E6E73 secondary gray
+    /* accentWarm    */ RGB(  0, 113, 227),  // #0071E3 Apple blue (title / >>>)
+    /* ok            */ RGB( 30, 142,  62),  // #1E8E3E SF green (for white bg)
+    /* warn          */ RGB(154, 106,   0),  // #9A6A00 amber (semantic [WARN])
+    /* error         */ RGB(215,   0,  21),  // #D70015 SF red
+    /* cyan          */ RGB(  0, 113, 227),  // #0071E3 SF blue = [INFO]
+    /* graphFrame    */ RGB(142, 142, 147),  // #8E8E93 mid gray box chars
+    /* graphBar      */ RGB(  0, 113, 227),  // #0071E3 blue bars
+    /* selection     */ RGB(211, 227, 255),  // #D3E3FF light-blue selection
+
+    /* windowBase    */ RGB(214, 222, 235),  // #D6DEEB soft blue-grey base (contrast for pattern + white buttons)
+    /* panelSurface  */ RGB(230, 237, 245),  // #E6EDF5 soft panel
+    /* outputBg      */ RGB(245, 248, 254),  // #F5F8FE soft-white console/log
+    /* consoleBase   */ RGB(238, 243, 251),  // #EEF3FB inner frame
+    /* chromeAccent  */ RGB( 76, 154, 232),  // #4C9AE8 sky blue (rings/borders)
+    /* chromeText    */ RGB(110, 110, 115),  // #6E6E73 eyebrow gray
+
+    /* btnTop        */ RGB(255, 255, 255),  // #FFFFFF bright white card top (pops off base)
+    /* btnBottom     */ RGB(242, 247, 253),  // #F2F7FD faint cool bottom
+    /* btnBorder     */ RGB(186, 199, 220),  // #BAC7DC soft blue border
+    /* btnBorderFocus*/ RGB(  0, 113, 227),  // #0071E3 blue focus ring
+    /* btnStripe     */ RGB(  0, 113, 227),  // #0071E3 blue stripe
+    /* btnNumber     */ RGB(  0, 113, 227),  // #0071E3 blue number
+    /* btnLabel      */ RGB( 29,  29,  31),  // #1D1D1F
+    /* disabledText  */ RGB(176, 176, 181),  // #B0B0B5
+
+    /* dlgBack       */ RGB(236, 236, 238),  // #ECECEE
+    /* dlgPanel      */ RGB(255, 255, 255),  // #FFFFFF
+    /* dlgEdit       */ RGB(245, 248, 254),  // #F5F8FE soft-white field
+    /* dlgText       */ RGB( 29,  29,  31),  // #1D1D1F
+    /* dlgPrompt     */ RGB( 58,  58,  60),  // #3A3A3C
+    /* dlgAccent     */ RGB(  0, 113, 227),  // #0071E3 blue
+    /* dlgBtnTop     */ RGB(251, 252, 255),  // #FBFCFF soft-white
+    /* dlgBtnBottom  */ RGB(234, 241, 252),  // #EAF1FC faint cool
+    /* dlgBtnBorder  */ RGB(198, 211, 230),  // #C6D3E6 soft blue border
+    /* dlgBtnText    */ RGB( 29,  29,  31),  // #1D1D1F
+
+    /* artTint       */ RGB(221, 227, 236),  // #DDE3EC vestigial; harmless
+    /* artTintStrength*/ 0,
+};
+
+// The live palette (defaults to Apple Light; InitializeTheme() re-applies
 // whatever is persisted).
-ThemeId g_activeId = ThemeId::CatppuccinFrappe;
-Palette g_active   = kCatppuccinFrappe;
+ThemeId g_activeId = ThemeId::AppleLight;
+Palette g_active   = kAppleLight;
 
 constexpr wchar_t kRegSubKey[]    = L"Software\\OptiScan";
 constexpr wchar_t kRegThemeValue[] = L"Theme";
@@ -201,6 +252,7 @@ const Palette& PaletteFor(ThemeId id) {
     case ThemeId::CatppuccinFrappe: return kCatppuccinFrappe;
     case ThemeId::Nord:             return kNord;
     case ThemeId::ArcDark:          return kArcDark;
+    case ThemeId::AppleLight:       return kAppleLight;
     default:                        return kCatppuccinFrappe;
     }
 }
@@ -211,6 +263,7 @@ const wchar_t* ThemeName(ThemeId id) {
     case ThemeId::CatppuccinFrappe: return L"Catppuccin Frappé";
     case ThemeId::Nord:             return L"Nord";
     case ThemeId::ArcDark:          return L"Arc-Dark";
+    case ThemeId::AppleLight:       return L"Apple Light";
     default:                        return L"Catppuccin Frappé";
     }
 }
@@ -228,7 +281,7 @@ void SetActiveTheme(ThemeId id) {
 ThemeId LoadThemeIdFromRegistry() {
     HKEY hKey = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, KEY_READ, &hKey) != ERROR_SUCCESS) {
-        return ThemeId::CatppuccinFrappe;
+        return ThemeId::AppleLight;
     }
     DWORD value = 0;
     DWORD size  = sizeof(value);
@@ -237,7 +290,7 @@ ThemeId LoadThemeIdFromRegistry() {
                                   reinterpret_cast<LPBYTE>(&value), &size);
     RegCloseKey(hKey);
     if (st != ERROR_SUCCESS || type != REG_DWORD || value >= static_cast<DWORD>(kThemeCount)) {
-        return ThemeId::CatppuccinFrappe;
+        return ThemeId::AppleLight;
     }
     return static_cast<ThemeId>(value);
 }

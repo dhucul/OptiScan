@@ -61,6 +61,7 @@ BEGIN
             MENUITEM "&Catppuccin Frappe",   IDM_THEME_CATPPUCCIN
             MENUITEM "&Nord",                IDM_THEME_NORD
             MENUITEM "&Arc-Dark",            IDM_THEME_ARCDARK
+            MENUITEM "A&pple Light",         IDM_THEME_APPLELIGHT
         END
     END
     POPUP "&Help"

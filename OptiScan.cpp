@@ -349,7 +349,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
    // Reflect the active theme in the View > Theme radio group.
    if (HMENU bar = GetMenu(hWnd))
    {
-       CheckMenuRadioItem(bar, IDM_THEME_GRAPHITE, IDM_THEME_ARCDARK,
+       CheckMenuRadioItem(bar, IDM_THEME_GRAPHITE, IDM_THEME_APPLELIGHT,
                           IDM_THEME_GRAPHITE + static_cast<int>(CurrentThemeId()),
                           MF_BYCOMMAND);
    }
@@ -372,7 +372,7 @@ static void ApplyThemeFromMenu(HWND hWnd, ThemeId id)
     ApplyThemeAndPersist(id);
     if (HMENU bar = GetMenu(hWnd))
     {
-        CheckMenuRadioItem(bar, IDM_THEME_GRAPHITE, IDM_THEME_ARCDARK,
+        CheckMenuRadioItem(bar, IDM_THEME_GRAPHITE, IDM_THEME_APPLELIGHT,
                            IDM_THEME_GRAPHITE + static_cast<int>(id), MF_BYCOMMAND);
     }
     WCHAR line[192];
@@ -785,6 +785,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 break;
             case IDM_THEME_ARCDARK:
                 ApplyThemeFromMenu(hWnd, ThemeId::ArcDark);
+                break;
+            case IDM_THEME_APPLELIGHT:
+                ApplyThemeFromMenu(hWnd, ThemeId::AppleLight);
                 break;
             case IDM_ABOUT:
                 DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
