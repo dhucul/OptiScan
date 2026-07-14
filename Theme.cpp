@@ -205,10 +205,10 @@ const Palette kAppleLight = {
     /* graphBar      */ RGB(  0, 113, 227),  // #0071E3 blue bars
     /* selection     */ RGB(211, 227, 255),  // #D3E3FF light-blue selection
 
-    /* windowBase    */ RGB(214, 222, 235),  // #D6DEEB soft blue-grey base (contrast for pattern + white buttons)
-    /* panelSurface  */ RGB(230, 237, 245),  // #E6EDF5 soft panel
-    /* outputBg      */ RGB(245, 248, 254),  // #F5F8FE soft-white console/log
-    /* consoleBase   */ RGB(238, 243, 251),  // #EEF3FB inner frame
+    /* windowBase    */ RGB(244, 245, 247),  // #F4F5F7 professional neutral canvas
+    /* panelSurface  */ RGB(255, 255, 255),  // #FFFFFF cards and navigation rail
+    /* outputBg      */ RGB( 21,  27,  35),  // #151B23 high-contrast output console
+    /* consoleBase   */ RGB( 21,  27,  35),  // #151B23 console frame
     /* chromeAccent  */ RGB( 76, 154, 232),  // #4C9AE8 sky blue (rings/borders)
     /* chromeText    */ RGB(110, 110, 115),  // #6E6E73 eyebrow gray
 

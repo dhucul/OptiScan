@@ -434,6 +434,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         return 0;
     case WM_ERASEBKGND:
         return 1;
+    case WM_LBUTTONDOWN:
+        if (HandleProfessionalSidebarClick(hWnd, (short)LOWORD(lParam), (short)HIWORD(lParam)))
+            return 0;
+        break;
     case WM_SIZE:
         LayoutMainControls(hWnd);
         InvalidateRect(hWnd, nullptr, TRUE);

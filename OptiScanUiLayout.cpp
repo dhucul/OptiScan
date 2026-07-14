@@ -5,6 +5,7 @@
 
 #include "Accessibility.h"
 #include "OutputControl.h"
+#include "Theme.h"
 #include "UiSound.h"
 #include <commctrl.h>
 #include <cmath>
@@ -222,6 +223,128 @@ void LayoutMainControls(HWND hWnd)
             if (firstPass) ShowWindow(h, SW_SHOWNOACTIVATE);
         }
     };
+
+    if (CurrentThemeId() == ThemeId::AppleLight)
+    {
+        // Professional overview layout: a stable navigation rail, three
+        // primary actions, compact grouped commands, and a full-width console.
+        const int sidebarWidth = ScalePx(360);
+        const int contentLeft = sidebarWidth + ScalePx(60);
+        const int contentRight = rc.right - ScalePx(40);
+        const int contentWidth = max(ScalePx(900), contentRight - contentLeft);
+        for (int i = 0; i < SECTION_LABEL_COUNT; ++i)
+            if (hSectionLabels[i]) ShowWindow(hSectionLabels[i], SW_HIDE);
+        for (int i = 0; i < COMMAND_BUTTON_COUNT; ++i)
+            if (hInfoButtons[i]) ShowWindow(hInfoButtons[i], SW_HIDE);
+
+        const int navIndex = GetProfessionalNavIndex();
+        int outputTop = rc.bottom - ScalePx(500);
+        if (navIndex == 0)
+        {
+            const int columnGap = ScalePx(18);
+            const int columnWidth = max(ScalePx(240), (contentWidth - (columnGap * 4)) / 5);
+            const int primaryTop = ScalePx(150);
+            const int primaryHeight = ScalePx(170);
+            const int primaryGap = ScalePx(24);
+            const int primaryWidth = max(ScalePx(300), (contentWidth - (primaryGap * 2)) / 3);
+            const int primary[] = { 0, 1, 5 };
+            for (int i = 0; i < 3; ++i)
+            {
+                ShowWindow(hInfoButtons[primary[i]], SW_SHOWNOACTIVATE);
+                move(hInfoButtons[primary[i]], contentLeft + i * (primaryWidth + primaryGap),
+                     primaryTop, primaryWidth, primaryHeight);
+            }
+
+            const int buttonHeight = ScalePx(56);
+            const int rowGap = ScalePx(10);
+            auto placeGroup = [&](const int* indices, int count, int buttonTop) {
+                for (int i = 0; i < count; ++i)
+                {
+                    const int row = i / 5;
+                    const int column = i % 5;
+                    ShowWindow(hInfoButtons[indices[i]], SW_SHOWNOACTIVATE);
+                    move(hInfoButtons[indices[i]],
+                         contentLeft + column * (columnWidth + columnGap),
+                         buttonTop + row * (buttonHeight + rowGap),
+                         columnWidth, buttonHeight);
+                }
+                return buttonTop + ((count + 4) / 5) * (buttonHeight + rowGap) - rowGap;
+            };
+
+            const int ripCopy[] = { 2, 3, 4 };
+            const int discQuality[] = { 6, 7, 8, 9, 10, 11 };
+            const int analysis[] = { 12, 13, 14, 15, 16, 17 };
+            const int driveTools[] = { 18, 19, 20, 21, 22, 23, 24, 28, 29, 30, 31 };
+            const int utilities[] = { 25, 26, 27, 32, 33, 34 };
+
+            int groupTitleTop = ScalePx(370);
+            int groupBottom = placeGroup(ripCopy, ARRAYSIZE(ripCopy), groupTitleTop + ScalePx(40));
+            groupTitleTop = groupBottom + ScalePx(36);
+            groupBottom = placeGroup(discQuality, ARRAYSIZE(discQuality), groupTitleTop + ScalePx(40));
+            groupTitleTop = groupBottom + ScalePx(36);
+            groupBottom = placeGroup(analysis, ARRAYSIZE(analysis), groupTitleTop + ScalePx(40));
+            groupTitleTop = groupBottom + ScalePx(36);
+            groupBottom = placeGroup(driveTools, ARRAYSIZE(driveTools), groupTitleTop + ScalePx(40));
+            groupTitleTop = groupBottom + ScalePx(36);
+            groupBottom = placeGroup(utilities, ARRAYSIZE(utilities), groupTitleTop + ScalePx(40));
+            outputTop = max(groupBottom + ScalePx(60), outputTop);
+        }
+        else
+        {
+            const int ripCopy[] = { 0, 1, 2, 3, 4 };
+            const int discQuality[] = { 5, 6, 7, 8, 9, 10, 11 };
+            const int analysis[] = { 12, 13, 14, 15, 16, 17 };
+            const int driveTools[] = { 18, 19, 20, 21, 22, 23, 24, 28, 29, 30, 31 };
+            const int utilities[] = { 25, 26, 27, 32, 33, 34 };
+            const int* indices = ripCopy;
+            int count = ARRAYSIZE(ripCopy);
+            if (navIndex == 2) { indices = discQuality; count = ARRAYSIZE(discQuality); }
+            else if (navIndex == 3) { indices = analysis; count = ARRAYSIZE(analysis); }
+            else if (navIndex == 4) { indices = driveTools; count = ARRAYSIZE(driveTools); }
+            else if (navIndex == 5) { indices = utilities; count = ARRAYSIZE(utilities); }
+
+            const int columns = 3;
+            const int gap = ScalePx(18);
+            const int buttonWidth = max(ScalePx(300), (contentWidth - gap * (columns - 1)) / columns);
+            const int buttonHeight = ScalePx(64);
+            const int buttonTop = ScalePx(170);
+            for (int i = 0; i < count; ++i)
+            {
+                ShowWindow(hInfoButtons[indices[i]], SW_SHOWNOACTIVATE);
+                move(hInfoButtons[indices[i]],
+                     contentLeft + (i % columns) * (buttonWidth + gap),
+                     buttonTop + (i / columns) * (buttonHeight + ScalePx(14)),
+                     buttonWidth, buttonHeight);
+            }
+        }
+
+        const int outputBottom = rc.bottom - ScalePx(40);
+        const int outputHeight = max(ScalePx(260), outputBottom - outputTop);
+        const int outputInset = ScalePx(22);
+        const int progressTop = outputTop + ScalePx(54);
+        const int progressHeight = ScalePx(30);
+        const int editTop = progressTop + progressHeight + ScalePx(10);
+        const int editWidth = max(ScalePx(300), contentWidth - outputInset * 2);
+        const int editHeight = max(ScalePx(140), outputTop + outputHeight - editTop - ScalePx(18));
+        const int progressTextWidth = max(ScalePx(220), (editWidth * 62) / 100);
+
+        move(hProgressText, contentLeft + outputInset, progressTop,
+             progressTextWidth, progressHeight);
+        move(hProgressBar, contentLeft + outputInset + progressTextWidth + ScalePx(16),
+             progressTop + ScalePx(5), editWidth - progressTextWidth - ScalePx(16), ScalePx(20));
+        UpdateOutputEditBrush(editWidth, editHeight);
+        move(hInfoEdit, contentLeft + outputInset, editTop, editWidth, editHeight);
+        move(hAccessibleLabel, contentLeft + outputInset, outputTop + ScalePx(12), editWidth, ScalePx(32));
+        move(hAccessibleEdit, contentLeft + outputInset, editTop, editWidth, editHeight);
+
+        if (hdwp) EndDeferWindowPos(hdwp);
+        ApplyAccessibleVisibility();
+        s_firstLayoutDone = true;
+        return;
+    }
+
+    for (int i = 0; i < SECTION_LABEL_COUNT; ++i)
+        if (hSectionLabels[i]) ShowWindow(hSectionLabels[i], SW_SHOWNOACTIVATE);
 
     const int margin = ScalePx(40);
     const int top = ScalePx(145);

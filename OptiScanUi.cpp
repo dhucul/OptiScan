@@ -46,6 +46,35 @@ Gdiplus::Image* gBackgroundImage;
 Gdiplus::Image* gOutputBackgroundImage;
 double gUiScale = 1.0;
 HMONITOR gUiMonitor = nullptr;
+static int gProfessionalNavIndex = 0;
+
+int GetProfessionalNavIndex()
+{
+    return gProfessionalNavIndex;
+}
+
+bool HandleProfessionalSidebarClick(HWND hWnd, int x, int y)
+{
+    if (CurrentThemeId() != ThemeId::AppleLight || x < 0 || x >= ScalePx(360))
+        return false;
+
+    for (int i = 0; i < 6; ++i)
+    {
+        const int top = ScalePx(145 + i * 76);
+        if (y < top || y >= top + ScalePx(58)) continue;
+
+        gProfessionalNavIndex = i;
+        LayoutMainControls(hWnd);
+        InvalidateRect(hWnd, nullptr, TRUE);
+
+        const int focusIndices[] = { 0, 0, 5, 12, 18, 25 };
+        const int focusIndex = focusIndices[i];
+        if (hInfoButtons[focusIndex] && IsWindowVisible(hInfoButtons[focusIndex]))
+            SetFocus(hInfoButtons[focusIndex]);
+        return true;
+    }
+    return false;
+}
 
 // Chrome colour table. Seeded from the active theme by OnThemeChangedUi();
 // mutable so the runtime theme switch can re-tint the window chrome. Defaults
@@ -273,7 +302,7 @@ LRESULT HandleControlColorStatic(HWND hWnd, HDC hdc, HWND child)
         }
         SetBkMode(hdc, OPAQUE);
         SetBkColor(hdc, OutputDark);
-        SetTextColor(hdc, WarmText);
+        SetTextColor(hdc, CurrentThemeId() == ThemeId::AppleLight ? RGB(210, 217, 226) : WarmText);
         return (INT_PTR)(hOutputSolidBrush ? hOutputSolidBrush
                                            : (HBRUSH)GetStockObject(BLACK_BRUSH));
     }
@@ -351,6 +380,7 @@ void OnThemeChangedUi()
     // Repaint the whole window + owner-drawn children.
     if (g_hMainWnd)
     {
+        LayoutMainControls(g_hMainWnd);
         InvalidateRect(g_hMainWnd, nullptr, TRUE);
         for (int i = 0; i < COMMAND_BUTTON_COUNT; ++i)
         {

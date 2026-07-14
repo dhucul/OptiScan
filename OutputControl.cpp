@@ -1142,18 +1142,19 @@ namespace OutputControl {
         // without an explicit SGR colour re-derive at paint time via the
         // heuristic, so a repaint re-colours the bulk of existing output.
         const Palette& p = ActiveTheme();
-        LogDefault    = p.fg;
-        LogDim        = p.dim;
-        LogHeading    = p.bright;
-        LogCommand    = p.accentWarm;
+        const bool professionalLight = CurrentThemeId() == ThemeId::AppleLight;
+        LogDefault    = professionalLight ? RGB(210, 217, 226) : p.fg;
+        LogDim        = professionalLight ? RGB(139, 150, 165) : p.dim;
+        LogHeading    = professionalLight ? RGB(245, 247, 250) : p.bright;
+        LogCommand    = professionalLight ? RGB( 86, 156, 255) : p.accentWarm;
         LogOk         = p.ok;
         LogWarn       = p.warn;
         LogError      = p.error;
-        LogInfo       = p.bright;
-        LogGraphFrame = p.graphFrame;
-        LogGraphBar   = p.graphBar;
+        LogInfo       = professionalLight ? RGB(126, 189, 255) : p.bright;
+        LogGraphFrame = professionalLight ? RGB(139, 150, 165) : p.graphFrame;
+        LogGraphBar   = professionalLight ? RGB( 86, 156, 255) : p.graphBar;
         PanelDark     = p.outputBg;
-        SelectionBg   = p.selection;
+        SelectionBg   = professionalLight ? RGB( 42,  65,  96) : p.selection;
         // Force the cached background (base fill + tinted artwork + veil) to
         // re-render with the new theme, then repaint.
         if (State* s = hCtrl ? GetState(hCtrl) : nullptr) {
