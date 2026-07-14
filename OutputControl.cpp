@@ -1146,13 +1146,13 @@ namespace OutputControl {
         LogDefault    = professionalLight ? RGB(210, 217, 226) : p.fg;
         LogDim        = professionalLight ? RGB(139, 150, 165) : p.dim;
         LogHeading    = professionalLight ? RGB(245, 247, 250) : p.bright;
-        LogCommand    = professionalLight ? RGB( 86, 156, 255) : p.accentWarm;
+        LogCommand    = p.accentWarm;
         LogOk         = p.ok;
         LogWarn       = p.warn;
         LogError      = p.error;
-        LogInfo       = professionalLight ? RGB(126, 189, 255) : p.bright;
+        LogInfo       = professionalLight ? p.cyan : p.bright;
         LogGraphFrame = professionalLight ? RGB(139, 150, 165) : p.graphFrame;
-        LogGraphBar   = professionalLight ? RGB( 86, 156, 255) : p.graphBar;
+        LogGraphBar   = p.graphBar;
         PanelDark     = p.outputBg;
         SelectionBg   = professionalLight ? RGB( 42,  65,  96) : p.selection;
         // Force the cached background (base fill + tinted artwork + veil) to

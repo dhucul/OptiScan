@@ -185,24 +185,24 @@ const Palette kArcDark = {
     /* artTintStrength*/ 68,
 };
 
-// --- Apple Light (soft-white, near-black text, blue accent) ------------------
+// --- Apple Light (soft-white, near-black text, blue chrome) ------------------
 // First light theme. Surfaces are a soft off-white family (panels/log), body
-// text is Apple's near-black #1D1D1F, and Apple blue #0071E3 is the single
-// accent (numbers, stripes, wordmark, chrome) — deliberately no warm/orange.
-// Status colours stay the SF system palette (green/amber/red/blue) so log
-// severity still reads clearly. The procedural backdrop reads these live; the
-// edge vignette in OptiScanUiPaint.cpp softens itself on light themes.
+// text is Apple's near-black #1D1D1F, and Apple blue #0071E3 remains the main
+// chrome accent. The dark output console uses a warm orange for commands,
+// informational text, and graph bars so it reads clearly against #151B23.
+// The procedural backdrop reads these live; the edge vignette in
+// OptiScanUiPaint.cpp softens itself on light themes.
 const Palette kAppleLight = {
     /* fg            */ RGB( 29,  29,  31),  // #1D1D1F near-black body text
     /* bright        */ RGB( 10,  10,  12),  // #0A0A0C headings
     /* dim           */ RGB(110, 110, 115),  // #6E6E73 secondary gray
-    /* accentWarm    */ RGB(  0, 113, 227),  // #0071E3 Apple blue (title / >>>)
+    /* accentWarm    */ RGB(255, 159,  67),  // #FF9F43 warm orange (title / >>>)
     /* ok            */ RGB( 30, 142,  62),  // #1E8E3E SF green (for white bg)
     /* warn          */ RGB(154, 106,   0),  // #9A6A00 amber (semantic [WARN])
     /* error         */ RGB(215,   0,  21),  // #D70015 SF red
-    /* cyan          */ RGB(  0, 113, 227),  // #0071E3 SF blue = [INFO]
+    /* cyan          */ RGB(255, 177,  90),  // #FFB15A soft orange = [INFO]
     /* graphFrame    */ RGB(142, 142, 147),  // #8E8E93 mid gray box chars
-    /* graphBar      */ RGB(  0, 113, 227),  // #0071E3 blue bars
+    /* graphBar      */ RGB(255, 159,  67),  // #FF9F43 orange bars
     /* selection     */ RGB(211, 227, 255),  // #D3E3FF light-blue selection
 
     /* windowBase    */ RGB(244, 245, 247),  // #F4F5F7 professional neutral canvas
