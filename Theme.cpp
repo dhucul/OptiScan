@@ -197,9 +197,9 @@ const Palette kAppleLight = {
     /* bright        */ RGB( 10,  10,  12),  // #0A0A0C headings
     /* dim           */ RGB(110, 110, 115),  // #6E6E73 secondary gray
     /* accentWarm    */ RGB(255, 159,  67),  // #FF9F43 warm orange (title / >>>)
-    /* ok            */ RGB( 30, 142,  62),  // #1E8E3E SF green (for white bg)
-    /* warn          */ RGB(154, 106,   0),  // #9A6A00 amber (semantic [WARN])
-    /* error         */ RGB(215,   0,  21),  // #D70015 SF red
+    /* ok            */ RGB( 42, 158,  72),  // lighter success green for console + graphs
+    /* warn          */ RGB(190, 120,  24),  // balanced orange for graph severity
+    /* error         */ RGB(230,  64,  76),  // balanced red for graph severity
     /* cyan          */ RGB(255, 177,  90),  // #FFB15A soft orange = [INFO]
     /* graphFrame    */ RGB(142, 142, 147),  // #8E8E93 mid gray box chars
     /* graphBar      */ RGB(255, 159,  67),  // #FF9F43 orange bars

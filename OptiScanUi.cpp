@@ -8,6 +8,7 @@
 #include "GuiSink.h"
 #include "OutputControl.h"
 #include "Theme.h"
+#include <commctrl.h>
 #include <cmath>
 
 // Progress.h (pulled in elsewhere) does `#undef min` / `#undef max`, which
@@ -342,7 +343,11 @@ void OnThemeChangedUi()
     const Palette& p = ActiveTheme();
     AccentOrange   = p.chromeAccent;
     SoftOrange     = p.chromeText;
-    AccentBlue     = p.chromeAccent;
+    // A brighter lavender progress fill echoes the Apple theme's purple
+    // instrumentation canvas; other themes retain their native accent.
+    AccentBlue     = CurrentThemeId() == ThemeId::AppleLight
+        ? RGB(174, 151, 255)
+        : p.chromeAccent;
     ConsoleGreen   = p.ok;
     WarmText       = p.fg;
     MenuTextOrange = p.accentWarm;
@@ -375,6 +380,12 @@ void OnThemeChangedUi()
         const int w = gOutputBrushWidth  > 0 ? gOutputBrushWidth  : ScalePx(960);
         const int h = gOutputBrushHeight > 0 ? gOutputBrushHeight : ScalePx(420);
         hDarkEditBrush = CreateOutputEditBrush(w, h);
+    }
+
+    if (hProgressBar)
+    {
+        SendMessageW(hProgressBar, PBM_SETBARCOLOR, 0, AccentBlue);
+        SendMessageW(hProgressBar, PBM_SETBKCOLOR, 0, OutputDark);
     }
 
     // Repaint the whole window + owner-drawn children.
