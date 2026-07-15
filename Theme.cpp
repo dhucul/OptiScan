@@ -6,7 +6,7 @@
 namespace {
 
 // --- Graphite (original dark graphite/slate) --------------------------------
-const Palette kGraphite = {
+constexpr Palette kGraphite = {
     .fg = RGB(216, 216, 211),
     .bright = RGB(206, 210, 212),
     .dim = RGB(118, 128, 138),
@@ -62,7 +62,7 @@ const Palette kGraphite = {
 };
 
 // --- Catppuccin Frappé -------------------------------------------------------
-const Palette kCatppuccinFrappe = {
+constexpr Palette kCatppuccinFrappe = {
     .fg = RGB(198, 208, 245),               // text
     .bright = RGB(205, 214, 245),
     .dim = RGB(115, 121, 148),              // overlay0
@@ -118,7 +118,7 @@ const Palette kCatppuccinFrappe = {
 };
 
 // --- Nord -------------------------------------------------------------------
-const Palette kNord = {
+constexpr Palette kNord = {
     .fg = RGB(216, 222, 233),               // nord4
     .bright = RGB(236, 239, 244),           // nord6
     .dim = RGB( 97, 110, 136),
@@ -174,7 +174,7 @@ const Palette kNord = {
 };
 
 // --- Arc-Dark ---------------------------------------------------------------
-const Palette kArcDark = {
+constexpr Palette kArcDark = {
     .fg = RGB(211, 218, 227),
     .bright = RGB(231, 235, 240),
     .dim = RGB(139, 145, 153),
@@ -235,7 +235,7 @@ const Palette kArcDark = {
 // the console roles below are light-on-dark like the dark themes' -- they are
 // ink on outputBg (#151B23), not on the light chrome. The chrome's own ink
 // lives in the card/canvas roles.
-const Palette kAppleLight = {
+constexpr Palette kAppleLight = {
     .fg = RGB(210, 217, 226),               // console body text on #151B23
     .bright = RGB(245, 247, 250),           // console headings, "Output" title
     .dim = RGB(139, 150, 165),              // console muted text
@@ -293,12 +293,18 @@ const Palette kAppleLight = {
 };
 
 // The live palette. InitializeTheme() re-applies whatever is persisted; this
-// initial value only stands if the registry has nothing valid. Derived from
-// kDefaultTheme rather than naming a palette, so the two cannot disagree.
-// (Safe at static-init time: the k* palettes above are const aggregates with
-// constant initializers, so they are ready before this dynamic init runs.)
-ThemeId g_activeId = kDefaultTheme;
-Palette g_active   = PaletteFor(kDefaultTheme);
+// initial value only stands if the registry has nothing valid.
+//
+// constinit, not a PaletteFor(kDefaultTheme) call: a function call would make
+// these dynamically initialized, and anything that touched ActiveTheme() from
+// another TU's static initializer could then observe a zero-filled palette.
+// constinit forces constant initialization and fails to compile if that ever
+// stops holding. The static_assert is what keeps the hardcoded palette honest
+// against kDefaultTheme.
+static_assert(kDefaultTheme == ThemeId::Graphite,
+              "g_active's initializer must name kDefaultTheme's palette");
+constinit ThemeId g_activeId = kDefaultTheme;
+constinit Palette g_active   = kGraphite;
 
 constexpr wchar_t kRegSubKey[]    = L"Software\\OptiScan";
 constexpr wchar_t kRegThemeValue[] = L"Theme";
