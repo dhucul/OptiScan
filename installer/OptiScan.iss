@@ -1,4 +1,4 @@
-; ============================================================================
+﻿; ============================================================================
 ;  OptiScan - Inno Setup installer script
 ;  Builds a self-contained setup that installs the x64 Release build and,
 ;  if necessary, the Microsoft Visual C++ 2015-2022 x64 runtime.
@@ -10,7 +10,7 @@
 ; ============================================================================
 
 #define MyAppName        "OptiScan"
-#define MyAppVersion      "3.15"
+#define MyAppVersion      "3.16"
 #define MyAppPublisher    "dhucul"
 #define MyAppURL          "https://github.com/dhucul/OptiScan"
 #define MyAppExeName       "OptiScan.exe"
