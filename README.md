@@ -158,9 +158,9 @@ OptiScan ships with a runtime theme switcher. Pick a theme from **View ▸ Theme
 
 | Theme | Look |
 |---|---|
-| **Apple Light** *(default)* | Soft-white rail and cards over a saturated purple instrumentation canvas, with an Apple-blue accent |
+| **Graphite** *(default)* | The original cool graphite/slate with a warm-tan accent |
+| **Apple Light** | Soft-white rail and cards over a saturated purple instrumentation canvas, with an Apple-blue accent |
 | **Catppuccin Frappé** | Soft pastel dark — lavender/blue base with peach and mauve accents |
-| **Graphite** | The original cool graphite/slate with a warm-tan accent |
 | **Nord** | Arctic slate with frost-blue accents and aurora status colours |
 | **Arc-Dark** | Flat blue-grey dark with the signature Arc blue accent |
 

@@ -292,16 +292,24 @@ const Palette kAppleLight = {
     .dlgBtnText = RGB( 29,  29,  31),       // #1D1D1F
 };
 
-// The live palette (defaults to Apple Light; InitializeTheme() re-applies
-// whatever is persisted).
-ThemeId g_activeId = ThemeId::AppleLight;
-Palette g_active   = kAppleLight;
+// The live palette. InitializeTheme() re-applies whatever is persisted; this
+// initial value only stands if the registry has nothing valid. Derived from
+// kDefaultTheme rather than naming a palette, so the two cannot disagree.
+// (Safe at static-init time: the k* palettes above are const aggregates with
+// constant initializers, so they are ready before this dynamic init runs.)
+ThemeId g_activeId = kDefaultTheme;
+Palette g_active   = PaletteFor(kDefaultTheme);
 
 constexpr wchar_t kRegSubKey[]    = L"Software\\OptiScan";
 constexpr wchar_t kRegThemeValue[] = L"Theme";
 
 }  // namespace
 
+// Both switches deliberately omit `default:` so that adding a ThemeId fails to
+// compile here rather than silently resolving to some other theme -- which is
+// exactly how these two arms went on naming Catppuccin Frappe long after the
+// default had moved. The trailing return only guards an out-of-range cast; it
+// terminates immediately because kDefaultTheme is a handled enumerator.
 const Palette& PaletteFor(ThemeId id) {
     switch (id) {
     case ThemeId::Graphite:         return kGraphite;
@@ -309,8 +317,8 @@ const Palette& PaletteFor(ThemeId id) {
     case ThemeId::Nord:             return kNord;
     case ThemeId::ArcDark:          return kArcDark;
     case ThemeId::AppleLight:       return kAppleLight;
-    default:                        return kAppleLight;
     }
+    return PaletteFor(kDefaultTheme);
 }
 
 const wchar_t* ThemeName(ThemeId id) {
@@ -320,8 +328,8 @@ const wchar_t* ThemeName(ThemeId id) {
     case ThemeId::Nord:             return L"Nord";
     case ThemeId::ArcDark:          return L"Arc-Dark";
     case ThemeId::AppleLight:       return L"Apple Light";
-    default:                        return L"Apple Light";
     }
+    return ThemeName(kDefaultTheme);
 }
 
 const Palette& ActiveTheme() { return g_active; }
@@ -337,7 +345,7 @@ void SetActiveTheme(ThemeId id) {
 ThemeId LoadThemeIdFromRegistry() {
     HKEY hKey = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, KEY_READ, &hKey) != ERROR_SUCCESS) {
-        return ThemeId::AppleLight;
+        return kDefaultTheme;
     }
     DWORD value = 0;
     DWORD size  = sizeof(value);
@@ -346,7 +354,7 @@ ThemeId LoadThemeIdFromRegistry() {
                                   reinterpret_cast<LPBYTE>(&value), &size);
     RegCloseKey(hKey);
     if (st != ERROR_SUCCESS || type != REG_DWORD || value >= static_cast<DWORD>(kThemeCount)) {
-        return ThemeId::AppleLight;
+        return kDefaultTheme;
     }
     return static_cast<ThemeId>(value);
 }

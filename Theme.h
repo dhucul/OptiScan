@@ -22,10 +22,17 @@ enum class ThemeId : int {
     CatppuccinFrappe = 1,
     Nord             = 2,
     ArcDark          = 3,
-    AppleLight       = 4,   // soft-white Apple light theme (default)
+    AppleLight       = 4,   // soft-white light theme over a purple canvas
 };
 
 constexpr int kThemeCount = 5;
+
+// The theme used when nothing is persisted, or the persisted value is invalid.
+// Single source of truth -- the initial palette, both registry fallbacks, and
+// the PaletteFor/ThemeName out-of-range guards all derive from this. It used to
+// be spelled out in six places and they drifted (two still named Catppuccin
+// Frappe long after the default had moved on).
+constexpr ThemeId kDefaultTheme = ThemeId::Graphite;
 
 // Every colour role the app needs. All COLORREF (0x00BBGGRR via RGB()). Alpha
 // for the semi-transparent GDI+ chrome is applied at the paint site, not here.
@@ -116,8 +123,8 @@ void SetActiveTheme(ThemeId id);
 // SetActiveTheme + persist to the registry. Use for user-driven selection.
 void ApplyThemeAndPersist(ThemeId id);
 
-// Registry helpers (HKCU\Software\OptiScan\Theme). Load defaults to the
-// Apple Light theme when the value is absent or invalid.
+// Registry helpers (HKCU\Software\OptiScan\Theme). Load falls back to
+// kDefaultTheme when the value is absent or invalid.
 ThemeId LoadThemeIdFromRegistry();
 void    SaveThemeIdToRegistry(ThemeId id);
 

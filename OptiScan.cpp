@@ -177,8 +177,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     InitializeUiResources();
 
-    // Apply the persisted theme before any window paints (defaults to
-    // Apple Light when nothing is saved).
+    // Apply the persisted theme before any window paints (falls back to
+    // kDefaultTheme when nothing is saved).
     InitializeTheme();
 
     // Initialize global strings
