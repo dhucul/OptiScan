@@ -21,13 +21,9 @@
 void CreateUiFonts()
 {
     if (hCommandFont) DeleteObject(hCommandFont);
-    if (hHeaderFont) DeleteObject(hHeaderFont);
     if (hOutputFont) DeleteObject(hOutputFont);
 
     hCommandFont = CreateFontW(-ScalePx(24), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_NATURAL_QUALITY,
-        DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-    hHeaderFont = CreateFontW(-ScalePx(25), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_NATURAL_QUALITY,
         DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
     // Cascadia Mono ships with Windows 11 and Windows Terminal; it has much
@@ -178,7 +174,7 @@ void LayoutMainControls(HWND hWnd)
 
     // Batch every child move into one DeferWindowPos transaction so children
     // don't repaint individually as the layout walks across them. Total
-    // children: 1 output + 2 progress + 4 section labels + 33 buttons = 40.
+    // children: 1 output + 2 progress + 2 accessible + 35 buttons = 40.
     //
     // On the first pass, children were created hidden — fold SWP_SHOWWINDOW
     // into the batch so positioning and reveal happen as one atomic update.
@@ -187,7 +183,7 @@ void LayoutMainControls(HWND hWnd)
     const UINT swpFlags = SWP_NOZORDER | SWP_NOACTIVATE
                         | (firstPass ? SWP_SHOWWINDOW : 0);
 
-    HDWP hdwp = BeginDeferWindowPos(44);
+    HDWP hdwp = BeginDeferWindowPos(40);
     auto move = [&](HWND h, int x, int y, int w, int hgt) {
         if (!h) return;
         if (hdwp) {
@@ -202,7 +198,8 @@ void LayoutMainControls(HWND hWnd)
 
     // One layout for every theme: a navigation rail, six pages, three primary
     // actions on the overview, compact grouped commands, and a full-width
-    // console. sidebarWidth is shared with the painter and the hit-test.
+    // console. The rail geometry comes from SidebarWidth()/NavItemTop() so the
+    // painter and the hit-test cannot drift from it.
     {
         const int sidebarWidth = SidebarWidth();
         const int contentLeft = sidebarWidth + ScalePx(60);

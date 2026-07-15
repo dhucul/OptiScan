@@ -113,13 +113,19 @@ static Gdiplus::Bitmap* gBackdropBitmap = nullptr;
 static int gBackdropW = 0;
 static int gBackdropH = 0;
 static int gBackdropThemeId = -1;
+static double gBackdropScale = 0.0;
 
 static void EnsureBackdropBitmap(int width, int height)
 {
     width = max(1, width);
     height = max(1, height);
     const int tid = (int)CurrentThemeId();
-    if (gBackdropBitmap && gBackdropW == width && gBackdropH == height && gBackdropThemeId == tid)
+    // Keyed on gUiScale as well as size: the dot spacing and stroke widths come
+    // from ScalePx/ScaleReal, so a DPI change that happens to leave the client
+    // size unchanged (same-resolution monitor, different DPI) would otherwise
+    // reuse a bitmap drawn at the old scale.
+    if (gBackdropBitmap && gBackdropW == width && gBackdropH == height
+        && gBackdropThemeId == tid && gBackdropScale == gUiScale)
     {
         return;
     }
@@ -130,6 +136,7 @@ static void EnsureBackdropBitmap(int width, int height)
     gBackdropW = width;
     gBackdropH = height;
     gBackdropThemeId = tid;
+    gBackdropScale = gUiScale;
 }
 
 
@@ -145,12 +152,6 @@ void DestroyUiResources()
     {
         DeleteObject(hCommandFont);
         hCommandFont = nullptr;
-    }
-
-    if (hHeaderFont)
-    {
-        DeleteObject(hHeaderFont);
-        hHeaderFont = nullptr;
     }
 
     if (hOutputFont)
@@ -251,7 +252,7 @@ static void DrawUnifiedBackground(Gdiplus::Graphics& graphics, const RECT& rc)
 {
     const int width = rc.right - rc.left;
     const int height = rc.bottom - rc.top;
-    const int sidebarWidth = ScalePx(360);
+    const int sidebarWidth = SidebarWidth();
     const int contentLeft = sidebarWidth + ScalePx(60);
     const int contentRight = rc.right - ScalePx(40);
     const int contentWidth = max(ScalePx(900), contentRight - contentLeft);
@@ -290,13 +291,14 @@ static void DrawUnifiedBackground(Gdiplus::Graphics& graphics, const RECT& rc)
     graphics.DrawString(L"OptiScan", -1, &brand, Gdiplus::PointF(ScaleReal(90), ScaleReal(42)), &ink);
 
     const wchar_t* navLabels[] = { L"Overview", L"Rip & Copy", L"Disc Quality", L"Analysis", L"Drive Tools", L"Utilities" };
-    for (int i = 0; i < ARRAYSIZE(navLabels); ++i)
+    static_assert(ARRAYSIZE(navLabels) == kNavItemCount, "nav labels must match the hit-test's item count");
+    for (int i = 0; i < kNavItemCount; ++i)
     {
-        const int y = ScalePx(145 + i * 76);
+        const int y = NavItemTop(i);
         if (i == selectedNav)
         {
             Gdiplus::GraphicsPath selectedPath;
-            AddRoundedRectangle(selectedPath, ScalePx(18), y, sidebarWidth - ScalePx(36), ScalePx(58), ScalePx(10));
+            AddRoundedRectangle(selectedPath, ScalePx(18), y, sidebarWidth - ScalePx(36), ScalePx(kNavItemHeight), ScalePx(10));
             Gdiplus::SolidBrush selectedBg(ThemeArgb(255, p.surfaceSunken));
             graphics.FillPath(&selectedBg, &selectedPath);
             graphics.FillRectangle(&blue, ScalePx(18), y + ScalePx(10), ScalePx(5), ScalePx(38));
@@ -403,12 +405,9 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
     const bool focused = (drawItem->itemState & ODS_FOCUS) != 0;
     const bool disabled = (drawItem->itemState & ODS_DISABLED) != 0;
     const int commandIndex = drawItem->CtlID - IDC_INFO_BUTTON1;
-    const bool clearCommand = commandIndex == kClearButtonIndex;
     const bool exitCommand = commandIndex == kExitButtonIndex;
 
     const Palette& p = ActiveTheme();
-    // Dimmed text for disabled buttons; from the active theme.
-    const COLORREF DisabledText = p.disabledText;
 
     Gdiplus::Graphics graphics(hdc);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
@@ -487,7 +486,6 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
         Gdiplus::SolidBrush ink(disabled ? ThemeArgb(255, p.disabledText)
                                          : (exitCommand ? ThemeArgb(255, p.dangerInk)
                                                         : ThemeArgb(255, p.cardInk)));
-        Gdiplus::SolidBrush secondary(ThemeArgb(255, p.cardInk));
         Gdiplus::SolidBrush blue(ThemeArgb(255, p.accentPrimary));
 
         if (primary)
@@ -520,8 +518,11 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
                                 Gdiplus::PointF(rc.left + ScaleReal(139), rc.top + ScaleReal(33)), &blue);
             graphics.DrawString(primaryTitle, -1, &titleFont,
                                 Gdiplus::PointF(rc.left + ScaleReal(176), rc.top + ScaleReal(27)), &ink);
+            // Same brush as the title, so a disabled hero card dims both. The
+            // old dedicated "secondary" brush ignored `disabled` and left the
+            // description at full strength under a greyed-out title.
             graphics.DrawString(description, -1, &descriptionFont,
-                                Gdiplus::PointF(rc.left + ScaleReal(128), rc.top + ScaleReal(66)), &secondary);
+                                Gdiplus::PointF(rc.left + ScaleReal(128), rc.top + ScaleReal(66)), &ink);
 
             Gdiplus::GraphicsPath actionPill;
             AddRoundedRectangle(actionPill, rc.left + ScalePx(128), rc.top + ScalePx(112),

@@ -11,7 +11,6 @@ extern HWND hInfoButtons[COMMAND_BUTTON_COUNT];
 extern HWND hProgressText;
 extern HWND hProgressBar;
 extern HFONT hCommandFont;
-extern HFONT hHeaderFont;
 extern HFONT hOutputFont;
 extern HBRUSH hDarkEditBrush;
 extern HBRUSH hOutputSolidBrush;

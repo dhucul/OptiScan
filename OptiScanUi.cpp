@@ -34,7 +34,6 @@ HWND hInfoButtons[COMMAND_BUTTON_COUNT];        // quick action buttons
 HWND hProgressText;                             // live progress status
 HWND hProgressBar;                              // live progress meter
 HFONT hCommandFont;
-HFONT hHeaderFont;
 HFONT hOutputFont;
 HBRUSH hDarkEditBrush;
 HBRUSH hOutputSolidBrush;       // solid fallback background for simple controls
@@ -42,8 +41,6 @@ HBITMAP hOutputBrushBitmap;
 int gOutputBrushWidth;
 int gOutputBrushHeight;
 ULONG_PTR gGdiPlusToken;
-Gdiplus::Image* gBackgroundImage;
-Gdiplus::Image* gOutputBackgroundImage;
 double gUiScale = 1.0;
 HMONITOR gUiMonitor = nullptr;
 static int gProfessionalNavIndex = 0;
