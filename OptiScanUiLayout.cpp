@@ -88,7 +88,6 @@ void CreateMainControls(HWND hWnd)
     if (hInfoEdit)
     {
         OutputControl::SetFont(hInfoEdit, hOutputFont);
-        OutputControl::SetBackgroundImage(hInfoEdit, gOutputBackgroundImage);
         ApplyUiVisualTone();
     }
 

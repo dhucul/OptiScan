@@ -64,8 +64,6 @@
 #define IDC_DRIVE_LABEL         1102
 #define IDC_UTILITY_LABEL       1103
 #define IDC_ACCESSIBLE_LABEL    1104
-#define IDR_TOP_PNG             2000
-#define IDR_OUTPUT_PNG          2001
 #define IDC_MYICON				2
 #ifndef IDC_STATIC
 #define IDC_STATIC				-1

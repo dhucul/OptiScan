@@ -108,7 +108,6 @@ namespace {
         // emoji like 💿.
         static constexpr int kFallbackCount = 3;
         HFONT fallbackFonts[kFallbackCount] = { nullptr, nullptr, nullptr };
-        Gdiplus::Image* backgroundImage = nullptr;
 
         std::vector<Line> closedLines;
         Line currentLine;            // line still being built (no \n yet)
@@ -1083,14 +1082,6 @@ namespace OutputControl {
         if (s->followBottom) ScrollToBottom(*s);
         else                 ClampScroll(*s);
         UpdateScrollbar(*s);
-        Repaint(*s);
-    }
-
-    void SetBackgroundImage(HWND hCtrl, Gdiplus::Image* image) {
-        State* s = GetState(hCtrl);
-        if (!s) return;
-        s->backgroundImage = image;
-        ReleaseCaches(*s);
         Repaint(*s);
     }
 

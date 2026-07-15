@@ -177,70 +177,14 @@ static void EnsureBackdropBitmap(int width, int height)
 }
 
 
-static Gdiplus::Image* LoadPngFromResource(WORD resourceId)
-{
-    HMODULE hModule = GetModuleHandleW(nullptr);
-    HRSRC hResInfo = FindResourceW(hModule, MAKEINTRESOURCEW(resourceId), RT_RCDATA);
-    if (!hResInfo) return nullptr;
-
-    DWORD size = SizeofResource(hModule, hResInfo);
-    HGLOBAL hResData = LoadResource(hModule, hResInfo);
-    if (!hResData || size == 0) return nullptr;
-
-    const void* pData = LockResource(hResData);
-    if (!pData) return nullptr;
-
-    HGLOBAL hBuffer = GlobalAlloc(GMEM_MOVEABLE, size);
-    if (!hBuffer) return nullptr;
-
-    void* pBuffer = GlobalLock(hBuffer);
-    if (!pBuffer)
-    {
-        GlobalFree(hBuffer);
-        return nullptr;
-    }
-    memcpy(pBuffer, pData, size);
-    GlobalUnlock(hBuffer);
-
-    IStream* pStream = nullptr;
-    if (CreateStreamOnHGlobal(hBuffer, TRUE, &pStream) != S_OK || !pStream)
-    {
-        GlobalFree(hBuffer);
-        return nullptr;
-    }
-
-    Gdiplus::Image* image = Gdiplus::Image::FromStream(pStream);
-    pStream->Release();
-
-    if (!image || image->GetLastStatus() != Gdiplus::Ok)
-    {
-        delete image;
-        return nullptr;
-    }
-    return image;
-}
-
-static void LoadBackgroundImage()
-{
-    gBackgroundImage = LoadPngFromResource(IDR_TOP_PNG);
-    gOutputBackgroundImage = LoadPngFromResource(IDR_OUTPUT_PNG);
-}
-
 void InitializeUiResources()
 {
     Gdiplus::GdiplusStartupInput gdiplusStartupInput;
     Gdiplus::GdiplusStartup(&gGdiPlusToken, &gdiplusStartupInput, nullptr);
-    LoadBackgroundImage();
 }
 
 void DestroyUiResources()
 {
-    delete gBackgroundImage;
-    gBackgroundImage = nullptr;
-
-    delete gOutputBackgroundImage;
-    gOutputBackgroundImage = nullptr;
-
     if (hCommandFont)
     {
         DeleteObject(hCommandFont);
@@ -524,14 +468,6 @@ void DrawMainBackground(HWND hWnd, HDC hdc)
     AddRoundedRectangle(commandPanel, layoutMargin, top - ScalePx(70), panelWidth, commandPanelHeight + ScalePx(70), ScalePx(18));
     graphics.FillPath(&panelBrush, &commandPanel);
     graphics.DrawPath(&borderPen, &commandPanel);
-    if (CurrentThemeId() == ThemeId::AppleLight)
-    {
-        const Gdiplus::REAL panelArtRadius = (Gdiplus::REAL)min(panelWidth, commandPanelHeight) * 0.34f;
-        DrawOpticalRingMark(graphics, (Gdiplus::REAL)(layoutMargin + panelWidth * 0.18f),
-                            (Gdiplus::REAL)(top + commandPanelHeight / 2), panelArtRadius, 38, false);
-        DrawOpticalRingMark(graphics, (Gdiplus::REAL)(layoutMargin + panelWidth * 0.82f),
-                            (Gdiplus::REAL)(top + commandPanelHeight / 2), panelArtRadius, 30, false);
-    }
 
     Gdiplus::GraphicsPath outputPanel;
     AddRoundedRectangle(outputPanel, layoutMargin, outputTop - ScalePx(42), panelWidth, outputHeight + ScalePx(42), ScalePx(18));
@@ -604,19 +540,13 @@ void DrawMainBackground(HWND hWnd, HDC hdc)
     graphics.MeasureString(L"Opti", -1, &brandFont, Gdiplus::PointF(0.0f, 0.0f), &brandFormat, &optiBounds);
     graphics.MeasureString(L"Scan", -1, &brandFont, Gdiplus::PointF(0.0f, 0.0f), &brandFormat, &scanBounds);
 
-    const bool appleLight = CurrentThemeId() == ThemeId::AppleLight;
-    const Gdiplus::REAL markRadius = appleLight ? ScaleReal(25) : ScaleReal(32);
     const Gdiplus::REAL brandWidth = optiBounds.Width + scanBounds.Width;
-    const Gdiplus::REAL groupWidth = brandWidth + (appleLight ? ScaleReal(66) : 0.0f);
-    const Gdiplus::REAL groupX = appleLight
-        ? (Gdiplus::REAL)(layoutMargin + ScalePx(20))
-        : ((Gdiplus::REAL)rc.right - groupWidth) / 2.0f;
-    const Gdiplus::REAL brandX = groupX + (appleLight ? ScaleReal(82) : 0.0f);
+    const Gdiplus::REAL brandX = ((Gdiplus::REAL)rc.right - brandWidth) / 2.0f;
 
     // Soft halo behind the wordmark so the title stays crisp over the colourful
     // aurora backdrop. (The old header waveform lines were removed — too faint.)
     {
-        const Gdiplus::REAL waveY = appleLight ? ScaleReal(38) : ScaleReal(112);
+        const Gdiplus::REAL waveY = ScaleReal(112);
         const Gdiplus::REAL wcx = brandX + (optiBounds.Width + scanBounds.Width) / 2.0f;
         const Gdiplus::REAL hw  = (optiBounds.Width + scanBounds.Width) * 0.66f + ScaleReal(30);
         const Gdiplus::REAL hh  = ScaleReal(54);
@@ -630,13 +560,9 @@ void DrawMainBackground(HWND hWnd, HDC hdc)
         graphics.FillPath(&hb, &hp);
     }
 
-    if (appleLight)
-    {
-        DrawOpticalRingMark(graphics, groupX + markRadius, ScaleReal(38), markRadius, 230, true);
-    }
-    const Gdiplus::REAL brandY = appleLight ? ScaleReal(9) : ScaleReal(82);
+    const Gdiplus::REAL brandY = ScaleReal(82);
     graphics.DrawString(L"Opti", -1, &brandFont, Gdiplus::PointF(brandX, brandY), &brandFormat,
-                        appleLight ? &titleWhite : &titleOrange);
+                        &titleOrange);
     graphics.DrawString(L"Scan", -1, &brandFont, Gdiplus::PointF(brandX + optiBounds.Width, brandY), &brandFormat,
                         &titleWhite);
 
@@ -845,37 +771,10 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
     // Frosted-glass fill: semi-translucent so the themed backdrop (disc arcs +
     // waves) reads softly through the button faces, not just in the gaps. Border
     // + drop shadow keep the cards defined so they still stand out.
-    const bool appleButton = CurrentThemeId() == ThemeId::AppleLight;
-    const BYTE normalButtonAlpha = appleButton ? (BYTE)240 : (BYTE)242;
-    COLORREF cardTop = ActiveTheme().btnTop;
-    COLORREF cardBottom = ActiveTheme().btnBottom;
-    if (appleButton)
-    {
-        // Quiet category tints make the dense command grid easier to scan
-        // without turning the cards into loud, fully saturated tiles.
-        if (exitCommand)
-        {
-            cardTop = RGB(255, 240, 243);
-            cardBottom = RGB(255, 204, 214);
-        }
-        else if (commandIndex < 12)
-        {
-            cardTop = RGB(238, 247, 255);
-            cardBottom = RGB(194, 220, 255);  // blue: ripping + disc quality
-        }
-        else if (commandIndex < 25)
-        {
-            cardTop = RGB(247, 241, 255);
-            cardBottom = RGB(220, 204, 255);  // violet: analysis + utilities
-        }
-        else
-        {
-            cardTop = RGB(236, 252, 249);
-            cardBottom = RGB(190, 235, 228);  // teal: drive operations
-        }
-    }
-    Gdiplus::Color topColor = pressed ? ThemeArgb(240, Lighten(cardTop, 10)) : ThemeArgb(normalButtonAlpha, cardTop);
-    Gdiplus::Color bottomColor = pressed ? ThemeArgb(240, Lighten(cardBottom, 7)) : ThemeArgb(normalButtonAlpha, cardBottom);
+    const COLORREF cardTop = ActiveTheme().btnTop;
+    const COLORREF cardBottom = ActiveTheme().btnBottom;
+    Gdiplus::Color topColor = pressed ? ThemeArgb(240, Lighten(cardTop, 10)) : ThemeArgb(242, cardTop);
+    Gdiplus::Color bottomColor = pressed ? ThemeArgb(240, Lighten(cardBottom, 7)) : ThemeArgb(242, cardBottom);
     Gdiplus::Rect buttonRect(rc.left, rc.top, max(1, rc.right - rc.left), max(1, rc.bottom - rc.top));
     Gdiplus::LinearGradientBrush buttonBrush(buttonRect, topColor, bottomColor, Gdiplus::LinearGradientModeVertical);
     graphics.FillPath(&buttonBrush, &buttonPath);

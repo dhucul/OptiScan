@@ -31,7 +31,6 @@ namespace OutputControl {
 
     // Optional configuration.
     void SetFont(HWND hCtrl, HFONT font);
-    void SetBackgroundImage(HWND hCtrl, Gdiplus::Image* image);
     void SetBackgroundTone(HWND hCtrl, BYTE toneAlpha, BYTE gridAlpha);
 
     // Append a styled text segment.

@@ -80,16 +80,12 @@ bool HandleProfessionalSidebarClick(HWND hWnd, int x, int y)
 // Chrome colour table. Seeded from the active theme by OnThemeChangedUi();
 // mutable so the runtime theme switch can re-tint the window chrome. Defaults
 // are the Graphite values (overwritten before first paint by InitializeTheme).
-extern COLORREF AccentOrange = RGB(154, 164, 176);
 extern COLORREF SoftOrange = RGB(146, 156, 166);
 extern COLORREF AccentBlue = RGB(156, 168, 180);
-extern COLORREF ConsoleGreen = RGB(148, 192, 166);
 extern COLORREF WarmText = RGB(208, 215, 220);
 extern COLORREF MenuTextOrange = RGB(198, 178, 150);
 extern COLORREF MenuTextGrey = RGB(216, 222, 226);
 extern COLORREF MenuNumberGrey = RGB(178, 188, 196);
-extern COLORREF MutedText = RGB(118, 128, 138);
-extern COLORREF PanelDark = RGB(6, 10, 14);
 extern COLORREF OutputDark = RGB(14, 17, 22);   // Output background color.
 extern const BYTE PanelSurfaceAlpha = 92;
 
@@ -341,20 +337,16 @@ LRESULT HandleControlColorEdit(HDC hdc)
 void OnThemeChangedUi()
 {
     const Palette& p = ActiveTheme();
-    AccentOrange   = p.chromeAccent;
     SoftOrange     = p.chromeText;
     // A brighter lavender progress fill echoes the Apple theme's purple
     // instrumentation canvas; other themes retain their native accent.
     AccentBlue     = CurrentThemeId() == ThemeId::AppleLight
         ? RGB(174, 151, 255)
         : p.chromeAccent;
-    ConsoleGreen   = p.ok;
     WarmText       = p.fg;
     MenuTextOrange = p.accentWarm;
     MenuTextGrey   = p.btnLabel;
     MenuNumberGrey = p.btnNumber;
-    MutedText      = p.dim;
-    PanelDark      = p.panelSurface;
     OutputDark     = p.outputBg;
 
     // Propagate to the log, prompt-dialog and stream-sink colour tables.

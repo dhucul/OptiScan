@@ -76,15 +76,6 @@ struct Palette {
     COLORREF dlgBtnBottom;
     COLORREF dlgBtnBorder;
     COLORREF dlgBtnText;
-
-    // --- Background artwork tint --------------------------------------------
-    // The embedded top.png / output.png art is dark-navy with gold accents.
-    // A luminance-colourise ColorMatrix shifts its hue toward artTint so it
-    // matches the theme. artTintStrength is the blend amount, 0..100 (%); 0
-    // draws the art untouched (used by Graphite, whose native tone already
-    // matches).
-    COLORREF artTint;
-    int      artTintStrength;
 };
 
 // The live palette. Never returns a dangling reference — points at a static.

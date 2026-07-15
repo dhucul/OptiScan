@@ -46,9 +46,6 @@ const Palette kGraphite = {
     /* dlgBtnBottom  */ RGB( 24,  27,  33),
     /* dlgBtnBorder  */ RGB(146, 156, 166),
     /* dlgBtnText    */ RGB(214, 220, 224),
-
-    /* artTint       */ RGB(  0,   0,   0),  // native art (strength 0)
-    /* artTintStrength*/ 0,
 };
 
 // --- Catppuccin Frappé -------------------------------------------------------
@@ -92,9 +89,6 @@ const Palette kCatppuccinFrappe = {
     /* dlgBtnBottom  */ RGB( 41,  44,  59),
     /* dlgBtnBorder  */ RGB(115, 121, 148),
     /* dlgBtnText    */ RGB(198, 208, 245),
-
-    /* artTint       */ RGB(202, 158, 230),  // mauve
-    /* artTintStrength*/ 75,
 };
 
 // --- Nord -------------------------------------------------------------------
@@ -138,9 +132,6 @@ const Palette kNord = {
     /* dlgBtnBottom  */ RGB( 59,  66,  82),
     /* dlgBtnBorder  */ RGB( 76,  86, 106),
     /* dlgBtnText    */ RGB(216, 222, 233),
-
-    /* artTint       */ RGB(110, 190, 206),  // frost (punchier than nord8)
-    /* artTintStrength*/ 76,
 };
 
 // --- Arc-Dark ---------------------------------------------------------------
@@ -184,9 +175,6 @@ const Palette kArcDark = {
     /* dlgBtnBottom  */ RGB( 47,  52,  63),
     /* dlgBtnBorder  */ RGB( 91,  98, 115),
     /* dlgBtnText    */ RGB(211, 218, 227),
-
-    /* artTint       */ RGB( 92, 148, 210),  // arc blue (softened)
-    /* artTintStrength*/ 68,
 };
 
 // --- Apple Light (soft-white chrome, near-black text, blue accent) -----------
@@ -235,9 +223,6 @@ const Palette kAppleLight = {
     /* dlgBtnBottom  */ RGB(234, 241, 252),  // #EAF1FC faint cool
     /* dlgBtnBorder  */ RGB(198, 211, 230),  // #C6D3E6 soft blue border
     /* dlgBtnText    */ RGB( 29,  29,  31),  // #1D1D1F
-
-    /* artTint       */ RGB(221, 227, 236),  // #DDE3EC vestigial; harmless
-    /* artTintStrength*/ 0,
 };
 
 // The live palette (defaults to Apple Light; InitializeTheme() re-applies
