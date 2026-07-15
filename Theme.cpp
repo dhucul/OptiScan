@@ -20,8 +20,8 @@ const Palette kGraphite = {
     .graphBar = RGB(174, 182, 190),
     .selection = RGB( 58,  66,  78),
 
-    .backdropTop = RGB( 52,  60,  72),      // lifted slate
-    .backdropBottom = RGB( 10,  13,  17),
+    .backdropTop = RGB( 30,  35,  44),      // lifted slate
+    .backdropBottom = RGB(  9,  11,  15),
     .backdropDepth = RGB(  4,   6,   9),
     .backdropGlow = RGB(126, 178, 212),
     .backdropInstrument = RGB(150, 170, 190),
@@ -29,9 +29,9 @@ const Palette kGraphite = {
     .canvasInk = RGB(228, 232, 236),
     .canvasInkMuted = RGB(176, 186, 196),
 
-    .surfaceRaised = RGB( 24,  28,  35),
-    .surfaceSunken = RGB( 38,  44,  54),
-    .hairline = RGB( 62,  70,  80),
+    .surfaceRaised = RGB( 44,  50,  60),
+    .surfaceSunken = RGB( 58,  65,  77),
+    .hairline = RGB( 78,  86,  98),
     .shadowInk = RGB(  0,   0,   0),
 
     .cardInk = RGB(216, 222, 226),
@@ -39,7 +39,7 @@ const Palette kGraphite = {
     .disabledText = RGB( 96, 100, 104),
 
     .accentPrimary = RGB(126, 178, 212),
-    .accentSurface = RGB( 38,  46,  56),
+    .accentSurface = RGB( 52,  60,  72),
     .onAccentInk = RGB(  8,  12,  18),      // dark on light steel
     .dangerSurface = RGB( 46,  28,  30),
     .dangerBorder = RGB(110,  62,  62),
@@ -76,18 +76,18 @@ const Palette kCatppuccinFrappe = {
     .graphBar = RGB(133, 193, 220),
     .selection = RGB( 81,  87, 106),        // surface1
 
-    .backdropTop = RGB(112,  88, 150),      // mauve-shifted lift
-    .backdropBottom = RGB( 41,  44,  59),   // mantle
-    .backdropDepth = RGB( 30,  32,  44),
+    .backdropTop = RGB( 62,  52,  86),      // mauve-shifted lift
+    .backdropBottom = RGB( 30,  32,  44),   // mantle
+    .backdropDepth = RGB( 24,  26,  36),
     .backdropGlow = RGB(202, 158, 230),     // mauve
     .backdropInstrument = RGB(180, 152, 220),
 
     .canvasInk = RGB(198, 208, 245),        // text
     .canvasInkMuted = RGB(165, 175, 215),
 
-    .surfaceRaised = RGB( 48,  52,  70),    // base
-    .surfaceSunken = RGB( 65,  69,  89),    // surface0
-    .hairline = RGB( 81,  87, 106),         // surface1
+    .surfaceRaised = RGB( 56,  60,  80),    // base
+    .surfaceSunken = RGB( 72,  76,  98),    // surface0
+    .hairline = RGB( 88,  94, 114),         // surface1
     .shadowInk = RGB( 20,  22,  30),
 
     .cardInk = RGB(198, 208, 245),
@@ -95,7 +95,7 @@ const Palette kCatppuccinFrappe = {
     .disabledText = RGB( 92,  97, 118),
 
     .accentPrimary = RGB(140, 170, 221),    // blue
-    .accentSurface = RGB( 65,  69,  89),    // surface0
+    .accentSurface = RGB( 72,  76,  98),    // surface0
     .onAccentInk = RGB( 35,  38,  52),      // crust -- dark-on-accent, ~7:1
     .dangerSurface = RGB( 62,  45,  55),
     .dangerBorder = RGB(130,  78,  80),
@@ -132,9 +132,9 @@ const Palette kNord = {
     .graphBar = RGB(143, 188, 187),         // nord7
     .selection = RGB( 67,  76,  94),        // nord2
 
-    .backdropTop = RGB( 76, 102, 140),      // lifted nord10
-    .backdropBottom = RGB( 38,  46,  60),
-    .backdropDepth = RGB( 28,  34,  45),
+    .backdropTop = RGB( 44,  54,  74),      // lifted nord10
+    .backdropBottom = RGB( 28,  34,  45),
+    .backdropDepth = RGB( 22,  27,  36),
     .backdropGlow = RGB(136, 192, 208),     // nord8
     .backdropInstrument = RGB(129, 161, 193), // nord9
 
@@ -142,20 +142,20 @@ const Palette kNord = {
     .canvasInkMuted = RGB(200, 212, 228),
 
     .surfaceRaised = RGB( 59,  66,  82),    // nord1
-    .surfaceSunken = RGB( 67,  76,  94),    // nord2
-    .hairline = RGB( 76,  86, 106),         // nord3
+    .surfaceSunken = RGB( 76,  86, 106),    // nord2
+    .hairline = RGB( 94, 104, 124),         // nord3
     .shadowInk = RGB( 20,  24,  31),
 
     .cardInk = RGB(236, 239, 244),          // nord6
     .cardInkMuted = RGB(178, 190, 208),
     .disabledText = RGB( 88,  96, 112),
 
-    .accentPrimary = RGB( 94, 129, 172),    // nord10
+    .accentPrimary = RGB(136, 192, 208),    // nord10
     .accentSurface = RGB( 67,  76,  94),    // nord2
-    .onAccentInk = RGB(236, 239, 244),      // nord6 -- white-on-nord9 is 2.4:1
-    .dangerSurface = RGB( 63,  52,  58),
+    .onAccentInk = RGB( 46,  52,  64),      // nord6 -- white-on-nord9 is 2.4:1
+    .dangerSurface = RGB( 60,  44,  50),
     .dangerBorder = RGB(120,  74,  80),
-    .dangerInk = RGB(191,  97, 106),        // nord11
+    .dangerInk = RGB(214, 134, 142),        // nord11
 
     .outputBg = RGB( 39,  44,  54),
     .chromeAccent = RGB(129, 161, 193),     // nord9
@@ -188,30 +188,30 @@ const Palette kArcDark = {
     .graphBar = RGB(123, 168, 216),
     .selection = RGB( 69,  74,  90),
 
-    .backdropTop = RGB( 58,  80, 120),
-    .backdropBottom = RGB( 38,  41,  50),
-    .backdropDepth = RGB( 28,  30,  38),
+    .backdropTop = RGB( 38,  50,  72),
+    .backdropBottom = RGB( 30,  33,  41),
+    .backdropDepth = RGB( 24,  26,  33),
     .backdropGlow = RGB( 82, 148, 226),     // #5294e2
     .backdropInstrument = RGB(123, 168, 216),
 
     .canvasInk = RGB(231, 235, 240),
     .canvasInkMuted = RGB(186, 196, 210),
 
-    .surfaceRaised = RGB( 47,  52,  63),    // #2f343f
-    .surfaceSunken = RGB( 64,  69,  82),
-    .hairline = RGB( 91,  98, 115),
+    .surfaceRaised = RGB( 57,  62,  75),    // #2f343f
+    .surfaceSunken = RGB( 72,  78,  93),
+    .hairline = RGB( 95, 102, 119),
     .shadowInk = RGB( 16,  18,  23),
 
     .cardInk = RGB(231, 235, 240),
     .cardInkMuted = RGB(170, 178, 190),
     .disabledText = RGB( 96, 101, 110),
 
-    .accentPrimary = RGB( 82, 148, 226),    // #5294e2
+    .accentPrimary = RGB(108, 168, 232),    // #5294e2
     .accentSurface = RGB( 56,  60,  74),    // #383c4a
-    .onAccentInk = RGB(255, 255, 255),      // Arc's own convention
-    .dangerSurface = RGB( 58,  42,  46),
+    .onAccentInk = RGB( 16,  18,  23),      // Arc's own convention
+    .dangerSurface = RGB( 52,  38,  42),
     .dangerBorder = RGB(122,  66,  72),
-    .dangerInk = RGB(224, 108, 117),
+    .dangerInk = RGB(232, 124, 132),
 
     .outputBg = RGB( 56,  60,  74),         // #383c4a
     .chromeAccent = RGB( 82, 148, 226),     // #5294e2
