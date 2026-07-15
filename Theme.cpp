@@ -371,9 +371,28 @@ void SaveThemeIdToRegistry(ThemeId id) {
     RegCloseKey(hKey);
 }
 
+void ClearThemeIdFromRegistry() {
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, KEY_SET_VALUE, &hKey) != ERROR_SUCCESS) {
+        return;   // nothing persisted: already following kDefaultTheme
+    }
+    RegDeleteValueW(hKey, kRegThemeValue);
+    RegCloseKey(hKey);
+}
+
 void ApplyThemeAndPersist(ThemeId id) {
     SetActiveTheme(id);
     SaveThemeIdToRegistry(id);
+}
+
+void ResetThemeToDefault() {
+    // Deliberately does NOT re-save: the point is to go back to *following*
+    // kDefaultTheme, so that a future change to the default is picked up. If
+    // this wrote the default's id instead, the user would be pinned to today's
+    // default forever and the reset would be indistinguishable from choosing it
+    // from the menu.
+    ClearThemeIdFromRegistry();
+    SetActiveTheme(kDefaultTheme);
 }
 
 void InitializeTheme() {

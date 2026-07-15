@@ -11,12 +11,16 @@
 #define IDM_EXIT				105
 #define IDM_TOGGLE_ACCESSIBLE	106
 // Theme selector menu items. Kept contiguous and in ThemeId order so
-// (IDM_THEME_GRAPHITE + (int)ThemeId) maps id -> command.
+// (IDM_THEME_GRAPHITE + (int)ThemeId) maps id -> command. GRAPHITE..APPLELIGHT
+// is also the CheckMenuRadioItem range, so anything that is not a theme pick
+// must sort outside it.
 #define IDM_THEME_GRAPHITE		110
 #define IDM_THEME_CATPPUCCIN	111
 #define IDM_THEME_NORD			112
 #define IDM_THEME_ARCDARK		113
 #define IDM_THEME_APPLELIGHT	114
+// Not a theme pick and not part of the radio group -- clears the saved choice.
+#define IDM_THEME_RESET			115
 #define IDI_OPTISCAN   		107
 #define IDI_SMALL				108
 #define IDC_OPTISCAN   		109

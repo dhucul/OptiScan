@@ -123,10 +123,16 @@ void SetActiveTheme(ThemeId id);
 // SetActiveTheme + persist to the registry. Use for user-driven selection.
 void ApplyThemeAndPersist(ThemeId id);
 
+// Forget the persisted choice and apply kDefaultTheme. Unlike picking the
+// default from the menu, this leaves nothing saved, so the app keeps following
+// kDefaultTheme if it ever changes.
+void ResetThemeToDefault();
+
 // Registry helpers (HKCU\Software\OptiScan\Theme). Load falls back to
 // kDefaultTheme when the value is absent or invalid.
 ThemeId LoadThemeIdFromRegistry();
 void    SaveThemeIdToRegistry(ThemeId id);
+void    ClearThemeIdFromRegistry();
 
 // Load the persisted theme and apply it. Call once at startup, before the UI
 // paints.

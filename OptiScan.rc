@@ -45,7 +45,7 @@ BEGIN
     BEGIN
         MENUITEM "&Accessible output (read-only)\tCtrl+Shift+A", IDM_TOGGLE_ACCESSIBLE
         MENUITEM SEPARATOR
-        MENUITEM "&Clear output",        IDC_INFO_BUTTON33
+        MENUITEM "&Clear output",        IDC_INFO_BUTTON34
         MENUITEM SEPARATOR
         POPUP "&Theme"
         BEGIN
@@ -54,6 +54,8 @@ BEGIN
             MENUITEM "&Nord",                IDM_THEME_NORD
             MENUITEM "&Arc-Dark",            IDM_THEME_ARCDARK
             MENUITEM "A&pple Light",         IDM_THEME_APPLELIGHT
+            MENUITEM SEPARATOR
+            MENUITEM "&Reset to default",    IDM_THEME_RESET
         END
     END
     POPUP "&Help"

@@ -366,17 +366,44 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 // radio check, and note it in the log. Existing explicitly-coloured output
 // keeps its colours; heuristic-coloured lines and new output re-theme on the
 // repaint SetActiveTheme triggers.
-static void ApplyThemeFromMenu(HWND hWnd, ThemeId id)
+// View > Clear output posts a command-button id directly (see OptiScan.rc), so
+// it silently follows the button order. When the FE/TE and Erase CD-RW buttons
+// were inserted, kClearButtonIndex shifted but the menu item did not -- leaving
+// "Clear output" wired to Batch run. Pin it so the next insertion breaks the
+// build instead of the menu.
+static_assert(IDC_INFO_BUTTON34 - IDC_INFO_BUTTON1 == kClearButtonIndex,
+              "View > Clear output in OptiScan.rc must post the Clear command's id");
+
+static void CheckThemeMenuRadio(HWND hWnd, ThemeId id)
 {
-    if (id == CurrentThemeId()) return;
-    ApplyThemeAndPersist(id);
     if (HMENU bar = GetMenu(hWnd))
     {
         CheckMenuRadioItem(bar, IDM_THEME_GRAPHITE, IDM_THEME_APPLELIGHT,
                            IDM_THEME_GRAPHITE + static_cast<int>(id), MF_BYCOMMAND);
     }
+}
+
+static void ApplyThemeFromMenu(HWND hWnd, ThemeId id)
+{
+    if (id == CurrentThemeId()) return;
+    ApplyThemeAndPersist(id);
+    CheckThemeMenuRadio(hWnd, id);
     WCHAR line[192];
     wsprintfW(line, L"\r\n>>> Theme: %s\r\n", ThemeName(id));
+    AppendInfoText(hInfoEdit, line);
+}
+
+static void ResetThemeFromMenu(HWND hWnd)
+{
+    // No "already on that theme" early-out here, unlike ApplyThemeFromMenu: the
+    // saved value is what this clears, and it is independent of what is on
+    // screen. Running while already showing the default is the normal case and
+    // still has work to do.
+    ResetThemeToDefault();
+    CheckThemeMenuRadio(hWnd, CurrentThemeId());
+    WCHAR line[192];
+    wsprintfW(line, L"\r\n>>> Theme reset to default: %s\r\n",
+              ThemeName(CurrentThemeId()));
     AppendInfoText(hInfoEdit, line);
 }
 
@@ -792,6 +819,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 break;
             case IDM_THEME_APPLELIGHT:
                 ApplyThemeFromMenu(hWnd, ThemeId::AppleLight);
+                break;
+            case IDM_THEME_RESET:
+                ResetThemeFromMenu(hWnd);
                 break;
             case IDM_ABOUT:
                 DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
