@@ -90,47 +90,53 @@ The original command-line workflow has been ported to a native Win32 GUI: every 
 
 ## Interactive Menu
 
-OptiScan's main window presents a button grid organized into four sections (Ripping, Disc Quality / Disc Info, Drive, Utility). Clicking a button runs that operation on a background worker thread; the output pane streams progress while a status bar and progress meter track long-running reads/writes. Only one workflow runs at a time — the **Clear info box** button doubles as a Cancel while a workflow is in flight.
+OptiScan's main window has a **navigation rail** down the left with six pages — Overview, Rip & Copy, Disc Quality, Analysis, Drive Tools, Utilities. Each page shows only its own commands as cards; **Overview** shows everything, led by three hero cards for the most common jobs (Copy disc, Rip tracks, Quality scan). The output console spans the bottom of every page.
 
-| # | Section | Operation |
+Clicking a card runs that operation on a background worker thread; the console streams progress while a status line and progress meter track long-running reads/writes. Only one workflow runs at a time — the **Clear output** card doubles as a Cancel while a workflow is in flight.
+
+The table below lists every operation with the number shown on its card. That number is stable across pages and matches the **Operations** menu, so it is the reliable way to refer to a command.
+
+| # | Page | Operation |
 |---|---|---|
-| 1 | Ripping | Copy disc |
-| 2 | Ripping | Rip tracks (WAV/FLAC) |
-| 3 | Ripping | Write disc (.bin/.cue/.sub files) |
-| 4 | Ripping | Write tracks to disc using current disc's pregaps |
-| 5 | Ripping | Recovery rip (drive-independent) |
-| 6 | Disc Quality | Quality scan (C1/C2/CU graphs) |
+| 1 | Rip & Copy | Copy disc — *hero card on Overview* |
+| 2 | Rip & Copy | Rip tracks (WAV/FLAC) — *hero card on Overview* |
+| 3 | Rip & Copy | Write disc (.bin/.cue/.sub files) |
+| 4 | Rip & Copy | Write tracks to disc using current disc's pregaps |
+| 5 | Rip & Copy | Recovery rip (drive-independent) |
+| 6 | Disc Quality | Quality scan (C1/C2/CU graphs) — *hero card on Overview* |
 | 7 | Disc Quality | C2 error scan |
 | 8 | Disc Quality | BLER scan (detailed) |
 | 9 | Disc Quality | Disc rot detection |
 | 10 | Disc Quality | Generate surface map |
 | 11 | Disc Quality | Multi-pass verification |
 | 12 | Disc Quality | Compare disc CRCs (original vs. copy) |
-| 13 | Disc Info | Audio content analysis |
-| 14 | Disc Info | Disc fingerprint (CDDB/MusicBrainz/AccurateRip IDs) |
-| 15 | Disc Info | Lead area check |
-| 16 | Disc Info | Subchannel integrity check |
-| 17 | Disc Info | Verify subchannel burn status |
-| 18 | Disc Info | Copy-protection check |
-| 19 | Drive | Drive capabilities |
-| 20 | Drive | Drive offset detection |
-| 21 | Drive | C2 validation test |
-| 22 | Drive | Speed comparison test |
-| 23 | Drive | Seek time analysis |
-| 24 | Drive | Chipset identification |
-| 25 | Drive | Disc balance check |
-| 26 | Utility | Rescan disc |
-| 27 | Utility | Check for updates |
-| 28 | Utility | Help (test descriptions) |
-| 29 | Utility | Pioneer CD Check (audio quality) |
-| 30 | Utility | Jitter / beta scan (LiteOn) |
-| 31 | Utility | Batch run (multiple ops, 1 prescan) |
-| 32 | Utility | Clear info box |
-| 33 | Utility | Exit |
+| 13 | Analysis | Audio content analysis |
+| 14 | Analysis | Disc fingerprint (CDDB/MusicBrainz/AccurateRip IDs) |
+| 15 | Analysis | Lead area check |
+| 16 | Analysis | Subchannel integrity check |
+| 17 | Analysis | Verify subchannel burn status |
+| 18 | Analysis | Copy-protection check |
+| 19 | Drive Tools | Drive capabilities |
+| 20 | Drive Tools | Drive offset detection |
+| 21 | Drive Tools | C2 validation test |
+| 22 | Drive Tools | Speed comparison test |
+| 23 | Drive Tools | Seek time analysis |
+| 24 | Drive Tools | Chipset identification |
+| 25 | Drive Tools | Disc balance check |
+| 26 | Utilities | Rescan disc |
+| 27 | Utilities | Check for updates |
+| 28 | Utilities | Help (test descriptions) |
+| 29 | Drive Tools | Pioneer CD Check (audio quality) |
+| 30 | Drive Tools | Jitter / beta scan (LiteOn) |
+| 31 | Drive Tools | Erase CD-RW (rewritable) |
+| 32 | Drive Tools | FE/TE servo scan (experimental, LiteOn) |
+| 33 | Utilities | Batch run (multiple ops, 1 prescan) |
+| 34 | Utilities | Clear info box |
+| 35 | Utilities | Exit |
 
-Operations marked with **\*** in the menu use pre-gap analysis (scan range includes pregap sectors).
+Operations marked with **\*** in the Operations menu use pre-gap analysis (scan range includes pregap sectors). Some cards shorten the full name to fit — the Operations menu always carries the complete wording.
 
-The **Clear info box** button clears the output pane when idle and acts as a Cancel for the active workflow (or for the current step of a batch) while a workflow is running.
+**Clear info box** (card caption: *Clear output*) clears the console when idle and acts as a Cancel for the active workflow — or for the current step of a batch — while one is running.
 
 ---
 
@@ -152,12 +158,15 @@ OptiScan ships with a runtime theme switcher. Pick a theme from **View ▸ Theme
 
 | Theme | Look |
 |---|---|
-| **Catppuccin Frappé** *(default)* | Soft pastel dark — lavender/blue base with peach and mauve accents |
+| **Apple Light** *(default)* | Soft-white rail and cards over a saturated purple instrumentation canvas, with an Apple-blue accent |
+| **Catppuccin Frappé** | Soft pastel dark — lavender/blue base with peach and mauve accents |
 | **Graphite** | The original cool graphite/slate with a warm-tan accent |
 | **Nord** | Arctic slate with frost-blue accents and aurora status colours |
 | **Arc-Dark** | Flat blue-grey dark with the signature Arc blue accent |
 
-Each theme also draws its own **procedural backdrop** — a palette-tinted turntable/EQ/waveform motif rendered from the active colours, rather than a fixed image — so every theme looks native rather than recoloured. Graph severity colours (green → yellow → red), the Red Book reference line, and log status tags (`[OK]`/`[WARN]`/`[ERROR]`) all follow the active palette.
+Every theme renders the **same layout and the same style** — navigation rail, hero cards, command cards, output card — and differs only in colour. Behind the content sits a **procedural instrumentation canvas** drawn from the active palette (gradient base, radial scan glow and rays, a measurement dot matrix, concentric scan arcs, a horizon line), so each theme looks native rather than recoloured. Graph severity colours (green → yellow → red), the Red Book reference line, and log status tags (`[OK]`/`[WARN]`/`[ERROR]`) all follow the active palette too.
+
+Colour is the *only* thing a theme controls: every role lives in one `Palette` struct (`Theme.h`), and the renderer reads it rather than hardcoding literals. The output console stays dark in all five themes — including Apple Light, which is deliberately a hybrid of light chrome around a dark log.
 
 Windows **High Contrast** themes are honoured: when High Contrast is active the app defers to the system colours instead of applying its own.
 
