@@ -1,4 +1,4 @@
-// OptiScanUi.cpp - shared Win32 UI state and lifecycle helpers.
+﻿// OptiScanUi.cpp - shared Win32 UI state and lifecycle helpers.
 
 #include "framework.h"
 #include "OptiScanUiInternal.h"
@@ -31,7 +31,6 @@ HWND hAccessibleLabel = nullptr;
 bool g_accessibleMode = false;
 
 HWND hInfoButtons[COMMAND_BUTTON_COUNT];        // quick action buttons
-HWND hSectionLabels[SECTION_LABEL_COUNT];       // command group labels
 HWND hProgressText;                             // live progress status
 HWND hProgressBar;                              // live progress meter
 HFONT hCommandFont;
@@ -49,20 +48,23 @@ double gUiScale = 1.0;
 HMONITOR gUiMonitor = nullptr;
 static int gProfessionalNavIndex = 0;
 
-int GetProfessionalNavIndex()
+int SidebarWidth() { return ScalePx(360); }
+int NavItemTop(int index) { return ScalePx(145 + index * 76); }
+
+int GetNavIndex()
 {
     return gProfessionalNavIndex;
 }
 
-bool HandleProfessionalSidebarClick(HWND hWnd, int x, int y)
+bool HandleSidebarClick(HWND hWnd, int x, int y)
 {
-    if (CurrentThemeId() != ThemeId::AppleLight || x < 0 || x >= ScalePx(360))
+    if (x < 0 || x >= SidebarWidth())
         return false;
 
-    for (int i = 0; i < 6; ++i)
+    for (int i = 0; i < kNavItemCount; ++i)
     {
-        const int top = ScalePx(145 + i * 76);
-        if (y < top || y >= top + ScalePx(58)) continue;
+        const int top = NavItemTop(i);
+        if (y < top || y >= top + ScalePx(kNavItemHeight)) continue;
 
         gProfessionalNavIndex = i;
         LayoutMainControls(hWnd);
@@ -84,10 +86,7 @@ extern COLORREF SoftOrange = RGB(146, 156, 166);
 extern COLORREF AccentBlue = RGB(156, 168, 180);
 extern COLORREF WarmText = RGB(208, 215, 220);
 extern COLORREF MenuTextOrange = RGB(198, 178, 150);
-extern COLORREF MenuTextGrey = RGB(216, 222, 226);
-extern COLORREF MenuNumberGrey = RGB(178, 188, 196);
 extern COLORREF OutputDark = RGB(14, 17, 22);   // Output background color.
-extern const BYTE PanelSurfaceAlpha = 92;
 
 extern const LPCWSTR CommandLabels[COMMAND_BUTTON_COUNT] =
 {
@@ -127,15 +126,6 @@ extern const LPCWSTR CommandLabels[COMMAND_BUTTON_COUNT] =
     L"34. Clear info box",
     L"35. Exit"
 };
-
-extern const LPCWSTR SectionLabels[SECTION_LABEL_COUNT] =
-{
-    L"DISC QUALITY",
-    L"DISC INFO",
-    L"DRIVE",
-    L"UTILITY"
-};
-
 
 void SetInitialAccessibleMode(bool enabled)
 {
@@ -338,15 +328,10 @@ void OnThemeChangedUi()
 {
     const Palette& p = ActiveTheme();
     SoftOrange     = p.chromeText;
-    // A brighter lavender progress fill echoes the Apple theme's purple
-    // instrumentation canvas; other themes retain their native accent.
-    AccentBlue     = CurrentThemeId() == ThemeId::AppleLight
-        ? RGB(174, 151, 255)
-        : p.chromeAccent;
+    // The progress fill echoes the instrumentation canvas behind it.
+    AccentBlue     = p.backdropInstrument;
     WarmText       = p.fg;
     MenuTextOrange = p.accentWarm;
-    MenuTextGrey   = p.btnLabel;
-    MenuNumberGrey = p.btnNumber;
     OutputDark     = p.outputBg;
 
     // Propagate to the log, prompt-dialog and stream-sink colour tables.

@@ -1,4 +1,4 @@
-// OptiScanUiLayout.cpp - control creation, layout, fonts, and accessibility visibility.
+﻿// OptiScanUiLayout.cpp - control creation, layout, fonts, and accessibility visibility.
 
 #include "framework.h"
 #include "OptiScanUiInternal.h"
@@ -47,11 +47,6 @@ void ApplyUiFonts()
     if (hProgressText) SendMessageW(hProgressText, WM_SETFONT, (WPARAM)hOutputFont, TRUE);
     if (hAccessibleEdit) SendMessageW(hAccessibleEdit, WM_SETFONT, (WPARAM)hOutputFont, TRUE);
     if (hAccessibleLabel) SendMessageW(hAccessibleLabel, WM_SETFONT, (WPARAM)hOutputFont, TRUE);
-
-    for (int i = 0; i < SECTION_LABEL_COUNT; ++i)
-    {
-        if (hSectionLabels[i]) SendMessageW(hSectionLabels[i], WM_SETFONT, (WPARAM)hHeaderFont, TRUE);
-    }
 
     for (int i = 0; i < COMMAND_BUTTON_COUNT; ++i)
     {
@@ -150,24 +145,6 @@ void CreateMainControls(HWND hWnd)
         SendMessageW(hProgressBar, PBM_SETBKCOLOR, 0, OutputDark);
     }
 
-    for (int i = 0; i < SECTION_LABEL_COUNT; ++i)
-    {
-        hSectionLabels[i] = CreateWindowW(
-            L"STATIC",
-            SectionLabels[i],
-            labelStyle,
-            0, 0, 0, 0,
-            hWnd,
-            (HMENU)(INT_PTR)(IDC_DISC_QUALITY_LABEL + i),
-            hInst,
-            nullptr);
-
-        if (hSectionLabels[i])
-        {
-            SendMessageW(hSectionLabels[i], WM_SETFONT, (WPARAM)hHeaderFont, TRUE);
-        }
-    }
-
     for (int i = 0; i < COMMAND_BUTTON_COUNT; ++i)
     {
         hInfoButtons[i] = CreateWindowW(
@@ -223,20 +200,18 @@ void LayoutMainControls(HWND hWnd)
         }
     };
 
-    if (CurrentThemeId() == ThemeId::AppleLight)
+    // One layout for every theme: a navigation rail, six pages, three primary
+    // actions on the overview, compact grouped commands, and a full-width
+    // console. sidebarWidth is shared with the painter and the hit-test.
     {
-        // Professional overview layout: a stable navigation rail, three
-        // primary actions, compact grouped commands, and a full-width console.
-        const int sidebarWidth = ScalePx(360);
+        const int sidebarWidth = SidebarWidth();
         const int contentLeft = sidebarWidth + ScalePx(60);
         const int contentRight = rc.right - ScalePx(40);
         const int contentWidth = max(ScalePx(900), contentRight - contentLeft);
-        for (int i = 0; i < SECTION_LABEL_COUNT; ++i)
-            if (hSectionLabels[i]) ShowWindow(hSectionLabels[i], SW_HIDE);
         for (int i = 0; i < COMMAND_BUTTON_COUNT; ++i)
             if (hInfoButtons[i]) ShowWindow(hInfoButtons[i], SW_HIDE);
 
-        const int navIndex = GetProfessionalNavIndex();
+        const int navIndex = GetNavIndex();
         int outputTop = rc.bottom - ScalePx(650);
         if (navIndex == 0)
         {
@@ -342,131 +317,9 @@ void LayoutMainControls(HWND hWnd)
         if (hdwp) EndDeferWindowPos(hdwp);
         ApplyAccessibleVisibility();
         s_firstLayoutDone = true;
-        return;
     }
-
-    for (int i = 0; i < SECTION_LABEL_COUNT; ++i)
-        if (hSectionLabels[i]) ShowWindow(hSectionLabels[i], SW_SHOWNOACTIVATE);
-
-    const int margin = ScalePx(40);
-    const int top = ScalePx(145);
-    const int gap = ScalePx(8);
-    const int buttonHeight = ScalePx(46);
-    const int labelHeight = ScalePx(30);
-    const int panelGap = ScalePx(20);
-    const int middleColumnHeight =
-        (labelHeight + gap) +
-        (6 * (buttonHeight + gap)) +
-        (labelHeight + gap) +
-        (7 * (buttonHeight + gap));
-    const int minimumOutputTop = top + middleColumnHeight + ScalePx(32);
-    const int requestedOutputHeight = max(ScalePx(520), min(ScalePx(820), ((rc.bottom - rc.top) * 46) / 100));
-    const int outputTop = max(minimumOutputTop, rc.bottom - margin - requestedOutputHeight);
-    const int outputHeight = max(ScalePx(300), rc.bottom - margin - outputTop);
-    const int outputWidth = max(ScalePx(400), rc.right - rc.left - (margin * 2));
-    const int panelLeft = margin;
-    const int panelWidth = max(ScalePx(900), rc.right - rc.left - (margin * 2));
-    const int columnWidth = max(ScalePx(360), (panelWidth - (panelGap * 2)) / 3);
-    const int middleColumnLeft = panelLeft + columnWidth + panelGap;
-    const int rightColumnLeft = middleColumnLeft + columnWidth + panelGap;
-
-    if (hInfoEdit)
-    {
-        const int outputInset = ScalePx(22);
-        const int consoleHeaderHeight = ScalePx(40);
-        const int progressTop = outputTop + consoleHeaderHeight + ScalePx(8);
-        const int progressHeight = ScalePx(28);
-        const int progressGap = ScalePx(8);
-        const int editWidth = max(ScalePx(200), outputWidth - (outputInset * 2));
-        const int progressTextWidth = max(ScalePx(180), (editWidth * 58) / 100);
-        const int progressBarWidth = max(ScalePx(160), editWidth - progressTextWidth - ScalePx(14));
-        const int editTop = progressTop + progressHeight + progressGap;
-        const int editHeight = max(ScalePx(120), outputTop + outputHeight - editTop - ScalePx(5));
-
-        move(hProgressText,
-             margin + outputInset, progressTop,
-             progressTextWidth, progressHeight);
-
-        move(hProgressBar,
-             margin + outputInset + progressTextWidth + ScalePx(14), progressTop + ScalePx(4),
-             progressBarWidth, max(ScalePx(18), progressHeight - ScalePx(8)));
-
-        UpdateOutputEditBrush(editWidth, editHeight);
-        move(hInfoEdit,
-             margin + outputInset, editTop,
-             editWidth, editHeight);
-
-        // Accessible mirror occupies the same rectangle as the OutputControl,
-        // with a heading label up in the console-header band above the
-        // progress strip. Only one of {OutputControl, mirror} is shown at a
-        // time (see ApplyAccessibleVisibility).
-        move(hAccessibleLabel,
-             margin + outputInset, outputTop + ScalePx(6),
-             editWidth, consoleHeaderHeight - ScalePx(8));
-        move(hAccessibleEdit,
-             margin + outputInset, editTop,
-             editWidth, editHeight);
-    }
-
-    int leftY = top;
-    int middleY = top;
-    int rightY = top;
-
-    // Left column — Ripping (buttons 0..4, incl. Recovery rip) then DISC QUALITY (5..11)
-    for (int i = 0; i < 5; ++i)
-    {
-        move(hInfoButtons[i], panelLeft, leftY, columnWidth, buttonHeight);
-        leftY += buttonHeight + gap;
-    }
-
-    move(hSectionLabels[0], panelLeft, leftY, columnWidth, labelHeight);
-    leftY += labelHeight + gap;
-
-    for (int i = 5; i < 12; ++i)
-    {
-        move(hInfoButtons[i], panelLeft, leftY, columnWidth, buttonHeight);
-        leftY += buttonHeight + gap;
-    }
-
-    move(hSectionLabels[1], middleColumnLeft, middleY, columnWidth, labelHeight);
-    middleY += labelHeight + gap;
-
-    for (int i = 12; i < 18; ++i)
-    {
-        move(hInfoButtons[i], middleColumnLeft, middleY, columnWidth, buttonHeight);
-        middleY += buttonHeight + gap;
-    }
-
-    move(hSectionLabels[2], middleColumnLeft, middleY, columnWidth, labelHeight);
-    middleY += labelHeight + gap;
-
-    for (int i = 18; i < 25; ++i)
-    {
-        move(hInfoButtons[i], middleColumnLeft, middleY, columnWidth, buttonHeight);
-        middleY += buttonHeight + gap;
-    }
-
-    move(hSectionLabels[3], rightColumnLeft, rightY, columnWidth, labelHeight);
-    rightY += labelHeight + gap;
-
-    for (int i = 25; i < COMMAND_BUTTON_COUNT; ++i)
-    {
-        move(hInfoButtons[i], rightColumnLeft, rightY, columnWidth, buttonHeight);
-        rightY += buttonHeight + gap;
-    }
-
-    if (hdwp) EndDeferWindowPos(hdwp);
-
-    // The first pass reveals every child via SWP_SHOWWINDOW; re-hide whichever
-    // output surface isn't active for the current accessibility mode.
-    ApplyAccessibleVisibility();
-
-    s_firstLayoutDone = true;
 }
 
-// Show the readable EDIT mirror (and hide the custom OutputControl) when
-// accessible mode is on, or vice versa. The progress strip and command
-// buttons are unaffected and remain visible in both modes.
 void ApplyAccessibleVisibility()
 {
     if (hInfoEdit)

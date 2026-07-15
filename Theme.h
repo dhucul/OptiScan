@@ -1,4 +1,4 @@
-// ============================================================================
+﻿// ============================================================================
 // Theme.h - Single source of truth for OptiScan's colour palette.
 //
 // Historically the palette was copy-pasted across ConsoleColor.h,
@@ -88,18 +88,6 @@ struct Palette {
     COLORREF outputBg;     // console/output card fill (OutputDark)
     COLORREF chromeAccent; // optical ring hub + arc
     COLORREF chromeText;   // optical ring strokes
-
-    // --- Legacy renderer only; removed together with it -----------------------
-    COLORREF windowBase;
-    COLORREF panelSurface;
-    COLORREF consoleBase;
-    COLORREF btnTop;
-    COLORREF btnBottom;
-    COLORREF btnBorder;
-    COLORREF btnBorderFocus;
-    COLORREF btnStripe;
-    COLORREF btnNumber;
-    COLORREF btnLabel;
 
     // --- Input dialog (GuiInput) --------------------------------------------
     COLORREF dlgBack;

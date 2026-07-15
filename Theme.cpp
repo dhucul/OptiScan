@@ -49,17 +49,6 @@ const Palette kGraphite = {
     .chromeAccent = RGB(126, 178, 212),
     .chromeText = RGB(178, 188, 196),
 
-    .windowBase = RGB(  3,   4,   5),
-    .panelSurface = RGB(  6,  10,  14),
-    .consoleBase = RGB(  4,   5,   6),
-    .btnTop = RGB( 38,  44,  54),
-    .btnBottom = RGB( 16,  20,  28),
-    .btnBorder = RGB(158, 168, 178),
-    .btnBorderFocus = RGB(218, 224, 230),
-    .btnStripe = RGB(166, 176, 188),
-    .btnNumber = RGB(178, 188, 196),
-    .btnLabel = RGB(216, 222, 226),
-
     .dlgBack = RGB(  8,  10,  14),
     .dlgPanel = RGB( 28,  32,  38),
     .dlgEdit = RGB( 20,  24,  30),
@@ -115,17 +104,6 @@ const Palette kCatppuccinFrappe = {
     .outputBg = RGB( 48,  52,  70),         // base
     .chromeAccent = RGB(140, 170, 221),     // blue
     .chromeText = RGB(181, 191, 231),       // subtext1
-
-    .windowBase = RGB( 35,  38,  52),
-    .panelSurface = RGB( 41,  44,  59),
-    .consoleBase = RGB( 30,  32,  44),
-    .btnTop = RGB( 65,  69,  89),
-    .btnBottom = RGB( 41,  44,  59),
-    .btnBorder = RGB(115, 121, 148),
-    .btnBorderFocus = RGB(181, 191, 231),
-    .btnStripe = RGB(140, 170, 221),
-    .btnNumber = RGB(181, 191, 231),
-    .btnLabel = RGB(198, 208, 245),
 
     .dlgBack = RGB( 35,  38,  52),
     .dlgPanel = RGB( 41,  44,  59),
@@ -183,17 +161,6 @@ const Palette kNord = {
     .chromeAccent = RGB(129, 161, 193),     // nord9
     .chromeText = RGB(216, 222, 233),
 
-    .windowBase = RGB( 40,  46,  57),
-    .panelSurface = RGB( 46,  52,  64),
-    .consoleBase = RGB( 34,  39,  49),
-    .btnTop = RGB( 59,  66,  82),
-    .btnBottom = RGB( 43,  48,  59),
-    .btnBorder = RGB( 76,  86, 106),
-    .btnBorderFocus = RGB(216, 222, 233),
-    .btnStripe = RGB(129, 161, 193),
-    .btnNumber = RGB(216, 222, 233),
-    .btnLabel = RGB(236, 239, 244),
-
     .dlgBack = RGB( 34,  39,  49),
     .dlgPanel = RGB( 59,  66,  82),
     .dlgEdit = RGB( 40,  46,  57),
@@ -249,17 +216,6 @@ const Palette kArcDark = {
     .outputBg = RGB( 56,  60,  74),         // #383c4a
     .chromeAccent = RGB( 82, 148, 226),     // #5294e2
     .chromeText = RGB(197, 205, 214),
-
-    .windowBase = RGB( 43,  46,  57),
-    .panelSurface = RGB( 47,  52,  63),
-    .consoleBase = RGB( 38,  41,  50),
-    .btnTop = RGB( 64,  69,  82),
-    .btnBottom = RGB( 43,  47,  58),
-    .btnBorder = RGB( 91,  98, 115),
-    .btnBorderFocus = RGB(231, 235, 240),
-    .btnStripe = RGB( 82, 148, 226),
-    .btnNumber = RGB(197, 205, 214),
-    .btnLabel = RGB(231, 235, 240),
 
     .dlgBack = RGB( 38,  41,  50),
     .dlgPanel = RGB( 47,  52,  63),
@@ -323,17 +279,6 @@ const Palette kAppleLight = {
                                             // lighter than accentPrimary so it
                                             // stays legible on the purple canvas
     .chromeText = RGB(112, 126, 145),       // optical ring strokes
-
-    .windowBase = RGB(244, 245, 247),
-    .panelSurface = RGB(255, 255, 255),
-    .consoleBase = RGB( 21,  27,  35),
-    .btnTop = RGB(255, 255, 255),
-    .btnBottom = RGB(242, 247, 253),
-    .btnBorder = RGB(186, 199, 220),
-    .btnBorderFocus = RGB(  0, 113, 227),
-    .btnStripe = RGB(  0, 113, 227),
-    .btnNumber = RGB(  0, 113, 227),
-    .btnLabel = RGB( 29,  29,  31),
 
     .dlgBack = RGB(236, 236, 238),          // #ECECEE
     .dlgPanel = RGB(255, 255, 255),         // #FFFFFF

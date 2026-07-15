@@ -1,4 +1,4 @@
-// OptiScan.cpp : Defines the entry point for the application.
+﻿// OptiScan.cpp : Defines the entry point for the application.
 //
 
 #include "framework.h"
@@ -435,7 +435,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_ERASEBKGND:
         return 1;
     case WM_LBUTTONDOWN:
-        if (HandleProfessionalSidebarClick(hWnd, (short)LOWORD(lParam), (short)HIWORD(lParam)))
+        if (HandleSidebarClick(hWnd, (short)LOWORD(lParam), (short)HIWORD(lParam)))
             return 0;
         break;
     case WM_SIZE:

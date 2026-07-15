@@ -1,10 +1,9 @@
-#pragma once
+﻿#pragma once
 
 #include "framework.h"
 
 constexpr int MAX_LOADSTRING = 100;
 constexpr int COMMAND_BUTTON_COUNT = 35;
-constexpr int SECTION_LABEL_COUNT = 4;
 
 // Button-index constants. Kept in sync with CommandLabels[].
 // Indices 32..34 are the "special" buttons that don't dispatch a single menu
@@ -53,5 +52,5 @@ LRESULT HandleControlColorEdit(HDC hdc);
 
 void DrawMainBackground(HWND hWnd, HDC hdc);
 void DrawCommandButton(const DRAWITEMSTRUCT* drawItem);
-int GetProfessionalNavIndex();
-bool HandleProfessionalSidebarClick(HWND hWnd, int x, int y);
+int GetNavIndex();
+bool HandleSidebarClick(HWND hWnd, int x, int y);
