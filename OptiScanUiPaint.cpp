@@ -363,10 +363,16 @@ static void DrawUnifiedBackground(Gdiplus::Graphics& graphics, const RECT& rc)
     Gdiplus::SolidBrush outputBg(ThemeArgb(255, p.outputBg));
     graphics.FillPath(&outputBg, &outputCard);
     Gdiplus::Font outputTitle(&uiFamily, ScaleReal(22), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
-    Gdiplus::SolidBrush outputInk(ThemeArgb(255, p.bright));
-    graphics.DrawString(L"Output", -1, &outputTitle,
-                        Gdiplus::PointF((Gdiplus::REAL)(contentLeft + ScalePx(22)), (Gdiplus::REAL)(outputTop + ScalePx(16))),
-                        &outputInk);
+    // Accessible mode puts a real STATIC ("Scan output (read-only)") in this
+    // spot to name the EDIT for screen readers, so the decorative title would
+    // just overprint it.
+    if (!IsAccessibleMode())
+    {
+        Gdiplus::SolidBrush outputInk(ThemeArgb(255, p.bright));
+        graphics.DrawString(L"Output", -1, &outputTitle,
+                            Gdiplus::PointF((Gdiplus::REAL)(contentLeft + ScalePx(22)), (Gdiplus::REAL)(outputTop + ScalePx(16))),
+                            &outputInk);
+    }
 }
 
 void DrawMainBackground(HWND hWnd, HDC hdc)
