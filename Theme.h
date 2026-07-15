@@ -31,6 +31,9 @@ constexpr int kThemeCount = 5;
 // for the semi-transparent GDI+ chrome is applied at the paint site, not here.
 struct Palette {
     // --- Console / log text + data-viz roles (also feed Console::Theme) ------
+    // These are all ink on outputBg, which is a dark console in every theme --
+    // including Apple Light. They are NOT chrome roles; do not reuse them for
+    // the nav rail or cards, whose surface inverts between light and dark.
     COLORREF fg;          // default body text
     COLORREF bright;      // headings / bright labels
     COLORREF dim;         // muted / indented text, graph axis
@@ -39,6 +42,7 @@ struct Palette {
     COLORREF warn;        // [WARN] + graph "moderate"
     COLORREF error;       // [ERROR]/[FAIL] + graph "bad"
     COLORREF cyan;        // [INFO]/neutral data
+    COLORREF logInfo;     // [INFO] log tag; cyan on Apple Light, bright elsewhere
     COLORREF graphFrame;  // box-drawing frame chars
     COLORREF graphBar;    // block bar chars
     COLORREF selection;   // log selection highlight band

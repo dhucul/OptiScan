@@ -303,7 +303,7 @@ LRESULT HandleControlColorStatic(HWND hWnd, HDC hdc, HWND child)
         }
         SetBkMode(hdc, OPAQUE);
         SetBkColor(hdc, OutputDark);
-        SetTextColor(hdc, CurrentThemeId() == ThemeId::AppleLight ? RGB(210, 217, 226) : WarmText);
+        SetTextColor(hdc, WarmText);
         return (INT_PTR)(hOutputSolidBrush ? hOutputSolidBrush
                                            : (HBRUSH)GetStockObject(BLACK_BRUSH));
     }

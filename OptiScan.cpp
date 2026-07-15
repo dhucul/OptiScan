@@ -178,7 +178,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     InitializeUiResources();
 
     // Apply the persisted theme before any window paints (defaults to
-    // Catppuccin Frappé when nothing is saved).
+    // Apple Light when nothing is saved).
     InitializeTheme();
 
     // Initialize global strings

@@ -15,6 +15,7 @@ const Palette kGraphite = {
     /* warn          */ RGB(210, 174, 112),
     /* error         */ RGB(222, 126, 122),
     /* cyan          */ RGB(156, 168, 180),
+    /* logInfo       */ RGB(206, 210, 212),  // == bright
     /* graphFrame    */ RGB(150, 160, 170),
     /* graphBar      */ RGB(174, 182, 190),
     /* selection     */ RGB( 58,  66,  78),
@@ -50,7 +51,7 @@ const Palette kGraphite = {
     /* artTintStrength*/ 0,
 };
 
-// --- Catppuccin Frappé (default) --------------------------------------------
+// --- Catppuccin Frappé -------------------------------------------------------
 const Palette kCatppuccinFrappe = {
     /* fg            */ RGB(198, 208, 245),  // text
     /* bright        */ RGB(205, 214, 245),
@@ -60,6 +61,7 @@ const Palette kCatppuccinFrappe = {
     /* warn          */ RGB(229, 200, 144),  // yellow
     /* error         */ RGB(231, 130, 132),  // red
     /* cyan          */ RGB(153, 209, 219),  // sky
+    /* logInfo       */ RGB(205, 214, 245),  // == bright
     /* graphFrame    */ RGB( 98, 104, 128),  // surface2
     /* graphBar      */ RGB(133, 193, 220),
     /* selection     */ RGB( 81,  87, 106),  // surface1
@@ -105,6 +107,7 @@ const Palette kNord = {
     /* warn          */ RGB(235, 203, 139),  // nord13
     /* error         */ RGB(191,  97, 106),  // nord11
     /* cyan          */ RGB(136, 192, 208),  // nord8
+    /* logInfo       */ RGB(236, 239, 244),  // == bright (nord6)
     /* graphFrame    */ RGB( 76,  86, 106),  // nord3
     /* graphBar      */ RGB(143, 188, 187),  // nord7
     /* selection     */ RGB( 67,  76,  94),  // nord2
@@ -150,6 +153,7 @@ const Palette kArcDark = {
     /* warn          */ RGB(240, 198, 116),
     /* error         */ RGB(224, 108, 117),
     /* cyan          */ RGB(108, 182, 227),
+    /* logInfo       */ RGB(231, 235, 240),  // == bright
     /* graphFrame    */ RGB( 91,  98, 115),
     /* graphBar      */ RGB(123, 168, 216),
     /* selection     */ RGB( 69,  74,  90),
@@ -185,25 +189,25 @@ const Palette kArcDark = {
     /* artTintStrength*/ 68,
 };
 
-// --- Apple Light (soft-white, near-black text, blue chrome) ------------------
-// First light theme. Surfaces are a soft off-white family (panels/log), body
-// text is Apple's near-black #1D1D1F, and Apple blue #0071E3 remains the main
-// chrome accent. The dark output console uses a warm orange for commands,
-// informational text, and graph bars so it reads clearly against #151B23.
-// The procedural backdrop reads these live; the edge vignette in
-// OptiScanUiPaint.cpp softens itself on light themes.
+// --- Apple Light (soft-white chrome, near-black text, blue accent) -----------
+// The only light theme, and a hybrid: light chrome (nav rail, cards) wrapped
+// around the same dark output console every other theme uses. That split is why
+// the console roles below are light-on-dark like the dark themes' -- they are
+// ink on outputBg (#151B23), not on the light chrome. The chrome's own ink
+// lives in the card/canvas roles further down.
 const Palette kAppleLight = {
-    /* fg            */ RGB( 29,  29,  31),  // #1D1D1F near-black body text
-    /* bright        */ RGB( 10,  10,  12),  // #0A0A0C headings
-    /* dim           */ RGB(110, 110, 115),  // #6E6E73 secondary gray
+    /* fg            */ RGB(210, 217, 226),  // console body text on #151B23
+    /* bright        */ RGB(245, 247, 250),  // console headings, "Output" card title
+    /* dim           */ RGB(139, 150, 165),  // console muted text
     /* accentWarm    */ RGB(255, 159,  67),  // #FF9F43 warm orange (title / >>>)
     /* ok            */ RGB( 42, 158,  72),  // lighter success green for console + graphs
     /* warn          */ RGB(190, 120,  24),  // balanced orange for graph severity
     /* error         */ RGB(230,  64,  76),  // balanced red for graph severity
     /* cyan          */ RGB(255, 177,  90),  // #FFB15A soft orange = [INFO]
-    /* graphFrame    */ RGB(142, 142, 147),  // #8E8E93 mid gray box chars
+    /* logInfo       */ RGB(255, 177,  90),  // == cyan (the dark themes use bright)
+    /* graphFrame    */ RGB(139, 150, 165),  // console box chars
     /* graphBar      */ RGB(255, 159,  67),  // #FF9F43 orange bars
-    /* selection     */ RGB(211, 227, 255),  // #D3E3FF light-blue selection
+    /* selection     */ RGB( 42,  65,  96),  // log selection band on the dark console
 
     /* windowBase    */ RGB(244, 245, 247),  // #F4F5F7 professional neutral canvas
     /* panelSurface  */ RGB(255, 255, 255),  // #FFFFFF cards and navigation rail
@@ -253,7 +257,7 @@ const Palette& PaletteFor(ThemeId id) {
     case ThemeId::Nord:             return kNord;
     case ThemeId::ArcDark:          return kArcDark;
     case ThemeId::AppleLight:       return kAppleLight;
-    default:                        return kCatppuccinFrappe;
+    default:                        return kAppleLight;
     }
 }
 
@@ -264,7 +268,7 @@ const wchar_t* ThemeName(ThemeId id) {
     case ThemeId::Nord:             return L"Nord";
     case ThemeId::ArcDark:          return L"Arc-Dark";
     case ThemeId::AppleLight:       return L"Apple Light";
-    default:                        return L"Catppuccin Frappé";
+    default:                        return L"Apple Light";
     }
 }
 
