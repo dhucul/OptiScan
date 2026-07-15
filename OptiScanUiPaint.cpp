@@ -72,23 +72,22 @@ static void PaintProceduralBackdrop(Gdiplus::Graphics& g, int width, int height)
     Gdiplus::Rect full(0, 0, width, height);
     if (CurrentThemeId() == ThemeId::AppleLight)
     {
-        const COLORREF backdropPurple = RGB(100, 88, 180);
-        Gdiplus::LinearGradientBrush purpleCanvas(full,
-            ThemeArgb(255, backdropPurple), Gdiplus::Color(255, 57, 49, 120), 12.0f);
-        g.FillRectangle(&purpleCanvas, full);
+        Gdiplus::LinearGradientBrush canvas(full,
+            ThemeArgb(255, p.backdropTop), ThemeArgb(255, p.backdropBottom), 12.0f);
+        g.FillRectangle(&canvas, full);
 
-        // Deepen the lower canvas without flattening the purple upper-left.
+        // Deepen the lower canvas without flattening the tint in the upper-left.
         Gdiplus::LinearGradientBrush depth(full,
-            Gdiplus::Color(0, 46, 39, 105), Gdiplus::Color(58, 40, 33, 91),
+            ThemeArgb(0, p.backdropDepth), ThemeArgb(58, p.backdropDepth),
             Gdiplus::LinearGradientModeVertical);
         g.FillRectangle(&depth, full);
 
         const float scanX = W * 1.015f;
         const float scanY = H * 0.40f;
-        PaintGlow(g, scanX, scanY, min(W, H) * 0.34f, 92, RGB(151, 126, 255));
+        PaintGlow(g, scanX, scanY, min(W, H) * 0.34f, 92, p.backdropGlow);
 
         // Sparse measurement matrix, concentrated on the right half.
-        Gdiplus::SolidBrush dot(Gdiplus::Color(30, 181, 164, 255));
+        Gdiplus::SolidBrush dot(ThemeArgb(30, p.backdropInstrument));
         const int dotStep = max(ScalePx(24), 12);
         for (int y = ScalePx(18); y < (int)(H * 0.82f); y += dotStep)
             for (int x = (int)(W * 0.40f); x < width; x += dotStep)
@@ -99,11 +98,11 @@ static void PaintProceduralBackdrop(Gdiplus::Graphics& g, int width, int height)
         for (int i = 1; i <= 11; ++i)
         {
             const float r = maxRadius * ((float)i / 11.0f);
-            Gdiplus::Pen arc(Gdiplus::Color((BYTE)(30 + (i % 3) * 12), 174, 151, 255),
+            Gdiplus::Pen arc(ThemeArgb((BYTE)(30 + (i % 3) * 12), p.backdropInstrument),
                               max(1.0f, ScaleReal(i % 4 == 0 ? 2 : 1)));
             g.DrawEllipse(&arc, scanX - r, scanY - r, r * 2.0f, r * 2.0f);
         }
-        Gdiplus::Pen ray(Gdiplus::Color(38, 151, 126, 255), max(1.0f, ScaleReal(1)));
+        Gdiplus::Pen ray(ThemeArgb(38, p.backdropGlow), max(1.0f, ScaleReal(1)));
         for (int degrees = 150; degrees <= 210; degrees += 5)
         {
             const float radians = degrees * 3.14159265f / 180.0f;
@@ -112,8 +111,8 @@ static void PaintProceduralBackdrop(Gdiplus::Graphics& g, int width, int height)
                        scanY + std::sin(radians) * maxRadius);
         }
 
-        // Lavender horizon glow below the primary action cards.
-        Gdiplus::Pen horizon(Gdiplus::Color(105, 181, 147, 255), max(1.0f, ScaleReal(2)));
+        // Horizon glow below the primary action cards.
+        Gdiplus::Pen horizon(ThemeArgb(105, p.backdropInstrument), max(1.0f, ScaleReal(2)));
         g.DrawLine(&horizon, W * 0.10f, H * 0.185f, W * 0.88f, H * 0.185f);
         return;
     }
@@ -303,11 +302,13 @@ static void DrawProfessionalAppleBackground(Gdiplus::Graphics& graphics, const R
 
     DrawBackgroundSurface(graphics, rc, 0, 0, true);
 
-    // A lavender-tinted white keeps the navigation rail light while avoiding
-    // a stark paper-white edge against the saturated purple canvas.
-    Gdiplus::SolidBrush sidebar(Gdiplus::Color(255, 246, 243, 251));
+    const Palette& p = ActiveTheme();
+
+    // The rail sits directly on the instrumentation canvas, so it uses the
+    // raised surface rather than a stark paper-white.
+    Gdiplus::SolidBrush sidebar(ThemeArgb(255, p.surfaceRaised));
     graphics.FillRectangle(&sidebar, 0, 0, sidebarWidth, height);
-    Gdiplus::Pen divider(Gdiplus::Color(255, 207, 201, 226), max(1.0f, ScaleReal(1)));
+    Gdiplus::Pen divider(ThemeArgb(255, p.hairline), max(1.0f, ScaleReal(1)));
     graphics.DrawLine(&divider, sidebarWidth, 0, sidebarWidth, height);
 
     // Small, fixed brand lockup in the navigation rail.
@@ -322,13 +323,13 @@ static void DrawProfessionalAppleBackground(Gdiplus::Graphics& graphics, const R
     Gdiplus::FontFamily sidebarDetailFamily(L"Tahoma");
     Gdiplus::Font sidebarDetail(&sidebarDetailFamily, ScaleReal(20), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
     Gdiplus::Font sectionFont(&uiFamily, ScaleReal(24), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
-    Gdiplus::SolidBrush ink(Gdiplus::Color(255, 23, 32, 42));
-    // Darker secondary ink keeps unselected navigation and drive-status text
-    // readable on the bright sidebar without competing with selected items.
-    Gdiplus::SolidBrush muted(Gdiplus::Color(255, 53, 64, 82));
-    Gdiplus::SolidBrush mainInk(Gdiplus::Color(255, 255, 255, 255));
-    Gdiplus::SolidBrush mainMuted(Gdiplus::Color(255, 226, 220, 255));
-    Gdiplus::SolidBrush blue(Gdiplus::Color(255, 23, 105, 224));
+    Gdiplus::SolidBrush ink(ThemeArgb(255, p.cardInk));
+    // Secondary ink keeps unselected navigation and drive-status text readable
+    // on the rail without competing with selected items.
+    Gdiplus::SolidBrush muted(ThemeArgb(255, p.cardInkMuted));
+    Gdiplus::SolidBrush mainInk(ThemeArgb(255, p.canvasInk));
+    Gdiplus::SolidBrush mainMuted(ThemeArgb(255, p.canvasInkMuted));
+    Gdiplus::SolidBrush blue(ThemeArgb(255, p.accentPrimary));
     graphics.DrawString(L"OptiScan", -1, &brand, Gdiplus::PointF(ScaleReal(90), ScaleReal(42)), &ink);
 
     const wchar_t* navLabels[] = { L"Overview", L"Rip & Copy", L"Disc Quality", L"Analysis", L"Drive Tools", L"Utilities" };
@@ -339,12 +340,12 @@ static void DrawProfessionalAppleBackground(Gdiplus::Graphics& graphics, const R
         {
             Gdiplus::GraphicsPath selectedPath;
             AddRoundedRectangle(selectedPath, ScalePx(18), y, sidebarWidth - ScalePx(36), ScalePx(58), ScalePx(10));
-            Gdiplus::SolidBrush selectedBg(Gdiplus::Color(255, 232, 226, 247));
+            Gdiplus::SolidBrush selectedBg(ThemeArgb(255, p.surfaceSunken));
             graphics.FillPath(&selectedBg, &selectedPath);
             graphics.FillRectangle(&blue, ScalePx(18), y + ScalePx(10), ScalePx(5), ScalePx(38));
         }
-        Gdiplus::Pen iconPen(i == selectedNav ? Gdiplus::Color(255, 23, 105, 224)
-                                    : Gdiplus::Color(255, 53, 64, 82), max(1.0f, ScaleReal(2)));
+        Gdiplus::Pen iconPen(i == selectedNav ? ThemeArgb(255, p.accentPrimary)
+                                    : ThemeArgb(255, p.cardInkMuted), max(1.0f, ScaleReal(2)));
         graphics.DrawEllipse(&iconPen, ScaleReal(43), (Gdiplus::REAL)y + ScaleReal(17), ScaleReal(24), ScaleReal(24));
         graphics.DrawString(navLabels[i], -1, i == selectedNav ? &navSelected : &navFont,
                             Gdiplus::PointF(ScaleReal(88), (Gdiplus::REAL)y + ScaleReal(14)),
@@ -352,9 +353,9 @@ static void DrawProfessionalAppleBackground(Gdiplus::Graphics& graphics, const R
     }
 
     // Drive status remains visible without competing with the command area.
-    Gdiplus::Pen sidebarRule(Gdiplus::Color(255, 216, 210, 232), 1.0f);
+    Gdiplus::Pen sidebarRule(ThemeArgb(255, p.hairline), 1.0f);
     graphics.DrawLine(&sidebarRule, ScalePx(28), height - ScalePx(215), sidebarWidth - ScalePx(28), height - ScalePx(215));
-    Gdiplus::SolidBrush ready(Gdiplus::Color(255, 27, 153, 105));
+    Gdiplus::SolidBrush ready(ThemeArgb(255, p.ok));
     graphics.FillEllipse(&ready, ScaleReal(34), (Gdiplus::REAL)(height - ScalePx(172)), ScaleReal(10), ScaleReal(10));
     graphics.DrawString(L"Drive ready", -1, &navSelected,
                         Gdiplus::PointF(ScaleReal(58), (Gdiplus::REAL)(height - ScalePx(187))), &ink);
@@ -402,10 +403,10 @@ static void DrawProfessionalAppleBackground(Gdiplus::Graphics& graphics, const R
     Gdiplus::GraphicsPath outputCard;
     AddRoundedRectangle(outputCard, contentLeft, outputTop, contentWidth,
                         max(ScalePx(260), outputBottom - outputTop), ScalePx(16));
-    Gdiplus::SolidBrush outputBg(Gdiplus::Color(255, 21, 27, 35));
+    Gdiplus::SolidBrush outputBg(ThemeArgb(255, p.outputBg));
     graphics.FillPath(&outputBg, &outputCard);
     Gdiplus::Font outputTitle(&uiFamily, ScaleReal(22), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
-    Gdiplus::SolidBrush outputInk(Gdiplus::Color(255, 236, 240, 245));
+    Gdiplus::SolidBrush outputInk(ThemeArgb(255, p.bright));
     graphics.DrawString(L"Output", -1, &outputTitle,
                         Gdiplus::PointF((Gdiplus::REAL)(contentLeft + ScalePx(22)), (Gdiplus::REAL)(outputTop + ScalePx(16))),
                         &outputInk);
@@ -605,8 +606,9 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
     const bool clearCommand = commandIndex == kClearButtonIndex;
     const bool exitCommand = commandIndex == kExitButtonIndex;
 
+    const Palette& p = ActiveTheme();
     // Dimmed text for disabled buttons; from the active theme.
-    const COLORREF DisabledText = ActiveTheme().disabledText;
+    const COLORREF DisabledText = p.disabledText;
 
     Gdiplus::Graphics graphics(hdc);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
@@ -665,38 +667,37 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
             AddRoundedRectangle(shadow, rc.left + ScalePx(2), rc.top + ScalePx(4),
                                 rc.right - rc.left - ScalePx(4), rc.bottom - rc.top - ScalePx(3),
                                 primary ? ScalePx(14) : ScalePx(8));
-            Gdiplus::SolidBrush shadowBrush(Gdiplus::Color(primary ? 18 : 10, 23, 32, 42));
+            Gdiplus::SolidBrush shadowBrush(ThemeArgb(primary ? 18 : 10, p.shadowInk));
             graphics.FillPath(&shadowBrush, &shadow);
         }
 
-        // Keep cards bright enough for dark text, but carry a subtle lavender
-        // cast so they sit naturally on the purple instrumentation field.
+        // The card face sits on the instrumentation canvas; the exit card takes
+        // the danger surface so it reads as destructive at a glance.
         const Gdiplus::Color face = exitCommand
-            ? Gdiplus::Color(255, 253, 243, 247)
-            : (pressed ? Gdiplus::Color(255, 231, 226, 246) : Gdiplus::Color(255, 248, 246, 252));
+            ? ThemeArgb(255, p.dangerSurface)
+            : (pressed ? ThemeArgb(255, p.surfaceSunken) : ThemeArgb(255, p.surfaceRaised));
         Gdiplus::SolidBrush faceBrush(face);
         graphics.FillPath(&faceBrush, &card);
         Gdiplus::Pen cardBorder(
-            focused ? Gdiplus::Color(255, 23, 105, 224)
-                    : (exitCommand ? Gdiplus::Color(255, 246, 184, 194)
-                                   : Gdiplus::Color(255, 207, 201, 226)),
+            focused ? ThemeArgb(255, p.accentPrimary)
+                    : (exitCommand ? ThemeArgb(255, p.dangerBorder)
+                                   : ThemeArgb(255, p.hairline)),
             focused ? max(1.0f, ScaleReal(2)) : max(1.0f, ScaleReal(1)));
         graphics.DrawPath(&cardBorder, &card);
 
         Gdiplus::FontFamily uiFamily(L"Segoe UI");
-        Gdiplus::SolidBrush ink(disabled ? Gdiplus::Color(255, 152, 162, 179)
-                                         : (exitCommand ? Gdiplus::Color(255, 196, 35, 55)
-                                                        : Gdiplus::Color(255, 23, 32, 42)));
-        Gdiplus::SolidBrush secondary(Gdiplus::Color(255, 10, 10, 12));
-        Gdiplus::SolidBrush blue(Gdiplus::Color(255, 23, 105, 224));
+        Gdiplus::SolidBrush ink(disabled ? ThemeArgb(255, p.disabledText)
+                                         : (exitCommand ? ThemeArgb(255, p.dangerInk)
+                                                        : ThemeArgb(255, p.cardInk)));
+        Gdiplus::SolidBrush secondary(ThemeArgb(255, p.cardInk));
+        Gdiplus::SolidBrush blue(ThemeArgb(255, p.accentPrimary));
 
         if (primary)
         {
             Gdiplus::GraphicsPath iconTile;
             AddRoundedRectangle(iconTile, rc.left + ScalePx(28), rc.top + ScalePx(28),
                                 ScalePx(76), ScalePx(76), ScalePx(14));
-            Gdiplus::SolidBrush iconBg(commandIndex == 1
-                ? Gdiplus::Color(255, 231, 247, 246) : Gdiplus::Color(255, 235, 243, 255));
+            Gdiplus::SolidBrush iconBg(ThemeArgb(255, p.accentSurface));
             graphics.FillPath(&iconBg, &iconTile);
             DrawOpticalRingMark(graphics, rc.left + ScaleReal(66), rc.top + ScaleReal(66), ScaleReal(24), 210, true);
 
@@ -715,7 +716,7 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
             Gdiplus::GraphicsPath numberBadge;
             AddRoundedRectangle(numberBadge, rc.left + ScalePx(128), rc.top + ScalePx(28),
                                 ScalePx(34), ScalePx(30), ScalePx(7));
-            Gdiplus::SolidBrush badgeBg(Gdiplus::Color(255, 235, 243, 255));
+            Gdiplus::SolidBrush badgeBg(ThemeArgb(255, p.accentSurface));
             graphics.FillPath(&badgeBg, &numberBadge);
             graphics.DrawString(menuNumber, -1, &badgeFont,
                                 Gdiplus::PointF(rc.left + ScaleReal(139), rc.top + ScaleReal(33)), &blue);
@@ -728,10 +729,12 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
             AddRoundedRectangle(actionPill, rc.left + ScalePx(128), rc.top + ScalePx(112),
                                 ScalePx(142), ScalePx(38), ScalePx(7));
             graphics.FillPath(&blue, &actionPill);
-            Gdiplus::SolidBrush white(Gdiplus::Color(255, 255, 255, 255));
+            // Ink ON the accent, not white: white fails contrast on the lighter
+            // accents (2.4:1 on Nord's frost blue).
+            Gdiplus::SolidBrush pillInk(ThemeArgb(255, p.onAccentInk));
             graphics.DrawString(commandIndex == 0 ? L"Copy disc" : (commandIndex == 1 ? L"Rip tracks" : L"Quality scan"),
                                 -1, &actionFont,
-                                Gdiplus::PointF(rc.left + ScaleReal(145), rc.top + ScaleReal(119)), &white);
+                                Gdiplus::PointF(rc.left + ScaleReal(145), rc.top + ScaleReal(119)), &pillInk);
         }
         else
         {
@@ -830,8 +833,7 @@ static void DrawTechAccents(Gdiplus::Graphics& graphics, const RECT& rc)
 static void DrawOpticalRingMark(Gdiplus::Graphics& graphics, Gdiplus::REAL cx, Gdiplus::REAL cy,
                                 Gdiplus::REAL radius, BYTE alpha, bool includeBlueArc)
 {
-    const COLORREF silver = CurrentThemeId() == ThemeId::AppleLight
-        ? RGB(112, 126, 145) : ActiveTheme().chromeText;
+    const COLORREF silver = ActiveTheme().chromeText;
     const Gdiplus::REAL stroke = max(1.0f, radius * 0.055f);
     Gdiplus::Pen ringPen(ThemeArgb(alpha, silver), stroke);
 

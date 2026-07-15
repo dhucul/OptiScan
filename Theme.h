@@ -47,23 +47,59 @@ struct Palette {
     COLORREF graphBar;    // block bar chars
     COLORREF selection;   // log selection highlight band
 
-    // --- Surfaces / chrome (GDI+ paint) -------------------------------------
-    COLORREF windowBase;   // near-black behind everything
-    COLORREF panelSurface; // rounded command/output panel fill
-    COLORREF outputBg;     // console/output background (OutputDark)
-    COLORREF consoleBase;  // console inner frame fill (near-black)
-    COLORREF chromeAccent; // steel-blue accent family: borders/dots/tech lines
-    COLORREF chromeText;   // "READY"/eyebrow grey
+    // --- Backdrop: the instrumentation canvas behind the content area --------
+    // Deliberately independent of the chrome surfaces below. Apple Light pairs
+    // a saturated purple canvas with a near-white rail, so deriving the canvas
+    // from a surface role would flatten it.
+    COLORREF backdropTop;        // 12-degree gradient start (upper-left)
+    COLORREF backdropBottom;     // gradient end (lower-right)
+    COLORREF backdropDepth;      // vertical darkening pass; alpha at the site
+    COLORREF backdropGlow;       // radial scan glow + the rays
+    COLORREF backdropInstrument; // scan arcs, dot matrix, horizon, progress fill
 
-    // --- Command buttons -----------------------------------------------------
-    COLORREF btnTop;        // gradient top (normal)
-    COLORREF btnBottom;     // gradient bottom (normal)
-    COLORREF btnBorder;     // border (normal)
-    COLORREF btnBorderFocus;// border (focused)
-    COLORREF btnStripe;     // left accent stripe (normal)
-    COLORREF btnNumber;     // number text
-    COLORREF btnLabel;      // label text
-    COLORREF disabledText;  // disabled button text
+    // --- Ink drawn directly on the backdrop ----------------------------------
+    COLORREF canvasInk;       // page title, group section headings
+    COLORREF canvasInkMuted;  // page subtitle
+
+    // --- Chrome surfaces: navigation rail + command cards --------------------
+    COLORREF surfaceRaised;  // rail fill + normal card face
+    COLORREF surfaceSunken;  // selected nav pill + pressed card face
+    COLORREF hairline;       // nav divider, sidebar rule, card border
+    COLORREF shadowInk;      // card drop-shadow tint; alpha at the site
+
+    // --- Ink on the chrome surfaces ------------------------------------------
+    // These invert with the surface: near-black on Apple Light's white rail,
+    // near-white on the dark themes' rails.
+    COLORREF cardInk;       // brand, card title/label, "Drive ready"
+    COLORREF cardInkMuted;  // unselected nav, sidebar detail, card description
+    COLORREF disabledText;  // disabled card ink
+
+    // --- Accent ---------------------------------------------------------------
+    COLORREF accentPrimary;  // nav stripe/label, focus border, number, action pill
+    COLORREF accentSurface;  // number badge + hero icon tile fill
+    COLORREF onAccentInk;    // ink ON accentPrimary; white fails on light accents
+
+    // --- Danger: the exit card ------------------------------------------------
+    COLORREF dangerSurface;
+    COLORREF dangerBorder;
+    COLORREF dangerInk;
+
+    // --- Output console + brand ring ------------------------------------------
+    COLORREF outputBg;     // console/output card fill (OutputDark)
+    COLORREF chromeAccent; // optical ring hub + arc
+    COLORREF chromeText;   // optical ring strokes
+
+    // --- Legacy renderer only; removed together with it -----------------------
+    COLORREF windowBase;
+    COLORREF panelSurface;
+    COLORREF consoleBase;
+    COLORREF btnTop;
+    COLORREF btnBottom;
+    COLORREF btnBorder;
+    COLORREF btnBorderFocus;
+    COLORREF btnStripe;
+    COLORREF btnNumber;
+    COLORREF btnLabel;
 
     // --- Input dialog (GuiInput) --------------------------------------------
     COLORREF dlgBack;
