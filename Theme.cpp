@@ -65,7 +65,7 @@ constexpr Palette kGraphite = {
 constexpr Palette kCatppuccinFrappe = {
     .fg = RGB(198, 208, 245),               // text
     .bright = RGB(205, 214, 245),
-    .dim = RGB(115, 121, 148),              // overlay0
+    .dim = RGB(131, 139, 167),              // overlay1 (overlay0 failed on crust)
     .accentWarm = RGB(239, 159, 118),       // peach
     .ok = RGB(166, 209, 137),               // green
     .warn = RGB(229, 200, 144),             // yellow
@@ -76,18 +76,25 @@ constexpr Palette kCatppuccinFrappe = {
     .graphBar = RGB(133, 193, 220),
     .selection = RGB( 81,  87, 106),        // surface1
 
-    .backdropTop = RGB( 62,  52,  86),      // mauve-shifted lift
-    .backdropBottom = RGB( 30,  32,  44),   // mantle
-    .backdropDepth = RGB( 24,  26,  36),
+    // Backdrop base stays in Catppuccin's own blue-grey ramp (mantle/crust),
+    // NOT a saturated mauve -- the old (62,52,86) sat 28deg off the blue-grey
+    // cards and read as a purple clash. The mauve identity now lives only in
+    // the glow/instrument roles, exactly as Graphite carries its blue in the
+    // glow over a neutral slate base.
+    .backdropTop = RGB( 46,  50,  68),      // between mantle and base
+    .backdropBottom = RGB( 28,  30,  42),   // below crust
+    .backdropDepth = RGB( 22,  24,  34),
     .backdropGlow = RGB(202, 158, 230),     // mauve
     .backdropInstrument = RGB(180, 152, 220),
 
     .canvasInk = RGB(198, 208, 245),        // text
     .canvasInkMuted = RGB(165, 175, 215),
 
-    .surfaceRaised = RGB( 56,  60,  80),    // base
-    .surfaceSunken = RGB( 72,  76,  98),    // surface0
-    .hairline = RGB( 88,  94, 114),         // surface1
+    // Cards lifted onto the real Catppuccin surface ramp so they clear the
+    // canvas and the console well (console->card was a flat 3.7 L*, now ~14).
+    .surfaceRaised = RGB( 65,  69,  89),    // surface0
+    .surfaceSunken = RGB( 81,  87, 109),    // surface1
+    .hairline = RGB( 98, 104, 128),         // surface2
     .shadowInk = RGB( 20,  22,  30),
 
     .cardInk = RGB(198, 208, 245),
@@ -101,7 +108,7 @@ constexpr Palette kCatppuccinFrappe = {
     .dangerBorder = RGB(130,  78,  80),
     .dangerInk = RGB(231, 130, 132),        // red
 
-    .outputBg = RGB( 48,  52,  70),         // base
+    .outputBg = RGB( 35,  38,  52),         // crust -- deep console well
     .chromeAccent = RGB(140, 170, 221),     // blue
     .chromeText = RGB(181, 191, 231),       // subtext1
 
@@ -121,19 +128,22 @@ constexpr Palette kCatppuccinFrappe = {
 constexpr Palette kNord = {
     .fg = RGB(216, 222, 233),               // nord4
     .bright = RGB(236, 239, 244),           // nord6
-    .dim = RGB( 97, 110, 136),
+    .dim = RGB(124, 135, 159),              // lifted nord comment grey (was 2.7:1)
     .accentWarm = RGB(208, 135, 112),       // nord12 orange
     .ok = RGB(163, 190, 140),               // nord14
     .warn = RGB(235, 203, 139),             // nord13
-    .error = RGB(191,  97, 106),            // nord11
+    .error = RGB(208, 123, 131),            // lifted nord11 (raw was 3.4:1 on well)
     .cyan = RGB(136, 192, 208),             // nord8
     .logInfo = RGB(236, 239, 244),          // == bright (nord6)
     .graphFrame = RGB( 76,  86, 106),       // nord3
     .graphBar = RGB(143, 188, 187),         // nord7
     .selection = RGB( 67,  76,  94),        // nord2
 
-    .backdropTop = RGB( 44,  54,  74),      // lifted nord10
-    .backdropBottom = RGB( 28,  34,  45),
+    // Real Polar Night, not a punchy nord10 blue: the old (44,54,74) sat 41%
+    // over-blued the whole canvas. This tracks nord0->nord1 at ~34% sat so the
+    // frost glow reads as the accent instead of competing with the base.
+    .backdropTop = RGB( 45,  52,  68),      // between nord0 and nord1
+    .backdropBottom = RGB( 30,  35,  46),   // below nord0
     .backdropDepth = RGB( 22,  27,  36),
     .backdropGlow = RGB(136, 192, 208),     // nord8
     .backdropInstrument = RGB(129, 161, 193), // nord9
@@ -157,7 +167,7 @@ constexpr Palette kNord = {
     .dangerBorder = RGB(120,  74,  80),
     .dangerInk = RGB(214, 134, 142),        // nord11
 
-    .outputBg = RGB( 39,  44,  54),
+    .outputBg = RGB( 35,  40,  51),         // deeper than nord0 -- console well
     .chromeAccent = RGB(129, 161, 193),     // nord9
     .chromeText = RGB(216, 222, 233),
 
@@ -188,16 +198,20 @@ constexpr Palette kArcDark = {
     .graphBar = RGB(123, 168, 216),
     .selection = RGB( 69,  74,  90),
 
-    .backdropTop = RGB( 38,  50,  72),
-    .backdropBottom = RGB( 30,  33,  41),
-    .backdropDepth = RGB( 24,  26,  33),
+    // Backdrop was inverted (top darker than the #383c4a console) and heavily
+    // blued (sat 47%). Now a de-saturated Arc grey-blue that sits BELOW the
+    // #383c4a cards and ABOVE the new console well; the #5294e2 glow carries
+    // the accent.
+    .backdropTop = RGB( 45,  50,  64),
+    .backdropBottom = RGB( 24,  26,  34),
+    .backdropDepth = RGB( 20,  22,  28),
     .backdropGlow = RGB( 82, 148, 226),     // #5294e2
     .backdropInstrument = RGB(123, 168, 216),
 
     .canvasInk = RGB(231, 235, 240),
     .canvasInkMuted = RGB(186, 196, 210),
 
-    .surfaceRaised = RGB( 57,  62,  75),    // #2f343f
+    .surfaceRaised = RGB( 56,  60,  74),    // #383c4a -- Arc's raised card face
     .surfaceSunken = RGB( 72,  78,  93),
     .hairline = RGB( 95, 102, 119),
     .shadowInk = RGB( 16,  18,  23),
@@ -207,13 +221,13 @@ constexpr Palette kArcDark = {
     .disabledText = RGB( 96, 101, 110),
 
     .accentPrimary = RGB(108, 168, 232),    // #5294e2
-    .accentSurface = RGB( 56,  60,  74),    // #383c4a
+    .accentSurface = RGB( 66,  71,  86),    // lifted off the card face for badges
     .onAccentInk = RGB( 16,  18,  23),      // Arc's own convention
     .dangerSurface = RGB( 52,  38,  42),
     .dangerBorder = RGB(122,  66,  72),
     .dangerInk = RGB(232, 124, 132),
 
-    .outputBg = RGB( 56,  60,  74),         // #383c4a
+    .outputBg = RGB( 36,  39,  49),         // deep console well below #383c4a
     .chromeAccent = RGB( 82, 148, 226),     // #5294e2
     .chromeText = RGB(197, 205, 214),
 

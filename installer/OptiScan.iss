@@ -10,7 +10,7 @@
 ; ============================================================================
 
 #define MyAppName        "OptiScan"
-#define MyAppVersion      "3.17"
+#define MyAppVersion      "3.18"
 #define MyAppPublisher    "dhucul"
 #define MyAppURL          "https://github.com/dhucul/OptiScan"
 #define MyAppExeName       "OptiScan.exe"
