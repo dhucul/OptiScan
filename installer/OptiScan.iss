@@ -10,7 +10,7 @@
 ; ============================================================================
 
 #define MyAppName        "OptiScan"
-#define MyAppVersion      "3.16"
+#define MyAppVersion      "3.17"
 #define MyAppPublisher    "dhucul"
 #define MyAppURL          "https://github.com/dhucul/OptiScan"
 #define MyAppExeName       "OptiScan.exe"
@@ -71,6 +71,11 @@ Source: "{#ReleaseDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RepoDir}\LICENSE.txt";        DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RepoDir}\README.md";          DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RepoDir}\OptiScan.ico";       DestDir: "{app}"; Flags: ignoreversion
+
+; Bundled fonts are embedded in the exe (see OptiScan.rc); the SIL Open Font
+; License requires the license text to accompany the fonts, so ship both.
+Source: "{#RepoDir}\assets\fonts\Inter-LICENSE.txt";      DestDir: "{app}\licenses"; DestName: "Inter-OFL.txt";        Flags: ignoreversion
+Source: "{#RepoDir}\assets\fonts\JetBrainsMono-OFL.txt";  DestDir: "{app}\licenses"; DestName: "JetBrainsMono-OFL.txt"; Flags: ignoreversion
 
 ; Visual C++ 2015-2022 x64 runtime - extracted to {tmp} and run only when missing.
 Source: "{#SourcePath}redist\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall; Check: VCRedistNeedsInstall

@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "GuiInput.h"
+#include "FontLoader.h"
 #include "Theme.h"
 
 #include <windows.h>
@@ -278,16 +279,18 @@ namespace {
         if (!g_hPanelBrush) g_hPanelBrush = CreateSolidBrush(DialogPanel);
         if (!g_hEditBrush) g_hEditBrush = CreateSolidBrush(DialogEdit);
         if (!g_hPromptFont) {
+            // Inter SemiBold (bundled), matching the command buttons.
             g_hPromptFont = CreateFontW(-21, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_NATURAL_QUALITY,
-                DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+                DEFAULT_PITCH | FF_SWISS, UiSemiBoldFamily());
         }
         if (!g_hEditFont) {
-            // Cascadia Mono mirrors the main output box, so the number the user
-            // types reads in the same typeface as the menu listing above it.
+            // JetBrains Mono (bundled) mirrors the main output box, so the number
+            // the user types reads in the same typeface as the menu listing above
+            // it. FW_BOLD selects the family's real Bold face.
             g_hEditFont = CreateFontW(-22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_NATURAL_QUALITY,
-                FIXED_PITCH | FF_MODERN, L"Cascadia Mono");
+                FIXED_PITCH | FF_MODERN, MonoFamily());
         }
         EnsureClassRegistered();
 

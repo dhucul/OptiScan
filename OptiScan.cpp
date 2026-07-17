@@ -8,6 +8,7 @@
 
 #include "AccessibleAnnounce.h"
 #include "FileUtils.h"
+#include "FontLoader.h"
 #include "GuiInput.h"
 #include "GuiSink.h"
 #include "GuiWorker.h"
@@ -176,6 +177,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     LoadLibraryW(L"Msftedit.dll");
 
     InitializeUiResources();
+
+    // Load the bundled Inter + JetBrains Mono fonts into this process (GDI +
+    // GDI+) now that GDI+ is up and before any control fonts are created or the
+    // window paints. If embedding ever fails the resolvers fall back to stock
+    // Windows faces, so the UI still renders.
+    LoadBundledFonts(hInstance);
 
     // Apply the persisted theme before any window paints (falls back to
     // kDefaultTheme when nothing is saved).

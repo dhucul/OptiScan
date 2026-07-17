@@ -89,7 +89,7 @@ CAPTION "About OptiScan"
 FONT 8, "MS Shell Dlg"
 BEGIN
     ICON            IDI_OPTISCAN,IDC_STATIC,14,14,21,20
-    LTEXT           "OptiScan, Version 3.16",IDC_STATIC,42,14,114,8,SS_NOPREFIX
+    LTEXT           "OptiScan, Version 3.17",IDC_STATIC,42,14,114,8,SS_NOPREFIX
     LTEXT           "Copyright (c) 2026",IDC_STATIC,42,26,114,8
     DEFPUSHBUTTON   "OK",IDOK,113,41,50,14,WS_GROUP
 END
@@ -151,6 +151,21 @@ BEGIN
    IDC_OPTISCAN  "OPTISCAN"
    IDS_APP_TITLE       "OptiScan"
 END
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Bundled fonts (SIL Open Font License). Embedded as RCDATA and loaded
+// privately at runtime by FontLoader.cpp -- never installed system-wide.
+// Inter (proportional UI) and JetBrains Mono (monospace output/graphs) give
+// the app a macOS/San-Francisco-style look on any Windows machine.
+//
+
+INTER_REGULAR   RCDATA "assets\\fonts\\Inter-Regular.ttf"
+INTER_SEMIBOLD  RCDATA "assets\\fonts\\Inter-SemiBold.ttf"
+INTER_BOLD      RCDATA "assets\\fonts\\Inter-Bold.ttf"
+JBMONO_REGULAR  RCDATA "assets\\fonts\\JetBrainsMono-Regular.ttf"
+JBMONO_MEDIUM   RCDATA "assets\\fonts\\JetBrainsMono-Medium.ttf"
+JBMONO_BOLD     RCDATA "assets\\fonts\\JetBrainsMono-Bold.ttf"
 
 #endif
 /////////////////////////////////////////////////////////////////////////////

@@ -2,6 +2,7 @@
 
 #include "framework.h"
 #include "OptiScanUiInternal.h"
+#include "FontLoader.h"
 #include "Theme.h"
 
 #include <cmath>
@@ -181,6 +182,10 @@ void DestroyUiResources()
     delete gBackdropBitmap;
     gBackdropBitmap = nullptr;
 
+    // Release the bundled private fonts (GDI mem-font handles + the GDI+
+    // PrivateFontCollection) before GDI+ itself shuts down.
+    UnloadBundledFonts();
+
     Gdiplus::GdiplusShutdown(gGdiPlusToken);
 }
 
@@ -271,14 +276,14 @@ static void DrawUnifiedBackground(Gdiplus::Graphics& graphics, const RECT& rc)
 
     // Small, fixed brand lockup in the navigation rail.
     DrawOpticalRingMark(graphics, ScaleReal(55), ScaleReal(62), ScaleReal(22), 220, true);
-    Gdiplus::FontFamily uiFamily(L"Segoe UI");
-    Gdiplus::FontFamily navFamily(L"Tahoma");
+    Gdiplus::FontFamily uiFamily(UiFamily(), UiFontCollection());
+    Gdiplus::FontFamily navFamily(UiFamily(), UiFontCollection());
     Gdiplus::Font brand(&uiFamily, ScaleReal(30), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
     Gdiplus::Font navFont(&navFamily, ScaleReal(23), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
     Gdiplus::Font navSelected(&navFamily, ScaleReal(23), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
     Gdiplus::Font pageTitle(&uiFamily, ScaleReal(38), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
     Gdiplus::Font subtitle(&uiFamily, ScaleReal(21), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
-    Gdiplus::FontFamily sidebarDetailFamily(L"Tahoma");
+    Gdiplus::FontFamily sidebarDetailFamily(UiFamily(), UiFontCollection());
     Gdiplus::Font sidebarDetail(&sidebarDetailFamily, ScaleReal(20), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
     Gdiplus::Font sectionFont(&uiFamily, ScaleReal(24), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
     Gdiplus::SolidBrush ink(ThemeArgb(255, p.cardInk));
@@ -482,7 +487,7 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
             focused ? max(1.0f, ScaleReal(2)) : max(1.0f, ScaleReal(1)));
         graphics.DrawPath(&cardBorder, &card);
 
-        Gdiplus::FontFamily uiFamily(L"Segoe UI");
+        Gdiplus::FontFamily uiFamily(UiFamily(), UiFontCollection());
         Gdiplus::SolidBrush ink(disabled ? ThemeArgb(255, p.disabledText)
                                          : (exitCommand ? ThemeArgb(255, p.dangerInk)
                                                         : ThemeArgb(255, p.cardInk)));
@@ -499,7 +504,7 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
 
             Gdiplus::Font titleFont(&uiFamily, ScaleReal(27), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
             Gdiplus::Font badgeFont(&uiFamily, ScaleReal(18), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
-            Gdiplus::FontFamily descriptionFamily(L"Tahoma");
+            Gdiplus::FontFamily descriptionFamily(UiFamily(), UiFontCollection());
             Gdiplus::Font descriptionFont(&descriptionFamily, ScaleReal(20), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
             Gdiplus::Font actionFont(&uiFamily, ScaleReal(18), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
             const wchar_t* description = commandIndex == 0

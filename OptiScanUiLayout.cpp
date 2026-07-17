@@ -4,6 +4,7 @@
 #include "OptiScanUiInternal.h"
 
 #include "Accessibility.h"
+#include "FontLoader.h"
 #include "OutputControl.h"
 #include "Theme.h"
 #include "UiSound.h"
@@ -23,18 +24,22 @@ void CreateUiFonts()
     if (hCommandFont) DeleteObject(hCommandFont);
     if (hOutputFont) DeleteObject(hOutputFont);
 
+    // Inter SemiBold (a bundled San-Francisco-style face) for the command
+    // buttons. UiSemiBoldFamily() names the exact semibold family so GDI picks
+    // the true 600-weight face rather than faux-bolding Regular; it falls back
+    // to "Segoe UI Semibold" if the embedded font ever fails to load.
     hCommandFont = CreateFontW(-ScalePx(24), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_NATURAL_QUALITY,
-        DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-    // Cascadia Mono ships with Windows 11 and Windows Terminal; it has much
-    // broader Unicode coverage than Consolas (covers General Punctuation,
-    // box drawing, block elements, geometric shapes, arrows, miscellaneous
-    // symbols, etc.) so most of what the workflows draw renders without
-    // needing the fallback chain. If Cascadia Mono isn't installed, Windows
-    // substitutes another FIXED_PITCH | FF_MODERN face.
+        DEFAULT_PITCH | FF_SWISS, UiSemiBoldFamily());
+    // JetBrains Mono Medium (bundled, SF-Mono-style) for the output panel. It
+    // has broad Unicode coverage (General Punctuation, box drawing, block
+    // elements, geometric shapes, arrows, symbols) so most of what the
+    // workflows draw renders without needing the fallback chain. Medium ships
+    // as its own family, so MonoMediumFamily() names it exactly; it falls back
+    // to Cascadia Mono if the embedded font ever fails to load.
     hOutputFont = CreateFontW(-ScalePx(24), 0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_NATURAL_QUALITY,
-        FIXED_PITCH | FF_MODERN, L"Cascadia Mono");
+        FIXED_PITCH | FF_MODERN, MonoMediumFamily());
 }
 
 void ApplyUiFonts()
