@@ -4,9 +4,10 @@
 #  Run manually:  right-click build-installer.bat > Run,  or from a terminal:
 #      powershell -ExecutionPolicy Bypass -File build-installer.ps1
 #
-#  Before a release, bump the version in TWO places, then run this:
+#  Before a release, bump the version in THREE places, then run this:
 #      - installer\OptiScan.iss   ( #define MyAppVersion "x.y" )
 #      - OptiScan.rc              ( "OptiScan, Version x.y" in the About box )
+#      - UpdateChecker.cpp        ( const VersionInfo APP_VERSION = { x, y, 0 } )
 #  The output filename comes from MyAppVersion in the .iss.
 #  Produces:  installer\Output\OptiScan-<version>-Setup.exe
 # ============================================================================

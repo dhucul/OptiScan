@@ -303,6 +303,55 @@ ATOM MyRegisterClass(HINSTANCE hInstance)
     return RegisterClassExW(&wcex);
 }
 
+// Return the top-level menu-bar submenu that directly contains cmdId, or null.
+// Used to locate the View menu (by IDM_TOGGLE_ACCESSIBLE, unique to it) so a
+// submenu can be appended without depending on a fixed position. Mirrors the
+// MenuContainsCommand pattern in OptiScanUiMenu.cpp.
+static HMENU FindMenuContaining(HMENU bar, UINT cmdId)
+{
+    if (!bar) return nullptr;
+    const int barCount = GetMenuItemCount(bar);
+    for (int i = 0; i < barCount; ++i)
+    {
+        HMENU sub = GetSubMenu(bar, i);
+        if (!sub) continue;
+        const int count = GetMenuItemCount(sub);
+        for (int j = 0; j < count; ++j)
+        {
+            if (GetMenuItemID(sub, j) == cmdId) return sub;
+        }
+    }
+    return nullptr;
+}
+
+// Build the View > Click sound submenu from UiSound::ClickStyleTable() so the
+// menu and the waveform table never drift. Item i gets command id
+// (IDM_SOUND_FIRST + i), which the WM_COMMAND handler maps straight back to a
+// ClickStyle; the current pick is radio-checked by the caller.
+static void BuildClickSoundMenu(HWND hWnd)
+{
+    HMENU bar = GetMenu(hWnd);
+    if (!bar) return;
+    HMENU view = FindMenuContaining(bar, IDM_TOGGLE_ACCESSIBLE);
+    if (!view) return;
+
+    HMENU sub = CreatePopupMenu();
+    if (!sub) return;
+
+    const auto& table = UiSound::ClickStyleTable();
+    for (size_t i = 0; i < table.size(); ++i)
+    {
+        // Stay within the reserved command-id range (defensive; the table is
+        // far smaller than the range today).
+        if (IDM_SOUND_FIRST + static_cast<int>(i) > IDM_SOUND_LAST) break;
+        AppendMenuW(sub, MF_STRING,
+                    (UINT_PTR)(IDM_SOUND_FIRST + i), table[i].menuLabel);
+    }
+
+    AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(view, MF_POPUP, (UINT_PTR)sub, L"Click &sound");
+}
+
 //
 //   FUNCTION: InitInstance(HINSTANCE, int)
 //
@@ -323,6 +372,10 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
    BOOL screenReaderRunning = FALSE;
    SystemParametersInfoW(SPI_GETSCREENREADER, 0, &screenReaderRunning, 0);
    SetInitialAccessibleMode(screenReaderRunning != FALSE);
+
+   // Load the saved menu-click sound so the correct waveform plays and the
+   // View > Click sound radio group reflects it below.
+   UiSound::InitClickStyle();
 
    RECT workArea;
    SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
@@ -353,11 +406,20 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
    // without tabbing through the whole grid.
    BuildOperationsMenu(hWnd);
 
-   // Reflect the active theme in the View > Theme radio group.
+   // Build the View > Click sound submenu from the sound table (must run
+   // before the radio check below so its items exist).
+   BuildClickSoundMenu(hWnd);
+
+   // Reflect the active theme and click sound in their View radio groups.
    if (HMENU bar = GetMenu(hWnd))
    {
        CheckMenuRadioItem(bar, IDM_THEME_GRAPHITE, IDM_THEME_APPLELIGHT,
                           IDM_THEME_GRAPHITE + static_cast<int>(CurrentThemeId()),
+                          MF_BYCOMMAND);
+       const int soundLast = IDM_SOUND_FIRST +
+           static_cast<int>(UiSound::ClickStyleTable().size()) - 1;
+       CheckMenuRadioItem(bar, IDM_SOUND_FIRST, soundLast,
+                          IDM_SOUND_FIRST + static_cast<int>(UiSound::GetClickStyle()),
                           MF_BYCOMMAND);
    }
 
@@ -398,6 +460,28 @@ static void ApplyThemeFromMenu(HWND hWnd, ThemeId id)
     WCHAR line[192];
     wsprintfW(line, L"\r\n>>> Theme: %s\r\n", ThemeName(id));
     AppendInfoText(hInfoEdit, line);
+}
+
+// Apply a menu-click sound chosen from View > Click sound: switch the active
+// waveform, persist it, update the radio check, note it in the log, and play
+// the newly-chosen sound once as immediate feedback. Skipped audibly under a
+// screen reader, where the synthesized click is redundant noise (matches the
+// button-press handler's guard).
+static void ApplyClickStyleFromMenu(HWND hWnd, UiSound::ClickStyle style)
+{
+    UiSound::SetClickStyle(style);
+    UiSound::SaveClickStyleToRegistry(style);
+    if (HMENU bar = GetMenu(hWnd))
+    {
+        const int soundLast = IDM_SOUND_FIRST +
+            static_cast<int>(UiSound::ClickStyleTable().size()) - 1;
+        CheckMenuRadioItem(bar, IDM_SOUND_FIRST, soundLast,
+                           IDM_SOUND_FIRST + static_cast<int>(style), MF_BYCOMMAND);
+    }
+    WCHAR line[128];
+    wsprintfW(line, L"\r\n>>> Click sound: %s\r\n", UiSound::ClickStyleLabel(style));
+    AppendInfoText(hInfoEdit, line);
+    if (!IsAccessibleMode()) UiSound::PlayMenuClickSound();
 }
 
 static void ResetThemeFromMenu(HWND hWnd)
@@ -503,6 +587,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_COMMAND:
         {
             int wmId = LOWORD(wParam);
+
+            // Click sound picks share a reserved contiguous command-id range
+            // (their submenu is built dynamically), so route them here rather
+            // than as fixed switch cases. Item id maps directly to ClickStyle.
+            const int soundCount = static_cast<int>(UiSound::ClickStyleTable().size());
+            if (wmId >= IDM_SOUND_FIRST && wmId < IDM_SOUND_FIRST + soundCount)
+            {
+                ApplyClickStyleFromMenu(hWnd,
+                    static_cast<UiSound::ClickStyle>(wmId - IDM_SOUND_FIRST));
+                return 0;
+            }
+
             // Parse the menu selections:
             switch (wmId)
             {

@@ -21,6 +21,13 @@
 #define IDM_THEME_APPLELIGHT	114
 // Not a theme pick and not part of the radio group -- clears the saved choice.
 #define IDM_THEME_RESET			115
+// Menu-click sound selector. A reserved contiguous command-id range: the
+// "Click sound" submenu is built dynamically from UiSound::ClickStyleTable()
+// (see OptiScan.cpp), and item i gets command id (IDM_SOUND_FIRST + i), which
+// also indexes ClickStyle. The whole range must sort outside the theme
+// CheckMenuRadioItem range (110-114) above. 24 slots reserved; 6 used today.
+#define IDM_SOUND_FIRST			116
+#define IDM_SOUND_LAST			139
 #define IDI_OPTISCAN   		107
 #define IDI_SMALL				108
 #define IDC_OPTISCAN   		109
