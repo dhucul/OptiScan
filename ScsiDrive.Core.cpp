@@ -122,6 +122,9 @@ bool ScsiDrive::Open(wchar_t driveLetter) {
 		m_lastReadSenseKey = 0;
 		m_lastReadASC = 0;
 		m_lastReadASCQ = 0;
+		m_lastSeekSenseKey = 0;
+		m_lastSeekASC = 0;
+		m_lastSeekASCQ = 0;
 		m_lowestHonoredSpeed = -1;       // Re-probe the speed floor per drive/media
 		m_c2Functional = true;
 	}

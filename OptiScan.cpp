@@ -736,13 +736,46 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                         // see the same TOC/pregap/CD-Text data.
                                         if (!freshlyScanned) {
                                             Console::Info("Running shared pre-scan for all batched ops...\n");
-                                            Prescan();
+                                            // Prescan() re-reads the TOC on the EXISTING handle, so
+                                            // it can't see past a stale one: a batch could never
+                                            // follow a disc moved to another drive, only fail on it.
+                                            // Do the same re-select + reopen a single-click
+                                            // asterisked op does — once, which still honours the
+                                            // advertised "1 prescan" while landing on the drive
+                                            // that actually holds the disc.
+                                            if (needsAudio) {
+                                                ReselectSourceDriveIfMultiple();
+                                                RefreshDisc();
+                                            } else {
+                                                Prescan();
+                                            }
+                                            if (g_interrupt.IsInterrupted()) {
+                                                Console::Warning("Batch cancelled by user.\n");
+                                                return;
+                                            }
+                                            // RefreshDisc closes before it reopens, so a failed
+                                            // reopen leaves no handle at all. Stop here rather than
+                                            // run every step against a closed drive.
+                                            if (!g_driveOpen) {
+                                                Console::Error("The drive could not be reopened — "
+                                                               "batch stopped.\n");
+                                                return;
+                                            }
                                         }
                                     }
 
+                                    // How the loop ended, so the closing line reports what actually
+                                    // happened. This used to print "Batch complete." unconditionally
+                                    // — including after a cancel or an abort, which read as success.
+                                    enum class BatchEnd { Completed, Cancelled, DiscGone };
+                                    BatchEnd batchEnd = BatchEnd::Completed;
+                                    size_t stepsRun = 0;
+
                                     for (size_t i = 0; i < choices.size(); i++) {
+                                        stepsRun = i;
                                         if (g_interrupt.IsInterrupted()) {
                                             Console::Warning("Batch cancelled by user.\n");
+                                            batchEnd = BatchEnd::Cancelled;
                                             break;
                                         }
                                         int choice = choices[i];
@@ -768,15 +801,48 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                                 RefreshDisc();
                                                 if (g_interrupt.IsInterrupted()) {
                                                     Console::Warning("Batch cancelled by user.\n");
+                                                    batchEnd = BatchEnd::Cancelled;
                                                     break;
                                                 }
+                                            }
+                                        }
+                                        // Every other step rides the single shared prescan, which
+                                        // re-reads the TOC on the EXISTING handle and so can never
+                                        // notice the disc leaving (or moving to another drive).
+                                        // Vendor scan commands answer GOOD on an empty tray, so a
+                                        // step would happily "scan" a drive holding nothing, using
+                                        // the departed disc's track layout. Confirm the medium is
+                                        // still there and stop the batch if it isn't.
+                                        else if (ButtonNeedsPrescan(choice - 1)) {
+                                            DriveHealthCheck media;
+                                            if (g_copier.GetDriveRef().GetMediaStatus(media) &&
+                                                !media.mediaPresent) {
+                                                Console::Error(
+                                                    "Disc is no longer in the drive this batch "
+                                                    "started on.\n");
+                                                Console::Info(
+                                                    "Run \"Rescan disc\", or start the batch again — "
+                                                    "it re-selects the drive holding the disc.\n");
+                                                batchEnd = BatchEnd::DiscGone;
+                                                break;
                                             }
                                         }
                                         DispatchMenuChoice(g_copier, g_disc, g_workDir,
                                                            g_audioDrive, g_hasTOC,
                                                            batchOpId);
                                     }
-                                    Console::Success("\nBatch complete.\n");
+                                    Console::Info("\n");
+                                    if (batchEnd == BatchEnd::Completed) {
+                                        Console::Success("Batch complete.\n");
+                                    } else {
+                                        std::string msg = std::to_string(stepsRun) + " of " +
+                                            std::to_string(choices.size()) +
+                                            " steps ran; the rest were skipped.\n";
+                                        if (batchEnd == BatchEnd::Cancelled)
+                                            Console::Warning(("Batch cancelled — " + msg).c_str());
+                                        else
+                                            Console::Error(("Batch stopped — " + msg).c_str());
+                                    }
                                 });
                             if (!started) {
                                 SetMenuButtonsEnabled(true);

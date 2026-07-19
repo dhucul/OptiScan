@@ -184,7 +184,14 @@ void Prescan() {
         g_copier.ReadISRC(g_disc);
         g_copier.ReadMCN(g_disc);
         g_hasTOC = true;
+        return;
     }
+    // The read failed, so whatever is cached describes a disc we can no longer
+    // see. Only writing on success left the PREVIOUS disc's TOC looking current
+    // — that is how a batch step ended up scanning a drive the disc had been
+    // taken out of, using track boundaries from the disc that was there before.
+    g_disc = DiscInfo{};
+    g_hasTOC = false;
 }
 
 // Full disc refresh: close and reopen the drive (which resets every cached

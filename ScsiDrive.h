@@ -71,6 +71,13 @@ private:
 	BYTE m_lastReadASC = 0;
 	BYTE m_lastReadASCQ = 0;
 
+	// Sense of the most recent SEEK(10) (see SeekToLBA). SeekToLBA returns a
+	// bare bool, so without this an empty tray (ASC 0x3A) is indistinguishable
+	// from a disc still spinning up (ASC 0x04). Reset on Open().
+	BYTE m_lastSeekSenseKey = 0;
+	BYTE m_lastSeekASC = 0;
+	BYTE m_lastSeekASCQ = 0;
+
 	// ── Cached capability probe results ─────────────────────
 	int m_qcheckProbed = -1;           // -1 = not probed, 0 = unsupported, 1 = supported
 	int m_liteonScanProbed = -1;       // -1 = not probed, 0 = unsupported, 1 = supported
@@ -288,6 +295,11 @@ public:
 		BYTE* senseKey, BYTE* asc, BYTE* ascq, bool dataIn = true,
 		DWORD timeoutSec = 60);
 	bool SeekToLBA(DWORD lba);
+	// True when the last SeekToLBA() failed because the tray holds no disc.
+	// Lets callers say "no disc" instead of the useless "could not seek".
+	bool LastSeekFoundNoMedium() const {
+		return m_lastSeekSenseKey == 0x02 && m_lastSeekASC == 0x3A;
+	}
 
 	// ── Read Error Recovery mode page (0x01) — EXPERIMENTAL ──
 	// MODE SENSE(10)/MODE SELECT(10) accessors for the drive's Read Error Recovery

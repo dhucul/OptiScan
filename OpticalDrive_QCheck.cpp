@@ -127,6 +127,27 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 	DriveDoorLockGuard doorLock(m_drive);
 	std::cout << "\n=== CD Hardware Quality Scan ===\n";
 
+	// ── Confirm there is actually a disc before choosing a backend ───
+	// The Pioneer vendor scan commands answer GOOD with an EMPTY tray —
+	// verified on a BDR-S13U: `3B 02 E1` (WRITE BUFFER, scan on) and
+	// `3C 02 E1` (READ BUFFER) both return status 0x00 with no media, so
+	// PioneerScanReadSlice cannot tell loaded from empty. The only step in
+	// that path that notices missing media is the SEEK, which fails far
+	// later with a bare "could not seek". Ask the drive up front instead, so
+	// a scan aimed at the wrong (or emptied) drive says so in plain words.
+	{
+		DriveHealthCheck media;
+		if (m_drive.GetMediaStatus(media) && !media.mediaPresent) {
+			std::cout << "ERROR: No disc in this drive"
+				<< (media.trayOpen ? " (tray is open)." : ".") << "\n";
+			std::cout << "       If you moved the disc to another drive, run "
+				"\"Rescan disc\" first —\n"
+				"       a batch run keeps using the drive it started on.\n";
+			result.supported = false;
+			return false;
+		}
+	}
+
 	// ── Probe drive for hardware quality scan support ────────
 	// Try Plextor Q-Check first (classic PX-708A through PX-760A drives),
 	// then Pioneer vendor scan (0x3B/0x3C), then fall back to the

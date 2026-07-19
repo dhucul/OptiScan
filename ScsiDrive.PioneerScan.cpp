@@ -184,7 +184,10 @@ bool ScsiDrive::SupportsPioneerScan() {
 	// BDR-S13U) actually answer the vendor scan command instead of returning
 	// CHECK CONDITION / zeroes.
 	if (!SeekToLBA(0)) {
-		std::cout << "  [PioneerScan] Could not seek to the scan start.\n" << std::flush;
+		if (LastSeekFoundNoMedium())
+			std::cout << "  [PioneerScan] No disc in this drive.\n" << std::flush;
+		else
+			std::cout << "  [PioneerScan] Could not seek to the scan start.\n" << std::flush;
 		// A missing/not-ready disc or transient seek failure says nothing about
 		// firmware support. Leave the probe uncached so a later ready session can
 		// retry instead of being permanently routed to the unreliable C2 path.
@@ -223,8 +226,19 @@ bool ScsiDrive::PioneerScanStart(DWORD startLBA, DWORD endLBA) {
 	// (cmd_cd_errc_init -> seek(dev, 0)).  Position the head and let the disc
 	// settle so the first slice returns real counters rather than zeroes.
 	if (!SeekToLBA(startLBA)) {
-		std::cout << "  [PioneerScan] Could not seek to LBA " << startLBA
-			<< "; scan not started.\n" << std::flush;
+		if (LastSeekFoundNoMedium()) {
+			// The vendor scan CDBs answer GOOD with an empty tray, so this seek
+			// is the first and only place a missing disc shows up. Say so.
+			std::cout << "  [PioneerScan] No disc in this drive; scan not started.\n"
+				<< std::flush;
+		}
+		else {
+			std::cout << "  [PioneerScan] Could not seek to LBA " << startLBA
+				<< " (SK=0x" << std::hex << static_cast<int>(m_lastSeekSenseKey)
+				<< " ASC=0x" << static_cast<int>(m_lastSeekASC)
+				<< " ASCQ=0x" << static_cast<int>(m_lastSeekASCQ) << std::dec
+				<< "); scan not started.\n" << std::flush;
+		}
 		return false;
 	}
 	std::this_thread::sleep_for(std::chrono::milliseconds(150));

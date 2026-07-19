@@ -893,7 +893,18 @@ bool ScsiDrive::SeekToLBA(DWORD lba) {
 	cdb[3] = (lba >> 16) & 0xFF;
 	cdb[4] = (lba >> 8) & 0xFF;
 	cdb[5] = lba & 0xFF;
-	return SendSCSI(cdb, 10, nullptr, 0, false);
+
+	// Capture sense rather than collapsing every failure to a bare false. A
+	// seek can fail because the tray is empty (ASC 0x3A), because the disc is
+	// still spinning up (ASC 0x04) or because the drive rejected the address —
+	// callers report "could not seek", which named none of them. The Pioneer
+	// scan path in particular relies on this seek as its ONLY media check,
+	// since the vendor scan CDBs return GOOD with no disc loaded.
+	m_lastSeekSenseKey = 0;
+	m_lastSeekASC = 0;
+	m_lastSeekASCQ = 0;
+	return SendSCSIWithSense(cdb, 10, nullptr, 0,
+		&m_lastSeekSenseKey, &m_lastSeekASC, &m_lastSeekASCQ, false);
 }
 
 // Q subchannel read with Expected Sector Type = 0 (any).  Requests only the
