@@ -4,6 +4,13 @@
 #include <fstream>
 #include <algorithm>
 
+namespace {
+bool HasConfirmedPioneerLoss(const ComprehensiveScanResult& result) {
+	return (result.bler.pioneerCdCheckRun && result.bler.pioneerCdCheckC2Bytes > 0)
+		|| (result.rot.pioneerCdCheckRun && result.rot.pioneerCdCheckC2Bytes > 0);
+}
+}
+
 // ============================================================================
 // Comprehensive Disc Quality Scan - Orchestrates All Quality Tests
 // ============================================================================
@@ -52,14 +59,19 @@ bool OpticalDrive::RunComprehensiveScan(DiscInfo& disc, ComprehensiveScanResult&
 
 	// Calculate overall score
 	result.overallScore = CalculateOverallScore(result);
-	
-	if (result.overallScore >= 90) result.overallRating = "A";
+
+	const bool confirmedLoss = HasConfirmedPioneerLoss(result);
+	if (result.bler.c2Unverified && !confirmedLoss)
+		result.overallRating = "INCOMPLETE";
+	else if (result.overallScore >= 90) result.overallRating = "A";
 	else if (result.overallScore >= 80) result.overallRating = "B";
 	else if (result.overallScore >= 70) result.overallRating = "C";
 	else if (result.overallScore >= 60) result.overallRating = "D";
 	else result.overallRating = "F";
 
 	result.summary = "Comprehensive scan complete. Overall score: " + std::to_string(result.overallScore) + "/100";
+	if (result.bler.c2Unverified && !confirmedLoss)
+		result.summary += " (incomplete: C2 was not verified)";
 
 	PrintComprehensiveReport(result);
 	return true;
@@ -83,6 +95,16 @@ int OpticalDrive::CalculateOverallScore(const ComprehensiveScanResult& result) {
 
 	score -= static_cast<int>(result.rot.inconsistencyRate * 2);
 
+	// Risk-level and Pioneer CD Check outcomes are final-state evidence, not
+	// cosmetic report strings. Apply caps so confirmed data loss or a high rot
+	// verdict cannot coexist with a high overall score.
+	if (result.rot.rotRiskLevel == "CRITICAL") score = std::min(score, 20);
+	else if (result.rot.rotRiskLevel == "HIGH") score = std::min(score, 40);
+	else if (result.rot.rotRiskLevel == "MODERATE") score = std::min(score, 65);
+
+	if (HasConfirmedPioneerLoss(result))
+		score = std::min(score, 35);
+
 	// Speed stability (up to -10 points)
 	int speedInconsistent = 0;
 	for (const auto& r : result.speedComparison) {
@@ -103,6 +125,12 @@ int OpticalDrive::CalculateOverallScore(const ComprehensiveScanResult& result) {
 		score -= static_cast<int>(failRate / 20);
 	}
 
+	// An unverified C2 channel is an incomplete assessment. Keep the numeric
+	// score for relative context, but prevent it from reaching A/B territory;
+	// RunComprehensiveScan labels the grade INCOMPLETE rather than implying C.
+	if (result.bler.c2Unverified && !HasConfirmedPioneerLoss(result))
+		score = std::min(score, 79);
+
 	return std::max(0, std::min(100, score));
 }
 
@@ -118,11 +146,30 @@ void OpticalDrive::PrintComprehensiveReport(const ComprehensiveScanResult& resul
 	// BLER Summary
 	std::cout << "\n--- BLER Quality ---\n";
 	std::cout << "  Rating:           " << result.bler.qualityRating << "\n";
-	std::cout << "  Total C2 errors:  " << result.bler.totalC2Errors << "\n";
-	std::cout << "  C2 sectors:       " << result.bler.totalC2Sectors << "\n";
+	if (result.bler.c2Unverified) {
+		std::cout << "  C2 measurement:   NOT VERIFIED / NOT MEASURED\n";
+		std::cout << "  Total C2 errors:  N/A\n";
+		std::cout << "  C2 sectors:       N/A\n";
+		std::cout << "  Avg C2/sec:       N/A\n";
+	}
+	else {
+		std::cout << "  C2 measurement:   MEASURED\n";
+		std::cout << "  Total C2 errors:  " << result.bler.totalC2Errors << "\n";
+		std::cout << "  C2 sectors:       " << result.bler.totalC2Sectors << "\n";
+		std::cout << "  Avg C2/sec:       " << std::fixed << std::setprecision(2)
+			<< result.bler.avgC2PerSecond << "\n";
+	}
 	std::cout << "  Read failures:    " << result.bler.totalReadFailures << "\n";
-	std::cout << "  Avg C2/sec:       " << std::fixed << std::setprecision(2) 
-		<< result.bler.avgC2PerSecond << "\n";
+	if (result.bler.pioneerVendorQuality) {
+		std::cout << "  Pioneer E22:      " << result.bler.pioneerE22Total << " total, "
+			<< std::fixed << std::setprecision(2) << result.bler.pioneerE22AvgPerSecond
+			<< "/sec avg, " << result.bler.pioneerE22Peak << "/sec peak (diagnostic)\n";
+		std::cout << "  Uncorrectable:    ";
+		if (!result.bler.pioneerCdCheckRun) std::cout << "NOT MEASURED\n";
+		else if (result.bler.pioneerCdCheckC2Bytes > 0)
+			std::cout << "YES - DATA LOSS (" << result.bler.pioneerCdCheckC2Bytes << " bytes)\n";
+		else std::cout << "NO - completed Pioneer CD Check\n";
+	}
 
 	// Disc Rot Summary
 	std::cout << "\n--- Disc Rot Analysis ---\n";
@@ -132,6 +179,14 @@ void OpticalDrive::PrintComprehensiveReport(const ComprehensiveScanResult& resul
 	std::cout << "  Instability:       " << (result.rot.readInstability ? "YES" : "NO") 
 		<< " (" << std::fixed << std::setprecision(1) << result.rot.inconsistencyRate << "%)\n";
 	std::cout << "  Error clusters:    " << result.rot.clusters.size() << "\n";
+	if (result.rot.pioneerQualityScanRun) {
+		std::cout << "  Pioneer E22:       " << result.rot.pioneerE22Total << " total, "
+			<< result.rot.pioneerE22Peak << "/sec peak (diagnostic)\n";
+		std::cout << "  CU cross-check:    "
+			<< (result.rot.pioneerCdCheckRun ?
+				(result.rot.pioneerCdCheckC2Bytes > 0 ? "DATA LOSS CONFIRMED" : "measured clean")
+				: "NOT MEASURED") << "\n";
+	}
 
 	// Speed Comparison Summary
 	std::cout << "\n--- Speed Stability ---\n";
@@ -179,7 +234,15 @@ void OpticalDrive::PrintComprehensiveReport(const ComprehensiveScanResult& resul
 
 	// Final Recommendation
 	std::cout << "\n--- Recommendation ---\n";
-	if (result.overallScore >= 90) {
+	if (HasConfirmedPioneerLoss(result)) {
+		std::cout << "  Pioneer CD Check confirmed uncorrectable data loss.\n";
+		std::cout << "  Use Paranoid rip mode and verify the rip independently.\n";
+	}
+	else if (result.bler.c2Unverified) {
+		std::cout << "  Assessment is INCOMPLETE because verified C2 data was unavailable.\n";
+		std::cout << "  Do not interpret the zero C2 fields as a clean disc; verify the rip independently.\n";
+	}
+	else if (result.overallScore >= 90) {
 		std::cout << "  Disc is in EXCELLENT condition.\n";
 		std::cout << "  Any rip mode will produce perfect results.\n";
 	}
@@ -223,10 +286,28 @@ bool OpticalDrive::SaveComprehensiveReport(const ComprehensiveScanResult& result
 	file << "BLER Quality\n";
 	file << "------------\n";
 	file << "Rating:          " << result.bler.qualityRating << "\n";
-	file << "Total C2 errors: " << result.bler.totalC2Errors << "\n";
-	file << "C2 sectors:      " << result.bler.totalC2Sectors << "\n";
+	file << "C2 measurement:  " << (result.bler.c2Unverified ? "NOT VERIFIED / NOT MEASURED" : "MEASURED") << "\n";
+	file << "Total C2 errors: ";
+	if (result.bler.c2Unverified) file << "N/A\n";
+	else file << result.bler.totalC2Errors << "\n";
+	file << "C2 sectors:      ";
+	if (result.bler.c2Unverified) file << "N/A\n";
+	else file << result.bler.totalC2Sectors << "\n";
 	file << "Read failures:   " << result.bler.totalReadFailures << "\n";
-	file << "Avg C2/sec:      " << result.bler.avgC2PerSecond << "\n\n";
+	file << "Avg C2/sec:      ";
+	if (result.bler.c2Unverified) file << "N/A\n";
+	else file << result.bler.avgC2PerSecond << "\n";
+	if (result.bler.pioneerVendorQuality) {
+		file << "Pioneer E22:     " << result.bler.pioneerE22Total << " total, "
+			<< result.bler.pioneerE22AvgPerSecond << "/sec avg, "
+			<< result.bler.pioneerE22Peak << "/sec peak (diagnostic only)\n";
+		file << "Uncorrectable:   ";
+		if (!result.bler.pioneerCdCheckRun) file << "NOT MEASURED\n";
+		else if (result.bler.pioneerCdCheckC2Bytes > 0)
+			file << "YES - DATA LOSS (" << result.bler.pioneerCdCheckC2Bytes << " bytes)\n";
+		else file << "NO - completed Pioneer CD Check\n";
+	}
+	file << "\n";
 
 	file << "Disc Rot Analysis\n";
 	file << "-----------------\n";
@@ -236,6 +317,15 @@ bool OpticalDrive::SaveComprehensiveReport(const ComprehensiveScanResult& result
 	file << "Instability:     " << (result.rot.readInstability ? "YES" : "NO") 
 		<< " (" << result.rot.inconsistencyRate << "%)\n";
 	file << "Error clusters:  " << result.rot.clusters.size() << "\n\n";
+	if (result.rot.pioneerQualityScanRun) {
+		file << "Pioneer E22:     " << result.rot.pioneerE22Total << " total, "
+			<< result.rot.pioneerE22AvgPerSecond << "/sec avg, "
+			<< result.rot.pioneerE22Peak << "/sec peak (diagnostic only)\n";
+		file << "CU cross-check:  "
+			<< (result.rot.pioneerCdCheckRun ?
+				(result.rot.pioneerCdCheckC2Bytes > 0 ? "DATA LOSS CONFIRMED" : "measured clean")
+				: "NOT MEASURED") << "\n\n";
+	}
 
 	file << "Audio Content\n";
 	file << "-------------\n";
@@ -246,6 +336,10 @@ bool OpticalDrive::SaveComprehensiveReport(const ComprehensiveScanResult& result
 
 	file << "Recommendation\n";
 	file << "--------------\n";
+	if (HasConfirmedPioneerLoss(result))
+		file << "Pioneer CD Check confirmed uncorrectable data loss. Use Paranoid rip mode and verify independently.\n";
+	else if (result.bler.c2Unverified)
+		file << "Assessment is INCOMPLETE: verified C2 data was unavailable. Zero C2 fields are not a clean result.\n";
 	if (!result.rot.recommendation.empty()) {
 		file << result.rot.recommendation << "\n";
 	}

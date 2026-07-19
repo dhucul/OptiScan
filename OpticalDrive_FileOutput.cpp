@@ -191,7 +191,19 @@ bool OpticalDrive::SaveBlerLog(const BlerResult& result, const std::wstring& fil
 	log << "# BLER Quality Scan Log\n";
 	log << "# ==============================\n";
 	log << "#\n";
-	log << "# Quality Rating:        " << result.qualityRating << "\n";
+	log << "# Quality Rating:        ";
+	if (result.c2Unverified && !result.hasC1Data)
+		log << "INCOMPLETE (no trustworthy C2 measurement)";
+	else {
+		log << result.qualityRating;
+		if (result.c2Unverified)
+			log << " (C1 quality only; C2 is not verified)";
+	}
+	log << "\n";
+	log << "# Measurement Method:    "
+		<< (result.measurementMethod.empty() ? "unspecified" : result.measurementMethod) << "\n";
+	log << "# C2 Measurement:        "
+		<< (result.c2Unverified ? "NOT VERIFIED / NOT MEASURED" : "MEASURED") << "\n";
 	log << "# Total Sectors:         " << result.totalSectors << "\n";
 	log << "# Disc Length:           "
 		<< (result.totalSeconds / 60) << ":"
@@ -199,28 +211,68 @@ bool OpticalDrive::SaveBlerLog(const BlerResult& result, const std::wstring& fil
 		<< std::setfill(' ') << " (mm:ss)\n";
 	log << "#\n";
 	log << "# --- Error Statistics ---\n";
-	log << "# Total C2 Errors:       " << result.totalC2Errors << " bits\n";
-	log << "# Sectors with C2:       " << result.totalC2Sectors;
-	if (result.totalSectors > 0)
-		log << " (" << std::fixed << std::setprecision(3)
-		<< (result.totalC2Sectors * 100.0 / result.totalSectors) << "%)";
-	log << "\n";
+	if (result.hasC1Data) {
+		log << "# Total C1 Errors:       " << result.totalC1Errors << "\n";
+		log << "# Avg C1/sec:            " << std::fixed << std::setprecision(2)
+			<< result.avgC1PerSecond << "\n";
+		log << "# Max C1/sec:            " << result.maxC1PerSecond << "\n";
+	}
+	if (result.c2Unverified) {
+		log << "# Total C2 Errors:       N/A (not measured)\n";
+		log << "# Sectors with C2:       N/A (not measured)\n";
+		log << "# Avg C2/sec:            N/A (not measured)\n";
+		log << "# Max C2/sec:            N/A (not measured)\n";
+		log << "# Max C2 in One Sector:  N/A (not measured)\n";
+		log << "# Longest Error Run:     N/A (not measured)\n";
+	}
+	else {
+		log << "# Total C2 Errors:       " << result.totalC2Errors << " bits\n";
+		log << "# Sectors with C2:       " << result.totalC2Sectors;
+		if (result.totalSectors > 0)
+			log << " (" << std::fixed << std::setprecision(3)
+			<< (result.totalC2Sectors * 100.0 / result.totalSectors) << "%)";
+		log << "\n";
+		log << "# Avg C2/sec:            " << std::fixed << std::setprecision(2)
+			<< result.avgC2PerSecond << "\n";
+		log << "# Max C2/sec:            " << result.maxC2PerSecond << "\n";
+		log << "# Max C2 in One Sector:  " << result.maxC2InSingleSector;
+		if (result.maxC2InSingleSector > 0) log << " (LBA " << result.worstSectorLBA << ")";
+		log << "\n";
+		log << "# Longest Error Run:     " << result.consecutiveErrorSectors << " sectors\n";
+	}
 	log << "# Read Failures:         " << result.totalReadFailures << "\n";
-	log << "# Avg C2/sec:            " << std::fixed << std::setprecision(2)
-		<< result.avgC2PerSecond << "\n";
-	log << "# Max C2/sec:            " << result.maxC2PerSecond << "\n";
-	log << "# Max C2 in One Sector:  " << result.maxC2InSingleSector;
-	if (result.maxC2InSingleSector > 0) log << " (LBA " << result.worstSectorLBA << ")";
-	log << "\n";
-	log << "# Longest Error Run:     " << result.consecutiveErrorSectors << " sectors\n";
+	if (result.pioneerVendorQuality) {
+		log << "# Pioneer E22 Total:     " << result.pioneerE22Total << " (diagnostic; not C2)\n";
+		log << "# Pioneer E22 Avg/sec:   " << std::fixed << std::setprecision(2)
+			<< result.pioneerE22AvgPerSecond << "\n";
+		log << "# Pioneer E22 Peak/sec:  " << result.pioneerE22Peak << "\n";
+		log << "# Pioneer E22 Rating:    " << result.pioneerE22Rating << "\n";
+		if (result.pioneerCdCheckRun) {
+			log << "# Uncorrectable CD Check: "
+				<< (result.pioneerCdCheckC2Bytes > 0 ? "YES - DATA LOSS" : "NO")
+				<< " (C1 uncorr=" << result.pioneerCdCheckC1Frames
+				<< " frames, C2 uncorr=" << result.pioneerCdCheckC2Bytes
+				<< " bytes, worst window)\n";
+		}
+		else {
+			log << "# Uncorrectable CD Check: NOT MEASURED\n";
+		}
+	}
 	log << "#\n";
 	log << "# --- Red Book Compliance ---\n";
-	log << "# Avg C2/sec Pass:       " << (result.avgC2PerSecond < 220.0 ? "PASS" : "FAIL")
-		<< " (limit: 220/sec)\n";
+	if (result.c2Unverified)
+		log << "# C2 Result:             N/A - no verified C2 measurement\n";
+	else
+		log << "# C2 Result:             "
+			<< ((result.totalC2Errors == 0 && result.totalReadFailures == 0) ? "PASS" : "FAIL") << "\n";
 	log << "#\n";
 
 	// --- Zone stats ---
 	log << "# --- Zone Error Rates ---\n";
+	if (result.c2Unverified) {
+		log << "# N/A - verified C2 zone data was not measured.\n#\n";
+	}
+	else {
 	log << "# Inner  (0-33%%):       " << std::fixed << std::setprecision(2)
 		<< result.zoneStats.InnerErrorRate() << "% ("
 		<< result.zoneStats.innerErrors << "/" << result.zoneStats.innerSectors << ")\n";
@@ -231,6 +283,7 @@ bool OpticalDrive::SaveBlerLog(const BlerResult& result, const std::wstring& fil
 		<< result.zoneStats.OuterErrorRate() << "% ("
 		<< result.zoneStats.outerErrors << "/" << result.zoneStats.outerSectors << ")\n";
 	log << "#\n";
+	}
 
 	// --- Error clusters ---
 	if (!result.errorClusters.empty()) {
@@ -248,11 +301,37 @@ bool OpticalDrive::SaveBlerLog(const BlerResult& result, const std::wstring& fil
 		log << "#\n";
 	}
 
-	// --- Per-second CSV data (only problem seconds) ---
+	// --- Per-second CSV data ---
 	log << "# ==============================\n";
-	log << "# Per-Second C2 Error Data\n";
+	log << (result.c2Unverified ? "# Per-Second Measured Quality Data\n" : "# Per-Second C2 Error Data\n");
+	log << "# ==============================\n";
+	if (result.c2Unverified) {
+		if (result.pioneerVendorQuality) {
+			log << "Time,Second,LBA,C1,PioneerE22\n";
+			size_t count = std::max(result.perSecondC1.size(), result.perSecondPioneerE22.size());
+			for (size_t i = 0; i < count; i++) {
+				DWORD lba = i < result.perSecondC1.size() ? result.perSecondC1[i].first
+					: result.perSecondPioneerE22[i].first;
+				int c1 = i < result.perSecondC1.size() ? result.perSecondC1[i].second : 0;
+				int e22 = i < result.perSecondPioneerE22.size() ? result.perSecondPioneerE22[i].second : 0;
+				log << (i / 60) << ":" << std::setfill('0') << std::setw(2) << (i % 60)
+					<< std::setfill(' ') << "," << i << "," << lba << "," << c1 << "," << e22 << "\n";
+			}
+		}
+		else if (!result.perSecondC1.empty()) {
+			log << "Time,Second,LBA,C1\n";
+			for (size_t i = 0; i < result.perSecondC1.size(); i++)
+				log << (i / 60) << ":" << std::setfill('0') << std::setw(2) << (i % 60)
+					<< std::setfill(' ') << "," << i << "," << result.perSecondC1[i].first
+					<< "," << result.perSecondC1[i].second << "\n";
+		}
+		else {
+			log << "# No verified per-second C2 data is available.\n";
+		}
+		log.flush();
+		return log.good();
+	}
 	log << "# (only seconds with non-zero errors)\n";
-	log << "# ==============================\n";
 
 	// Count how many seconds have errors
 	bool hasErrors = false;

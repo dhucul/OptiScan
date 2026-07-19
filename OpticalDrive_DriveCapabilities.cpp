@@ -291,7 +291,10 @@ void OpticalDrive::PrintDriveCapabilities(const DriveCapabilities& caps) {
 				if (ok && note && *note) std::cout << "  -- " << note;
 				std::cout << "\n";
 			};
-			row("C1/C2/CU quality scan (opt 6)", method != nullptr, method ? method : "");
+			const char* qualityNote = pioneer
+				? "Pioneer 0x3B/0x3C (C1/E22; verified C2/CU not measured)"
+				: (method ? method : "");
+			row("Hardware quality scan (opt 6)", method != nullptr, qualityNote);
 			row("Jitter / beta scan (opt 30)", jitter, "LiteOn 0xDF/0x1B");
 			row("Focus/tracking-error scan (opt 32)", fete, "LiteOn 0xDF/0x08, experimental");
 			if (!method)
@@ -568,7 +571,8 @@ void OpticalDrive::PrintChipsetInfo(const ChipsetInfo& info) {
 	}
 	case ChipsetFamily::Pioneer:
 		Console::Success("  Very good chipset for audio extraction.\n");
-		std::cout << "  Pioneer drives are known for reliable Accurate Stream and C2.\n";
+		std::cout << "  Pioneer drives support Accurate Stream; C2 reporting behavior is model-\n"
+			<< "  and firmware-dependent and is kept separate from vendor E22 diagnostics.\n";
 		if (m_drive.SupportsPioneerScan()) {
 			std::cout << "  Supports hardware BLER/E22 scanning (0x3B/0x3C vendor commands).\n";
 		}

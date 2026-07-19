@@ -107,10 +107,11 @@ void PrintHelpMenu() {
 	// ═════════════════════════════════════════════════════════════════════
 	PrintSection("Disc Quality");
 
-	PrintEntry({ "6. Quality Scan (C1/C2/CU Graphs)",
-		"Performs a hardware-driven CIRC error measurement: the drive enters a\n"
-		"   dedicated scan mode and reports C1, C2, and CU (uncorrectable) error\n"
-		"   counts per time slice without transferring audio data. This is the\n"
+	PrintEntry({ "6. Quality Scan (Hardware Error Graphs)",
+		"Performs a hardware-driven CIRC quality measurement: the drive enters a\n"
+		"   dedicated scan mode and reports backend-specific counters per time\n"
+		"   slice without transferring audio data. Plextor/LiteOn report C1, C2,\n"
+		"   and CU; Pioneer reports C1/BLER plus diagnostic E22. This is the\n"
 		"   same measurement QPXTool's Q-Check performs, and provides true C1\n"
 		"   error rates the standard BLER scan cannot measure.\n"
 		"\n"
@@ -118,13 +119,13 @@ void PrintHelpMenu() {
 		"     - Plextor Q-Check (0xE9/0xEB): classic Plextor drives -\n"
 		"         PX-708A, PX-712A/SA, PX-716A/SA/AL, PX-755A/SA, PX-760A/SA\n"
 		"     - Pioneer vendor scan (0x3B/0x3C): Pioneer BDR-* burners\n"
-		"         (e.g. BDR-S13U). On these drives the second-level counter is\n"
-		"         reported as C2, matching how QPXTool presents it.\n"
+		"         (e.g. BDR-S13U). E22 is diagnostic-only; verified C2/E32 and\n"
+		"         CU require CD Check support or independent rip verification.\n"
 		"     - LiteOn/MediaTek (0xDF): LiteOn and rebadged MediaTek drives\n"
 		"\n"
 		"   Newer Plextor/Lite-On drives (PX-891SAF, etc.) support D8 reads but\n"
 		"   not Q-Check; use option 8 (BLER Scan) on those instead.",
-		"True C1/C2/CU error rate measurement on Plextor, Pioneer, or LiteOn drives." });
+		"Hardware quality measurement with backend-accurate counter semantics." });
 
 	PrintEntry({ "7. C2 Error Scan",
 		"Performs a disc quality scan using the drive's C2 error reporting capability.\n"

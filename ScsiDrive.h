@@ -194,13 +194,14 @@ public:
 
 	// ── Pioneer quality scan (0x3B/0x3C vendor commands) ─────
 	// Uses Pioneer's two-phase WRITE/READ BUFFER protocol to perform
-	// hardware-driven BLER/E22 error scanning.  The drive scans internally
-	// and reports C1 (BLER) and C2 (E22) error counts per time slice.
+	// hardware-driven BLER/E22 error scanning. The drive scans internally and
+	// reports C1 (BLER) plus a raw E22 diagnostic count per time slice. E22 is
+	// not exposed as verified C2/E32 or CU.
 	//   Send scan request: CDB 3B 02 E1 (WRITE BUFFER)
 	//   Read scan results: CDB 3C 02 E1 (READ BUFFER)
 	bool SupportsPioneerScan();
 	bool PioneerScanStart(DWORD startLBA, DWORD endLBA);
-	bool PioneerScanPoll(int& c1, int& c2, int& cu, DWORD& currentLBA, bool& scanDone);
+	bool PioneerScanPoll(int& c1, int& e22, int& cu, DWORD& currentLBA, bool& scanDone);
 	bool PioneerScanStop();
 
 	// ── Drive capabilities ───────────────────────────────────────
@@ -362,10 +363,10 @@ private:
 	// Issues one Pioneer WRITE BUFFER (0x3B) scan request for [lba, lba+count)
 	// followed immediately by a READ BUFFER (0x3C) to retrieve the result —
 	// QPxTool's cmd_cd_errc_read + cmd_cd_errc_getdata performed back-to-back.
-	// On success fills c1 (BLER) and c2 (E22) with the parsed counters, already
+	// On success fills c1 (BLER) and e22 with the parsed counters, already
 	// passed through the >300 firmware-garbage guard. Shared by the probe and
 	// the per-slice poll. Returns false if either transport hard-fails.
-	bool PioneerScanReadSlice(DWORD lba, DWORD count, int& c1, int& c2);
+	bool PioneerScanReadSlice(DWORD lba, DWORD count, int& c1, int& e22);
 
 	bool ReadSectorQRaw(DWORD lba, int& qTrack, int& qIndex);
 	bool ParseRawSubchannel(const BYTE* sub, int& qTrack, int& qIndex);

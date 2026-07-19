@@ -29,7 +29,7 @@ namespace {
 }
 
 void OpticalDrive::PrintBlerGraph(const BlerResult& result, int width, int height) {
-	if (result.perSecondC2.empty() || width <= 0 || height <= 0) return;
+	if (width <= 0 || height <= 0) return;
 
 	// ── C1 Error Distribution ────────────────────────────────────────
 	if (result.hasC1Data && !result.perSecondC1.empty()) {
@@ -62,6 +62,17 @@ void OpticalDrive::PrintBlerGraph(const BlerResult& result, int width, int heigh
 	}
 
 	// ── C2 Error Distribution ────────────────────────────────────────
+	if (result.c2Unverified) {
+		Console::SetColorRGB(Console::Theme::YellowR,
+			Console::Theme::YellowG, Console::Theme::YellowB);
+		std::cout << "\n  C2 graph omitted: C2 was not verified/measured.\n";
+		Console::Reset();
+		return;
+	}
+	if (result.perSecondC2.empty()) {
+		std::cout << "\n  C2 graph unavailable: no per-second C2 series was recorded.\n";
+		return;
+	}
 	if (result.totalC2Errors == 0 && result.totalReadFailures == 0) {
 		Console::SetColorRGB(Console::Theme::WhiteR,
 			Console::Theme::WhiteG, Console::Theme::WhiteB);
@@ -81,7 +92,12 @@ void OpticalDrive::PrintBlerGraph(const BlerResult& result, int width, int heigh
 		opts.subtitle = "Peak C2 errors per second across the disc";
 		opts.width = width;
 		opts.height = height;
-		opts.unitSuffix = "";
+		opts.unitSuffix = "/sec";
+		opts.severityLowThreshold = 5;
+		opts.severityHighThreshold = 20;
+		opts.severityLowLabel = "1-4/sec low";
+		opts.severityModerateLabel = "5-19/sec moderate";
+		opts.severityHighLabel = "20+/sec high";
 
 		auto buckets = ToBuckets(result.perSecondC2, width);
 		Console::DrawBarGraph(buckets, peakC2, opts, result.totalSeconds);

@@ -53,7 +53,7 @@ The original command-line workflow has been ported to a native Win32 GUI: every 
 - **Configurable write speed** with drive speed selection
 
 ### Disc Quality
-- **Quality scan (C1/C2/CU)** — hardware-driven Plextor Q-Check or LiteOn/MediaTek quality scan with per-second C1/C2/CU graphs
+- **Hardware quality scan** — Plextor Q-Check, Pioneer, or LiteOn/MediaTek scanning with backend-accurate graphs (Pioneer reports C1/BLER plus diagnostic E22, not verified C2/CU)
 - **C2 error scan** — quick pass/fail quality check
 - **BLER scan** — detailed per-second error rate with Red Book compliance check
 - **Disc rot detection** — two-phase spatial degradation pattern analysis
@@ -103,7 +103,7 @@ The table below lists every operation with the number shown on its card. That nu
 | 3 | Rip & Copy | Write disc (.bin/.cue/.sub files) |
 | 4 | Rip & Copy | Write tracks to disc using current disc's pregaps |
 | 5 | Rip & Copy | Recovery rip (drive-independent) |
-| 6 | Disc Quality | Quality scan (C1/C2/CU graphs) — *hero card on Overview* |
+| 6 | Disc Quality | Quality scan (hardware error graphs) — *hero card on Overview* |
 | 7 | Disc Quality | C2 error scan |
 | 8 | Disc Quality | BLER scan (detailed) |
 | 9 | Disc Quality | Disc rot detection |
@@ -235,24 +235,25 @@ The recovery rip is a separate read engine from the secure rip. Where secure rip
 
 OptiScan offers multiple quality scans. Each answers a different question about a disc.
 
-### Quality Scan — C1/C2/CU (Hardware-Driven)
+### Quality Scan — Hardware-Driven
 
-**Question answered:** *"What are the actual CIRC decoder error rates across the entire disc?"*
+**Question answered:** *"What quality counters does this drive's hardware report across the disc?"*
 
-This scan uses **vendor-specific hardware commands** to put the drive into a dedicated error-measurement mode. The drive spins at its internal scan speed and reports aggregate CIRC decoder statistics (C1 block errors, C2 block errors, and CU uncorrectable errors) per time slice — **no audio data is transferred**. This is the same measurement performed by QPXTool and PlexTools Professional.
+This scan uses **vendor-specific hardware commands** to put the drive into a dedicated error-measurement mode — **no audio data is transferred**. Plextor and LiteOn backends report C1/C2/CU statistics. Pioneer reports C1/BLER plus its raw E22 diagnostic counter; E22 is not treated as verified C2/E32 or CU, and cannot by itself establish copy integrity.
 
-Two command sets are supported:
+Three command sets are supported:
 
 | Drive type | Command set | Detection |
 |---|---|---|
 | **Classic Plextor** (PX-708A, PX-712A/SA, PX-716A/SA/AL, PX-755A/SA, PX-760A/SA) | Q-Check vendor commands `0xE9` (start) / `0xEB` (poll) | Auto-probed at startup |
+| **Pioneer** (DVR/BDR families, including BDR-S13U where firmware permits) | Vendor `WRITE/READ BUFFER` `0x3B/0x3C`, reporting BLER plus diagnostic E22; CU/E32 requires separate CD Check support | Auto-probed after Plextor Q-Check |
 | **LiteOn / MediaTek-based** (LiteOn, ASUS, some Plextor OEM) | LiteOn vendor commands `0xF3` (new) or `0xDF` (old) | Auto-probed if Q-Check is unavailable |
 
-If neither command set is supported by the drive, the scan reports the incompatibility and suggests using the BLER scan (option 8) instead.
+If none of these command sets is supported by the drive, the scan reports the incompatibility and suggests using the BLER scan (option 8) instead.
 
-**Output:** Per-second C1/C2/CU time-series data, aggregate statistics (total, average, peak), quality rating, and a CSV log (`qcheck_scan.csv`) for graphing.
+**Output:** Per-second backend-specific time-series data, aggregate statistics (total, average, peak), quality rating, and a CSV log (`qcheck_scan.csv`) for graphing. Pioneer CSV rows contain only measured C1 and diagnostic E22 columns; unmeasured C2/E32 and CU fields are omitted rather than serialized as clean zeroes.
 
-**When to use:** The most accurate quality assessment available — measures the drive's actual error-correction workload rather than relying on host-side C2 pointer interpretation.
+**When to use:** For drive-reported quality trends without relying on host-side C2 pointer interpretation. Plextor/LiteOn provide the fullest C1/C2/CU assessment; Pioneer C1/E22 remains diagnostic and should be paired with secure extraction/AccurateRip for a copy decision.
 
 ---
 
@@ -1084,6 +1085,6 @@ This project is provided as-is for personal and educational use.
 
 - **[dBpoweramp](https://www.dbpoweramp.com/)** by Illustrate — created the AccurateRip system and popularized the concept of verifying CD rips against a shared online database of checksums. dBpoweramp's approach to automatic drive offset detection, C2 error reporting, and its emphasis on making verified ripping accessible to a broad audience established industry-wide expectations for audio CD extraction software.
 
-- **[QPXTool](https://qpxtool.sourceforge.io/)** — open-source CD/DVD quality scanning tool that documents the Plextor Q-Check (0xE9/0xEB) and LiteOn/MediaTek (0xDF) vendor command sets used for hardware-driven C1/C2/CU error measurement. OptiScan's quality scan implementation draws from QPXTool's reverse-engineering of these vendor-specific commands.
+- **[QPXTool](https://qpxtool.sourceforge.io/)** — open-source CD/DVD quality scanning tool that documents the Plextor Q-Check (0xE9/0xEB), Pioneer WRITE/READ BUFFER (0x3B/0x3C), and LiteOn/MediaTek (0xDF) vendor command sets used for hardware-driven quality measurement. OptiScan's quality scan implementation draws from QPXTool's reverse-engineering of these vendor-specific commands.
 
 EAC and dBpoweramp together defined the modern standard for verifiable, bit-perfect audio CD extraction. OptiScan builds on the methodology and concepts they established.

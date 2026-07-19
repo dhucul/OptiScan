@@ -92,7 +92,7 @@ extern const LPCWSTR CommandLabels[COMMAND_BUTTON_COUNT] =
     L"3. Write disc (.bin/.cue/.sub files) *",
     L"4. Write tracks to disc using current disc's pregaps *",
     L"5. Recovery rip (drive-independent) *",
-    L"6. Quality scan (C1/C2/CU graphs) *",
+	L"6. Quality scan (hardware error graphs) *",
     L"7. C2 error scan *",
     L"8. BLER scan (detailed) *",
     L"9. Disc rot detection *",

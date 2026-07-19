@@ -16,7 +16,7 @@
 //       plain (lba+0x6000) big-endian 24-bit field reproduces it exactly.
 //
 // Returned results (32 bytes read via READ BUFFER):
-//   rd_buf + 5:   E22 / C2 error count (big-endian 16-bit)
+//   rd_buf + 5:   E22 diagnostic count (big-endian 16-bit)
 //   rd_buf + 13:  BLER / C1 error count (big-endian 16-bit)
 //
 // CRITICAL SEQUENCING (this is what makes it work on strict drives such as the
@@ -101,11 +101,11 @@ static DWORD PioneerSliceCount(DWORD lba, DWORD endLBA) {
 // Issue one WRITE BUFFER (0x3B) requesting a scan of [lba, lba+count) and then
 // one READ BUFFER (0x3C) to retrieve the result.  This is QPxTool's
 // cmd_cd_errc_read + cmd_cd_errc_getdata, performed back-to-back.  Returns
-// true if both transports succeeded; fills c1/c2 with the parsed counters
+// true if both transports succeeded; fills c1/e22 with the parsed counters
 // (already passed through the >300 firmware-garbage guard).
-bool ScsiDrive::PioneerScanReadSlice(DWORD lba, DWORD count, int& c1, int& c2) {
+bool ScsiDrive::PioneerScanReadSlice(DWORD lba, DWORD count, int& c1, int& e22) {
 	c1 = 0;
-	c2 = 0;
+	e22 = 0;
 
 	// Phase 1: WRITE BUFFER — request a scan of this slice.
 	BYTE writeCdb[10] = {};
@@ -117,7 +117,10 @@ bool ScsiDrive::PioneerScanReadSlice(DWORD lba, DWORD count, int& c1, int& c2) {
 	BYTE sk = 0, asc = 0, ascq = 0;
 	bool ok = SendSCSIWithSense(writeCdb, 10, payload, PIONEER_SCAN_BUFFER_SIZE,
 		&sk, &asc, &ascq, /*dataIn=*/false);
-	if (!ok && sk > 0x01)
+	// SendSCSIWithSense already treats NO SENSE / RECOVERED ERROR as success.
+	// Any false return is therefore a real transport or command failure.  Do
+	// not accept an empty sense buffer (SK=0) as a clean, all-zero sample.
+	if (!ok)
 		return false;
 
 	// Phase 2: READ BUFFER — retrieve the result of the scan just requested.
@@ -128,24 +131,25 @@ bool ScsiDrive::PioneerScanReadSlice(DWORD lba, DWORD count, int& c1, int& c2) {
 	sk = 0; asc = 0; ascq = 0;
 	ok = SendSCSIWithSense(readCdb, 10, rdBuf, PIONEER_SCAN_BUFFER_SIZE,
 		&sk, &asc, &ascq);
-	if (!ok && sk > 0x01)
+	if (!ok)
 		return false;
 
-	// BLER/C1 at offset 13, E22/C2 at offset 5 (big-endian 16-bit).
+	// BLER/C1 at offset 13, E22 at offset 5 (big-endian 16-bit). E22 is
+	// correctable second-decoder activity; it is not an E32/CU measurement.
 	// QPxTool treats CD samples over 300 as invalid firmware garbage.
 	int rawC1 = (static_cast<int>(rdBuf[13]) << 8) | rdBuf[14];
-	int rawC2 = (static_cast<int>(rdBuf[5]) << 8) | rdBuf[6];
-	if (rawC1 > PIONEER_CD_ERRC_VALID_MAX || rawC2 > PIONEER_CD_ERRC_VALID_MAX) {
+	int rawE22 = (static_cast<int>(rdBuf[5]) << 8) | rdBuf[6];
+	if (rawC1 > PIONEER_CD_ERRC_VALID_MAX || rawE22 > PIONEER_CD_ERRC_VALID_MAX) {
 		char dbg[160];
 		snprintf(dbg, sizeof(dbg),
-			"PioneerScan: ignoring out-of-range CD sample lba=%lu c1=%d c2=%d\n",
-			static_cast<unsigned long>(lba), rawC1, rawC2);
+			"PioneerScan: ignoring out-of-range CD sample lba=%lu c1=%d e22=%d\n",
+			static_cast<unsigned long>(lba), rawC1, rawE22);
 		OutputDebugStringA(dbg);
 		s_pioneerInvalidCdSamples++;
 	}
 	else {
 		c1 = rawC1;
-		c2 = rawC2;
+		e22 = rawE22;
 	}
 
 	return true;
@@ -179,16 +183,22 @@ bool ScsiDrive::SupportsPioneerScan() {
 	// WRITE+READ slice.  The seek is the step that lets strict drives (e.g.
 	// BDR-S13U) actually answer the vendor scan command instead of returning
 	// CHECK CONDITION / zeroes.
-	SeekToLBA(0);
+	if (!SeekToLBA(0)) {
+		std::cout << "  [PioneerScan] Could not seek to the scan start.\n" << std::flush;
+		// A missing/not-ready disc or transient seek failure says nothing about
+		// firmware support. Leave the probe uncached so a later ready session can
+		// retry instead of being permanently routed to the unreliable C2 path.
+		return false;
+	}
 	std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
-	int c1 = 0, c2 = 0;
-	bool ok = PioneerScanReadSlice(0, PIONEER_CD_SECTORS_PER_SLICE, c1, c2);
+	int c1 = 0, e22 = 0;
+	bool ok = PioneerScanReadSlice(0, PIONEER_CD_SECTORS_PER_SLICE, c1, e22);
 
 	char dbg[256];
 	snprintf(dbg, sizeof(dbg),
-		"PioneerScan: init slice ok=%d c1=%d c2=%d invalid=%d\n",
-		ok, c1, c2, s_pioneerInvalidCdSamples);
+		"PioneerScan: init slice ok=%d c1=%d e22=%d invalid=%d\n",
+		ok, c1, e22, s_pioneerInvalidCdSamples);
 	OutputDebugStringA(dbg);
 
 	// Reset the probe's invalid-sample bookkeeping so it doesn't leak into the
@@ -206,26 +216,30 @@ bool ScsiDrive::SupportsPioneerScan() {
 }
 
 bool ScsiDrive::PioneerScanStart(DWORD startLBA, DWORD endLBA) {
-	s_pioneerLBA = startLBA;
-	s_pioneerEndLBA = endLBA;
-	s_pioneerInvalidCdSamples = 0;
 	if (PioneerSliceCount(startLBA, endLBA) == 0)
 		return false;
 
 	// QPxTool seeks to the scan start before the first WRITE BUFFER
 	// (cmd_cd_errc_init -> seek(dev, 0)).  Position the head and let the disc
 	// settle so the first slice returns real counters rather than zeroes.
-	SeekToLBA(startLBA);
+	if (!SeekToLBA(startLBA)) {
+		std::cout << "  [PioneerScan] Could not seek to LBA " << startLBA
+			<< "; scan not started.\n" << std::flush;
+		return false;
+	}
 	std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
+	s_pioneerLBA = startLBA;
+	s_pioneerEndLBA = endLBA;
+	s_pioneerInvalidCdSamples = 0;
 	return true;
 }
 
-bool ScsiDrive::PioneerScanPoll(int& c1, int& c2, int& cu,
+bool ScsiDrive::PioneerScanPoll(int& c1, int& e22, int& cu,
 	DWORD& currentLBA, bool& scanDone) {
 
 	c1 = 0;
-	c2 = 0;
+	e22 = 0;
 	cu = 0;            // Pioneer doesn't report CU separately in CD mode
 	scanDone = false;
 
@@ -237,7 +251,7 @@ bool ScsiDrive::PioneerScanPoll(int& c1, int& c2, int& cu,
 
 	// One slice = WRITE request + READ result, then advance — exactly QPxTool's
 	// cmd_cd_errc_block ordering.
-	bool ok = PioneerScanReadSlice(s_pioneerLBA, count, c1, c2);
+	bool ok = PioneerScanReadSlice(s_pioneerLBA, count, c1, e22);
 	if (!ok) {
 		scanDone = true;
 		return false;
@@ -245,8 +259,8 @@ bool ScsiDrive::PioneerScanPoll(int& c1, int& c2, int& cu,
 
 	currentLBA = s_pioneerLBA;
 
-	// If this slice reaches the requested end, we're done; otherwise advance to
-	// the next slice for the following poll.
+	// The final slice still contains valid counters. Return them together with
+	// scanDone=true; callers record this sample and then stop polling.
 	if (static_cast<unsigned long long>(s_pioneerLBA) + count - 1 >= s_pioneerEndLBA) {
 		scanDone = true;
 	}

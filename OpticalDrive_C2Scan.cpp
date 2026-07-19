@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <vector>
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 
 // ============================================================================
@@ -86,19 +87,23 @@ bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanS
 	PioneerVendor pioneerProbe(m_drive);
 	PioneerPureReadOffGuard pioneerPureReadGuard(m_drive, pioneerProbe.IsPioneerDrive());
 
-	std::cout << "\n=== C2 Error Scan (Quick) ===\n";
-	std::cout << "Quick disc health check using C2 error reporting.\n";
-	std::cout << "C2 errors indicate uncorrectable data corruption.\n\n";
-
 	// Pioneer BD burners don't populate the per-sector READ CD C2 error-pointer
 	// bitmap — it reads all-zero regardless of disc condition, so the naive
 	// per-sector scan below would call any disc perfect. This does NOT mean the
-	// drive can't measure C2: its CIRC decoder reports real C1/C2/CU through the
-	// vendor quality scan (0x3B/0x3C). Reroute to that path (same as menu option
-	// 6) for accurate results. The per-sector code below is only reached on
+	// drive has no useful quality signal: its vendor scan (0x3B/0x3C) reports
+	// BLER plus diagnostic E22. Reroute to that path (same as menu option 6),
+	// while keeping verified C2/E32 and CU explicitly unavailable unless the
+	// separate CD Check cross-check succeeds. The per-sector code below is reached on
 	// (older) drives that lack the vendor scan.
-	if (RunPioneerVendorC2Fallback(disc, result, scanSpeed, "C2 Error Scan"))
+	auto pioneerFallback = RunPioneerVendorQualityFallback(disc, result, scanSpeed, "C2 Error Scan");
+	if (pioneerFallback == PioneerQualityFallbackResult::Completed)
 		return true;
+	if (pioneerFallback == PioneerQualityFallbackResult::Failed)
+		return false;
+
+	std::cout << "\n=== C2 Error Scan (Quick) ===\n";
+	std::cout << "Quick disc health check using READ CD C2 error reporting.\n";
+	std::cout << "C2 pointer activity identifies sectors that require verification.\n\n";
 
 	// Check drive support
 	if (!m_drive.CheckC2Support()) {
@@ -132,6 +137,7 @@ bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanS
 
 	// Initialize result structure
 	result = BlerResult{};
+	result.measurementMethod = "READ CD C2 error pointers";
 	result.totalSectors = totalSectors;
 	result.totalSeconds = (totalSectors + 74) / 75;
 	result.perSecondC2.resize(result.totalSeconds + 1, { 0, 0 });
@@ -379,8 +385,8 @@ bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanS
 		std::cout << "\n  ** NOTE: Zero C2 errors across entire disc, but this drive\n"
 			<< "     does not populate C2 block error stats (bytes 294-295).\n"
 			<< "     The C2 pointer bitmap may not be functional.\n"
-			<< "     Run Q-Check (quality scan) for hardware-level C1/C2/CU\n"
-			<< "     measurement using the drive's internal ECC decoder. **\n";
+			<< "     Run the hardware quality scan for backend-specific ECC data;\n"
+			<< "     Pioneer reports C1/E22, not verified C2/E32 or CU. **\n";
 	}
 
 	return true;
@@ -390,32 +396,46 @@ bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanS
 // Pioneer vendor-scan fallback (shared by options 7 "C2 Error Scan" and
 // 8 "BLER Scan"). See the declaration in OpticalDrive.h for rationale.
 // ============================================================================
-bool OpticalDrive::RunPioneerVendorC2Fallback(const DiscInfo& disc, BlerResult& result,
+OpticalDrive::PioneerQualityFallbackResult OpticalDrive::RunPioneerVendorQualityFallback(
+	const DiscInfo& disc, BlerResult& result,
 	int scanSpeed, const char* featureLabel) {
 	// Only relevant on Pioneer drives that expose the 0x3B/0x3C vendor scan.
 	// SupportsPioneerScan() caches its probe, so the repeat call inside
 	// RunQCheckScan below is cheap.
-	if (!m_drive.IsPioneer() || !m_drive.SupportsPioneerScan())
-		return false;
+	if (!m_drive.IsPioneer())
+		return PioneerQualityFallbackResult::NotApplicable;
+	if (!m_drive.SupportsPioneerScan()) {
+		std::string vendor, model;
+		m_drive.GetDriveInfo(vendor, model);
+		std::string upperModel = model;
+		std::transform(upperModel.begin(), upperModel.end(), upperModel.begin(),
+			[](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+		if (upperModel.find("BDR-") != std::string::npos ||
+			upperModel.find("BDR_") != std::string::npos) {
+			Console::Error("  [Pioneer] Vendor quality scan is unavailable on this BDR drive.\n");
+			Console::Info("  Refusing the per-sector C2 fallback because Pioneer BDR C2 bitmaps are not trustworthy.\n");
+			return PioneerQualityFallbackResult::Failed;
+		}
+		return PioneerQualityFallbackResult::NotApplicable;
+	}
 
 	Console::Warning("  [Pioneer] ");
 	std::cout << (featureLabel ? featureLabel : "This scan")
 		<< ": this drive doesn't populate the per-sector C2 error-pointer\n"
 		<< "            bitmap (it reads all-zero), so switching to the Pioneer vendor\n"
-		<< "            quality scan (option 6 path), which measures real C1/C2/CU from\n"
-		<< "            the drive's own error decoder.\n";
+		<< "            quality scan (option 6 path). It measures BLER plus diagnostic\n"
+		<< "            E22; verified C2/E32 remains unavailable unless CD Check succeeds.\n";
 
 	QCheckResult qc;
 	if (!RunQCheckScan(disc, qc, scanSpeed)) {
-		// Vendor scan turned out to be unavailable after all - let the caller
-		// fall through to the per-sector path so the user still gets a result.
-		Console::Info("  [Pioneer] Vendor quality scan unavailable; using per-sector C2 scan.\n");
-		return false;
+		Console::Error("  [Pioneer] Vendor quality scan failed; no C2/BLER result was produced.\n");
+		Console::Info("  The per-sector C2 path was not used because this drive's bitmap is known to read all-zero.\n");
+		return PioneerQualityFallbackResult::Failed;
 	}
 
-	// Translate the QCheck (per-time-slice C1/C2/CU) result into the BlerResult
-	// the option-7/8 CSV writer expects. Counts are per ~75-sector slice rather
-	// than per-sector, since the vendor scan reports aggregated slices.
+	// Translate only verified fields into the BlerResult the option-7/8 writer
+	// expects. Pioneer E22 remains in QCheck's diagnostic output and is not
+	// copied into totalC2Errors as if it were a verified C2 pointer.
 	DWORD firstLBA = 0, lastLBA = 0;
 	bool first = true;
 	for (const auto& t : disc.tracks) {
@@ -426,6 +446,7 @@ bool OpticalDrive::RunPioneerVendorC2Fallback(const DiscInfo& disc, BlerResult& 
 	}
 
 	result = BlerResult{};
+	result.measurementMethod = qc.scanMethod;
 	result.totalSectors = qc.totalSectors;
 	result.totalSeconds = static_cast<int>(qc.totalSeconds);
 	result.hasC1Data = true;
@@ -435,13 +456,24 @@ bool OpticalDrive::RunPioneerVendorC2Fallback(const DiscInfo& disc, BlerResult& 
 	result.totalC2Errors = qc.totalC2;
 	result.avgC2PerSecond = qc.avgC2PerSecond;
 	result.maxC2PerSecond = qc.maxC2PerSecond;
+	result.c2Unverified = true;
 	result.qualityRating = qc.qualityRating.empty() ? "UNKNOWN" : qc.qualityRating;
+	result.pioneerVendorQuality = true;
+	result.pioneerE22Total = qc.totalPioneerE22;
+	result.pioneerE22AvgPerSecond = qc.avgPioneerE22PerSecond;
+	result.pioneerE22Peak = qc.maxPioneerE22PerSecond;
+	result.pioneerE22Rating = qc.pioneerE22Rating;
+	result.pioneerCdCheckRun = qc.pioneerCdCheckRun;
+	result.pioneerCdCheckC1Frames = qc.pioneerCdCheckC1Frames;
+	result.pioneerCdCheckC2Bytes = qc.pioneerCdCheckC2Bytes;
 
 	result.perSecondC1.reserve(qc.samples.size());
 	result.perSecondC2.reserve(qc.samples.size());
+	result.perSecondPioneerE22.reserve(qc.samples.size());
 	for (const auto& s : qc.samples) {
 		result.perSecondC1.push_back({ s.lba, s.c1 });
 		result.perSecondC2.push_back({ s.lba, s.c2 });
+		result.perSecondPioneerE22.push_back({ s.lba, s.pioneerE22 });
 		if (s.c1 > 0) result.totalC1Sectors++;
 		if (s.c2 > 0) {
 			result.totalC2Sectors++;
@@ -453,7 +485,7 @@ bool OpticalDrive::RunPioneerVendorC2Fallback(const DiscInfo& disc, BlerResult& 
 		ClassifyZone(s.lba, firstLBA, lastLBA, s.c2 > 0 ? 1 : 0, result.zoneStats);
 	}
 
-	return true;
+	return PioneerQualityFallbackResult::Completed;
 }
 
 void OpticalDrive::PrintC2SenseCodeChart(const std::vector<C2SectorError>& badSectors, const DiscInfo& disc, const BlerResult& result) {
@@ -639,6 +671,18 @@ void OpticalDrive::PrintC2ScanReport(const BlerResult& result, const DiscInfo& d
 	std::cout << std::setfill(' ') << " (mm:ss)\n";
 	std::cout << "  Scan speed:        "
 		<< (scanSpeed == 0 ? "Max" : std::to_string(scanSpeed) + "x") << "\n";
+	if (result.c2Unverified) {
+		std::cout << "\n--- C2 Measurement ---\n";
+		Console::SetColor(Console::Color::Yellow);
+		std::cout << "  STATUS: NOT VERIFIED / NOT MEASURED\n";
+		Console::Reset();
+		std::cout << "  The drive returned zero C2 activity but did not expose the\n"
+			<< "  supporting error statistics needed to trust that bitmap.\n"
+			<< "  No clean-disc rating is assigned. Use a supported hardware\n"
+			<< "  quality backend or verify the rip independently.\n";
+		std::cout << std::string(60, '=') << "\n";
+		return;
+	}
 
 	// C2 Error statistics
 	std::cout << "\n--- C2 Error Statistics ---\n";
@@ -773,6 +817,12 @@ void OpticalDrive::PrintC2Chart(const BlerResult& result, int width, int height)
 	opts.subtitle = "Peak C2 errors per second across the disc";
 	opts.width = width;
 	opts.height = height;
+	opts.unitSuffix = "/sec";
+	opts.severityLowThreshold = 5;
+	opts.severityHighThreshold = 20;
+	opts.severityLowLabel = "1-4/sec low";
+	opts.severityModerateLabel = "5-19/sec moderate";
+	opts.severityHighLabel = "20+/sec high";
 	auto buckets = Console::BucketData(raw, width);
 	Console::DrawBarGraph(buckets, peak, opts, result.totalSeconds);
 }

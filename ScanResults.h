@@ -77,13 +77,6 @@ struct QCheckResult {
 	bool pioneerCdCheckRun = false;
 	int  pioneerCdCheckC1Frames = 0;   // worst-window C1 uncorrectable frame count
 	int  pioneerCdCheckC2Bytes  = 0;   // worst-window C2 uncorrectable byte count (real data loss)
-	// True when the CD Check cross-check was deliberately skipped because the
-	// vendor scan already found the disc pristine (no C2/E22, low C1) — there is
-	// no C2 activity for uncorrectable errors to hide beneath, so the extra
-	// full-disc pass would only confirm zero. Distinguishes "clean, skipped" from
-	// "attempted but the drive doesn't implement CD Check" in the report.
-	bool pioneerCdCheckSkippedClean = false;
-
 	// Per-second time-series data
 	std::vector<QCheckSample> samples;
 
@@ -167,6 +160,7 @@ struct FeTeResult {
 struct BlerResult {
 	DWORD totalSectors = 0;
 	int totalSeconds = 0;
+	std::string measurementMethod;             // READ CD C2 or vendor quality backend
 
 	// C2 error statistics
 	int totalC2Errors = 0;
@@ -204,9 +198,25 @@ struct BlerResult {
 	bool c2Unverified = false;             // C2 bitmap may not be functional
 	std::string qualityRating;
 
+	// Pioneer 0x3B/0x3C vendor-quality provenance. E22 is a diagnostic
+	// second-stage counter, not a verified READ CD C2 pointer or E32/CU count.
+	bool pioneerVendorQuality = false;
+	int pioneerE22Total = 0;
+	double pioneerE22AvgPerSecond = 0.0;
+	int pioneerE22Peak = 0;
+	std::string pioneerE22Rating;
+
+	// Pioneer CD Check (0xE6) cross-check. This is the only Pioneer path here
+	// that supplies a genuine uncorrectable-data measurement. The flag is true
+	// only after the requested audio range completed with valid measurements.
+	bool pioneerCdCheckRun = false;
+	int pioneerCdCheckC1Frames = 0;
+	int pioneerCdCheckC2Bytes = 0;
+
 	// Per-second time-series data: (LBA, error count) per 75-sector bucket
 	std::vector<std::pair<DWORD, int>> perSecondC2;
 	std::vector<std::pair<DWORD, int>> perSecondC1;
+	std::vector<std::pair<DWORD, int>> perSecondPioneerE22;
 
 	// Error clusters and zone distribution
 	std::vector<ErrorCluster> errorClusters;
@@ -230,6 +240,8 @@ struct DiscRotAnalysis {
 	double pioneerE22AvgPerSecond = 0.0;        // Average Pioneer E22 diagnostic count in Phase 0
 	int pioneerE22Peak = 0;                     // Peak Pioneer E22 diagnostic count in Phase 0
 	std::string pioneerE22Rating;               // Ideal / Good / Acceptable / Concerning
+	bool pioneerDrive = false;                   // Enables explicit CU-unmeasured reporting
+	bool pioneerQualityScanRun = false;          // Phase 0 completed with valid Pioneer samples
 
 	// Pioneer CD Check (0xE6) uncorrectable cross-check. On Pioneer drives the
 	// vendor scan (Phase 0) and the per-sector READ CD C2 area (Phase 1) are both

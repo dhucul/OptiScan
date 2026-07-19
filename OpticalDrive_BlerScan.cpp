@@ -26,12 +26,15 @@ bool OpticalDrive::RunBlerScan(const DiscInfo& disc, BlerResult& result, int sca
 
 	// Pioneer BD burners don't populate the per-sector READ CD C2 error-pointer
 	// bitmap (it reads all-zero regardless of disc condition), so the naive
-	// per-sector BLER path below would miss real errors. The drive CAN still
-	// measure C2 — via the vendor quality scan (0x3B/0x3C), which reads its CIRC
-	// decoder's real C1/C2/CU. Reroute to that (same as menu option 6). The
+	// per-sector BLER path below would miss quality activity. The vendor quality
+	// scan (0x3B/0x3C) still reports BLER plus diagnostic E22, but not verified
+	// C2/E32 or CU. Reroute to that (same as menu option 6). The
 	// per-sector code below is only reached on (older) drives without the vendor scan.
-	if (RunPioneerVendorC2Fallback(disc, result, scanSpeed, "BLER Scan"))
+	auto pioneerFallback = RunPioneerVendorQualityFallback(disc, result, scanSpeed, "BLER Scan");
+	if (pioneerFallback == PioneerQualityFallbackResult::Completed)
 		return true;
+	if (pioneerFallback == PioneerQualityFallbackResult::Failed)
+		return false;
 
 	if (!m_drive.CheckC2Support()) {
 		std::cout << "ERROR: C2 not supported.\n";
@@ -71,6 +74,7 @@ bool OpticalDrive::RunBlerScan(const DiscInfo& disc, BlerResult& result, int sca
 	}
 
 	result = BlerResult{};
+	result.measurementMethod = "READ CD C2 error pointers";
 	result.totalSectors = totalSectors;
 	result.totalSeconds = (totalSectors + 74) / 75;
 	result.perSecondC2.resize(result.totalSeconds + 1, { 0, 0 });
@@ -220,13 +224,14 @@ bool OpticalDrive::RunBlerScan(const DiscInfo& disc, BlerResult& result, int sca
 	// Perform analysis
 	AnalyzeBlerResults(result, errorLBAs, scanSpeed);
 
-	// Print report
-	PrintBlerReport(disc, result);
-
 	if (result.totalC2Sectors == 0 && result.totalReadFailures == 0
 		&& !m_drive.SupportsC1BlockErrors()) {
 		result.c2Unverified = true;
 	}
+
+	// Print only after measurement validity has been established, so a zero-only
+	// unsupported bitmap is never announced as a clean C2 result.
+	PrintBlerReport(disc, result);
 
 	return true;
 }

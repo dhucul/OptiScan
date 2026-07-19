@@ -448,7 +448,7 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
         case 2:  displayLabel = L"Write disc image files"; break;
         case 3:  displayLabel = L"Write tracks with current pregaps"; break;
         case 4:  displayLabel = L"Recovery rip"; break;
-        case 5:  displayLabel = L"Quality scan (C1/C2/CU)"; break;
+	case 5:  displayLabel = L"Quality scan (hardware errors)"; break;
         case 11: displayLabel = L"Compare original and copy CRCs"; break;
         case 13: displayLabel = L"Disc fingerprint IDs"; break;
         case 16: displayLabel = L"Verify subchannel burn"; break;

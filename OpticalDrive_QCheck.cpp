@@ -1,14 +1,15 @@
 ﻿// ============================================================================
 // OpticalDrive_QCheck.cpp - Hardware-driven CD quality scan
 //
-// Performs a C1/C2/CU error-rate scan using either Plextor Q-Check vendor
+// Performs a hardware error-rate scan using either Plextor Q-Check vendor
 // commands (0xE9 start / 0xEB poll), Pioneer vendor scan (0x3B/0x3C), or
-// the LiteOn/MediaTek equivalent (0xDF).  Unlike the D8-based BLER scan
+// the LiteOn/MediaTek equivalent (0xDF). Unlike the D8-based BLER scan
 // which reads audio data and inspects C2 pointers, this mode puts the drive
 // into a dedicated error-measurement state where the CIRC decoder reports
 // aggregate correction statistics per time slice — no audio is transferred.
 //
-// The scan produces the same metrics as QPXTool's C1/C2 scan:
+// Plextor/LiteOn produce C1/C2/CU metrics. Pioneer produces C1/BLER plus
+// diagnostic E22; verified C2/E32 and CU require its separate CD Check:
 //   C1 = block error rate (first-level Reed-Solomon correction)
 //   C2 = second-level correction (C1 failures that needed C2 help)
 //   CU = uncorrectable errors (both C1 and C2 failed — data loss)
@@ -117,10 +118,14 @@ void RecalculateQCheckTotals(QCheckResult& result) {
 // ============================================================================
 
 bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int scanSpeed) {
+	// Callers may reuse a result object. Never mix a new measurement with stale
+	// samples, totals, or backend flags from an earlier scan.
+	result = QCheckResult{};
+
 	// Lock the tray for the scan so an accidental eject can't abort it. Ref-counted,
 	// so the C2/BLER scans that delegate here on Pioneer nest correctly.
 	DriveDoorLockGuard doorLock(m_drive);
-	std::cout << "\n=== CD Quality Scan (C1/C2/CU) ===\n";
+	std::cout << "\n=== CD Hardware Quality Scan ===\n";
 
 	// ── Probe drive for hardware quality scan support ────────
 	// Try Plextor Q-Check first (classic PX-708A through PX-760A drives),
@@ -142,7 +147,7 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 	// Neither scan backend is available, so report the hardware limitation
 	// once without leaking probe-level fallback chatter into normal output.
 	if (!usePlextor && !usePioneer && !useLiteOn) {
-		std::cout << "ERROR: This drive does not support hardware C1/C2/CU quality scanning.\n";
+		std::cout << "ERROR: This drive does not support a hardware CD quality-scan backend.\n";
 		std::cout << "       Supported backends: Plextor Q-Check, Pioneer, LiteOn/MediaTek.\n";
 		result.supported = false;
 		return false;
@@ -287,10 +292,11 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 			if (!pollOk) {
 				// Communication lost.  Stop the scan if possible.
 				stopPrimaryScan();
-				// If we already have partial data, treat it as a completed
-				// scan and report what we have — better than nothing.
-				if (!result.samples.empty()) break;
-				std::cout << "\nERROR: Lost communication with drive during scan.\n";
+				std::cout << "\nERROR: Lost communication with drive during scan";
+				if (!result.samples.empty())
+					std::cout << " after " << result.samples.size()
+						<< " sample(s); partial data will not be rated";
+				std::cout << ".\n";
 				return false;
 			}
 		}
@@ -329,11 +335,13 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		QCheckSample sample;
 		sample.lba = currentLBA;
 		sample.c1 = c1;    // C1 corrections this time slice (first-level Reed-Solomon)
-		// Pioneer's vendor scan reports its second-level error counter (E22) at
-		// the same place other drives report C2.  Surface it as C2 so it is
-		// counted, graphed, track-bucketed, and drives the verdict — matching how
-		// QPxTool presents the Pioneer reading.
-		sample.c2 = c2;          // C2 (LiteOn/Plextor) or E22-as-C2 (Pioneer)
+		// Pioneer's response field is E22: correctable second-decoder activity,
+		// not verified E32/CU or a READ CD C2-pointer result. Keep it separate so
+		// it remains diagnostic and cannot drive copy/no-copy decisions.
+		if (usePioneer)
+			sample.pioneerE22 = c2;
+		else
+			sample.c2 = c2;
 		sample.cu = cu;     // Uncorrectable errors (both correction stages failed)
 		result.samples.push_back(sample);
 
@@ -423,9 +431,11 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 
 		// Show live error counts so the user can spot problems immediately
 		// without waiting for the full report.
-		line << "  C1=" << c1
-			<< " C2=" << c2
-			<< " CU=" << cu;
+		line << "  C1=" << c1;
+		if (usePioneer)
+			line << " E22=" << c2 << " CU=N/A";
+		else
+			line << " C2=" << c2 << " CU=" << cu;
 
 		// Pad with spaces to overwrite any leftover characters from a
 		// longer previous line (e.g. when ETA shrinks).
@@ -438,6 +448,11 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 	}
 
 	stopPrimaryScan();
+	if (result.samples.empty()) {
+		std::cout << "\nERROR: Quality scan completed without any usable measurement samples.\n";
+		std::cout << "       The result cannot be rated.\n";
+		return false;
+	}
 
 	// ── Print final elapsed time ─────────────────────────────
 	auto scanEndTime = std::chrono::steady_clock::now();
@@ -473,7 +488,7 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		std::vector<int> allErrs;
 		allErrs.reserve(result.samples.size());
 		for (const auto& s : result.samples)
-			allErrs.push_back(s.c1 + s.c2 + s.cu);
+			allErrs.push_back(s.c1 + s.c2 + s.cu + s.pioneerE22);
 		std::sort(allErrs.begin(), allErrs.end());
 		int median = allErrs[allErrs.size() / 2];
 
@@ -483,7 +498,8 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 
 		// Iterate backwards so erasing doesn't invalidate lower indices.
 		for (int i = static_cast<int>(checkEnd) - 1; i >= 0; i--) {
-			int err = result.samples[i].c1 + result.samples[i].c2 + result.samples[i].cu;
+			int err = result.samples[i].c1 + result.samples[i].c2
+				+ result.samples[i].cu + result.samples[i].pioneerE22;
 			// Two criteria: absolute threshold (>10) when disc is clean,
 			// or relative threshold (10× median) for noisy discs.
 			if ((median == 0 && err > 10) || (median > 0 && err > median * 10)) {
@@ -501,9 +517,8 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 			RecalculateQCheckTotals(result);
 	}
 
-	// Pioneer's E22 counter is now treated as C2 (see sample recording above),
-	// so it flows through the same startup-spike trimming as every other scan
-	// backend and needs no separate vendor-artifact handling.
+	// Pioneer E22 participates in startup-spike detection but remains separate
+	// from verified C2 totals and verdict logic.
 
 	// Track whether the drive reported any C2 during the primary scan,
 	// before the recheck potentially zeroes the total.  Used later to
@@ -518,7 +533,7 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 	// drift.  To avoid false alarms, re-scan the entire disc if any C2
 	// errors were detected.  If the re-scan shows 0 C2, the original
 	// C2 counts are discarded as transient artefacts.
-	if (result.totalC2 > 0 &&
+	if (!usePioneer && result.totalC2 > 0 &&
 		!InterruptHandler::Instance().IsInterrupted()) {
 		std::cout << "\n  C2 errors detected (" << result.totalC2
 			<< " total) - running verification re-scan...\n";
@@ -739,8 +754,6 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 	//   C1 avg ≥ 50      → FAIR   (elevated but within spec)
 	//   C1 avg ≥ 5       → GOOD   (normal wear)
 	//   C1 avg < 5       → EXCELLENT (pristine disc)
-	bool pioneerScan = IsPioneerScanMethod(result.scanMethod);
-
 	if (result.totalCU > 0)
 		result.qualityRating = "BAD";
 	else if (result.totalC2 > 0 && result.avgC2PerSecond > 10.0)
@@ -820,32 +833,21 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 	// implement the CD Check protocol, measure real uncorrectable (C2) data over
 	// the same audio range so the report can give a true data-loss answer.
 	//
-	// This is a full extra 1x pass, so gate it: uncorrectable (E32) errors can
-	// only exist where the second stage (C2/E22) was already exercised, so a disc
-	// that scanned pristine — a clean rating, zero E22, and no C1 hot-spot — has
-	// nothing for the cross-check to find. Skip it there to avoid doubling the
-	// scan time, and run it whenever there is any hint of trouble (any E22, an
-	// elevated/peaky C1, or a FAIR/POOR/BAD/UNVERIFIED verdict). The dedicated
-	// Pioneer CD Check (menu option 28) can still force an uncorrectable pass on
-	// a clean disc on demand.
+	// E22 and E32 are distinct decoder outcomes: zero E22 does not prove zero
+	// E32/CU. Always attempt the cross-check. Modern firmware such as BDR-S13U
+	// rejects the unsupported start command immediately, in which case CU stays
+	// explicitly unmeasured rather than being inferred clean.
 	if (usePioneer && !InterruptHandler::Instance().IsInterrupted()) {
-		const bool discLooksClean =
-			(result.qualityRating == "EXCELLENT" || result.qualityRating == "GOOD")
-			&& result.totalC2 == 0
-			&& result.maxC1PerSecond < 50;
-
-		if (discLooksClean) {
-			result.pioneerCdCheckSkippedClean = true;
-			std::cout << "\n  Disc scanned clean (no C2/E22, low C1) - skipping the CD Check\n"
-				<< "  uncorrectable cross-check to save a full pass. Use Pioneer CD Check\n"
-				<< "  (option 28) to force an uncorrectable measurement anyway.\n";
-		}
-		else if (RunPioneerCdCheckCrosscheck(disc, result) &&
+		if (RunPioneerCdCheckCrosscheck(disc, result) &&
 			result.pioneerCdCheckC2Bytes > 0) {
 			// Uncorrectable data confirmed = data loss, regardless of the C1/E22
 			// verdict. Escalate to BAD to match how CU > 0 is treated on the
 			// Plextor/LiteOn backends.
 			result.qualityRating = "BAD";
+		}
+		if (InterruptHandler::Instance().IsInterrupted()) {
+			std::cout << "\n*** Quality scan cancelled during CD Check cross-check ***\n";
+			return false;
 		}
 	}
 
@@ -869,6 +871,9 @@ bool OpticalDrive::RunPioneerCdCheckCrosscheck(const DiscInfo& disc, QCheckResul
 	PioneerVendor pv(m_drive);
 	if (!pv.IsPioneerDrive())
 		return false;
+	result.pioneerCdCheckRun = false;
+	result.pioneerCdCheckC1Frames = 0;
+	result.pioneerCdCheckC2Bytes = 0;
 
 	// Audio range: track 1 start .. last audio-track end (same span the vendor
 	// scan covered).
@@ -876,7 +881,8 @@ bool OpticalDrive::RunPioneerCdCheckCrosscheck(const DiscInfo& disc, QCheckResul
 	bool first = true;
 	for (const auto& t : disc.tracks) {
 		if (!t.isAudio) continue;
-		if (first) { startLBA = t.startLBA; first = false; }
+		DWORD start = (t.trackNumber == 1) ? 0 : t.pregapLBA;
+		if (first) { startLBA = start; first = false; }
 		if (t.endLBA > endLBA) endLBA = t.endLBA;
 	}
 	if (first || endLBA <= startLBA)
@@ -911,6 +917,7 @@ bool OpticalDrive::RunPioneerCdCheckCrosscheck(const DiscInfo& disc, QCheckResul
 
 	int worstC1 = 0, worstC2 = 0;
 	bool sawValid = false, sawProgress = false, cancelled = false;
+	bool completedRange = false, readFailed = false, stalled = false;
 	DWORD lastEnd = startFrame;
 	int stallTicks = 0;
 	// Worst case: a full 80-minute CD at 1x. Cap wall-clock at 90 minutes.
@@ -928,8 +935,10 @@ bool OpticalDrive::RunPioneerCdCheckCrosscheck(const DiscInfo& disc, QCheckResul
 		std::this_thread::sleep_for(std::chrono::milliseconds(kPollMs));
 
 		PioneerCdCheckResult r;
-		if (!pv.CdCheckRead(r))
+		if (!pv.CdCheckRead(r)) {
+			readFailed = true;
 			break;
+		}
 		if (r.dataValid) {
 			sawValid = true;
 			if (r.c1Uncorrectable > worstC1) worstC1 = r.c1Uncorrectable;
@@ -945,24 +954,42 @@ bool OpticalDrive::RunPioneerCdCheckCrosscheck(const DiscInfo& disc, QCheckResul
 
 		if (ea == lastEnd) {
 			if (sawProgress || i >= kStartupGraceIters) {
-				if (++stallTicks >= kStallLimit) break;
+				if (++stallTicks >= kStallLimit) {
+					stalled = true;
+					break;
+				}
 			}
 		}
 		else {
 			stallTicks = 0;
 			lastEnd = ea;
 		}
-		if (sawProgress && ea >= endFrame) break;
+		if (sawProgress && ea >= endFrame) {
+			completedRange = true;
+			break;
+		}
 	}
 
-	prog.Finish(sawProgress && !cancelled);
+	prog.Finish(completedRange && sawValid && !cancelled);
 	pv.CdCheckStop();
 
 	if (cancelled) {
 		std::cout << "  CD Check cross-check cancelled - CU left unmeasured.\n";
 		return false;
 	}
-	if (!sawProgress || !sawValid) {
+	if (!completedRange) {
+		if (readFailed)
+			std::cout << "  CD Check communication failed before the requested range completed";
+		else if (stalled)
+			std::cout << "  CD Check stalled before the requested range completed";
+		else
+			std::cout << "  CD Check timed out before the requested range completed";
+		if (sawProgress)
+			std::cout << " (last frame " << lastEnd << " of " << endFrame << ")";
+		std::cout << " - partial data discarded; CU left unmeasured.\n";
+		return false;
+	}
+	if (!sawValid) {
 		std::cout << "  CD Check produced no valid measurement - CU left unmeasured.\n";
 		return false;
 	}
@@ -982,18 +1009,16 @@ bool OpticalDrive::RunPioneerCdCheckCrosscheck(const DiscInfo& disc, QCheckResul
 //   3. Total C1 quality tier and archival suitability
 //   4. C2 error analysis with severity classification
 //   5. CU (uncorrectable) count
-//   6. Three individual bar graphs (C1, C2, CU distribution over time)
-//   7. Combined normalised overlay graph (C1 green, C2 yellow, CU red)
+//   6. Per-metric bar graphs (C1, C2, CU, and Pioneer E22 when available)
+//   7. Combined absolute-threshold health map, including diagnostic E22*
 //   8. Final quality verdict with colour-coded rating
 // ============================================================================
 
 void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
-	// The Pioneer vendor scan's E22 counter is reported as C2 (see
-	// RunQCheckScan), so the report renders a Pioneer scan exactly like a
-	// normal C2 scan.  The scan-method line below still identifies the source
-	// as "Pioneer (0x3B/0x3C)" so the provenance of the C2 figure is clear.
-	const bool pioneerScan = false;
-	const bool pioneerE22Observed = false;
+	// Pioneer exposes BLER plus E22, not verified C2/E32/CU. Keep its diagnostic
+	// presentation separate from the Plextor/LiteOn C2 path.
+	const bool pioneerScan = IsPioneerScanMethod(result.scanMethod);
+	const bool pioneerE22Observed = pioneerScan;
 
 	// Some backends (the Pioneer vendor scan) don't measure CU at all, so a
 	// zero CU total is an absence of measurement, not a clean result. Gate the
@@ -1112,7 +1137,8 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 	if (pioneerScan) {
 		std::cout << "\n--- Verified C2 Errors ---\n";
 		std::cout << "  Verified C2 in Q-Check: NOT CHECKED by Pioneer vendor scan\n";
-		std::cout << "  Copy decision:          Use Disc Rot Phase 1 / C2 scan for yes-or-no C2.\n";
+		std::cout << "  Copy decision:          Requires CD Check, secure extraction/AccurateRip,\n";
+		std::cout << "                          or another drive that reports verified C2/CU.\n";
 		std::cout << "\n--- Pioneer E22 Diagnostic (Not a copy trigger) ---\n";
 		std::cout << "  Meaning: Raw Pioneer firmware counter; common at low levels.\n";
 		std::cout << "  Rating:      ";
@@ -1205,15 +1231,6 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 		else
 			std::cout << "  CU Assessment: BAD - uncorrectable data present; data loss likely\n";
 	}
-	else if (result.pioneerCdCheckSkippedClean) {
-		// The vendor scan found the disc pristine, so the uncorrectable pass was
-		// skipped by design (nothing for it to find). Say so — this is a
-		// reasoned skip, not an unknown.
-		std::cout << "  CU Assessment: NOT CHECKED - disc scanned clean\n";
-		std::cout << "  The vendor scan found no C2/E22 activity and low C1, so uncorrectable\n";
-		std::cout << "  (E32) errors are not possible here and the extra CD Check pass was\n";
-		std::cout << "  skipped to save time. Use Pioneer CD Check (option 28) to force one.\n";
-	}
 	else {
 		// Pioneer vendor scan with no CD Check available: CU is unknown, not
 		// zero. Say so plainly and point to the backends that can answer the
@@ -1223,7 +1240,8 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 		std::cout << "  drive's firmware did not answer the CD Check (0xE6) cross-check, so\n";
 		std::cout << "  uncorrectable errors could not be measured. A zero here would be the\n";
 		std::cout << "  absence of a measurement, not a clean result.\n";
-		std::cout << "  For a real uncorrectable/data-loss check, use the C2 error scan (option 7).\n";
+		std::cout << "  For a real data-loss check, use secure extraction/AccurateRip or another\n";
+		std::cout << "  drive that reports verified C2/CU data.\n";
 	}
 
 	if (cuMeasured && result.totalCU > 0) {
@@ -1241,7 +1259,7 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 
 	// ── Section 7: Distribution graphs ───────────────────────
 	// Draw per-metric bar graphs showing error distribution over time.
-	// Each column represents a time-bucketed average; height shows the
+	// Each column represents the peak within a time bucket; height shows the
 	// error rate.  The C1 graph includes a reference line at 220/sec
 	// (Red Book BLER limit).
 	if (!result.samples.empty()) {
@@ -1249,11 +1267,12 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 		constexpr int GRAPH_HEIGHT = 12;  // Rows in the bar graph
 
 		// Extract per-metric value arrays for bucketing.
-		std::vector<int> c1Vals, c2Vals, cuVals;
+		std::vector<int> c1Vals, c2Vals, cuVals, e22Vals;
 		for (const auto& s : result.samples) {
 			c1Vals.push_back(s.c1);
 			c2Vals.push_back(s.c2);
 			cuVals.push_back(s.cu);
+			e22Vals.push_back(s.pioneerE22);
 		}
 
 		// ── C1 distribution graph ────────────────────────────
@@ -1297,6 +1316,38 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 			}
 		}
 
+		// ── Pioneer E22 diagnostic distribution graph ──────────
+		// E22 is not verified C2/CU and cannot drive copy guidance, but its
+		// radial/time distribution is still useful. Keep it on a dedicated,
+		// explicitly diagnostic graph so it cannot be mistaken for C2.
+		if (pioneerScan) {
+			int peakE22 = *std::max_element(e22Vals.begin(), e22Vals.end());
+			if (peakE22 > 0) {
+				auto buckets = Console::BucketData(e22Vals, GRAPH_WIDTH);
+				Console::GraphOptions opts;
+				opts.title = "Pioneer E22 Distribution (Diagnostic Only)";
+				opts.subtitle = "Each column = a time slice; E22 is not verified C2/CU";
+				opts.width = GRAPH_WIDTH;
+				opts.height = GRAPH_HEIGHT;
+				opts.unitSuffix = "/sec";
+				opts.severityLowThreshold = 25;
+				opts.severityHighThreshold = 100;
+				opts.severityLowLabel = "1-24/sec low";
+				opts.severityModerateLabel = "25-99/sec elevated";
+				opts.severityHighLabel = "100+/sec heavy";
+				// Use the E22 peak-rating ceiling as the minimum Y scale so a 33/sec
+				// peak is shown as elevated, not misleadingly rendered full-height.
+				int graphMax = std::max(peakE22, 100);
+				Console::DrawBarGraph(buckets, graphMax, opts, result.totalSeconds);
+			}
+			else {
+				Console::SetColorRGB(Console::Theme::GreenR, Console::Theme::GreenG, Console::Theme::GreenB);
+				std::cout << "\n  " << Console::Sym::Check
+					<< " No Pioneer E22 diagnostic activity reported.\n";
+				Console::Reset();
+			}
+		}
+
 		// ── CU distribution graph ────────────────────────────
 		// Skip entirely when the backend doesn't measure CU: an all-zero graph
 		// or a green "No CU events" check would both misrepresent unmeasured
@@ -1320,11 +1371,11 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 		}
 
 		// ── Section 8: Disc health heatmap ────────────────────
-		// One row per verdict-driving metric. Each cell is tiered by an
-		// absolute threshold (not peak-normalised), so a healthy disc
-		// reads almost entirely "none" and trouble spots stand out by
-		// colour rather than relative height. Pioneer E22 is raw vendor
-		// diagnostic data, so it is intentionally excluded.
+		// One row per measured metric. Each cell is tiered by an absolute
+		// threshold (not peak-normalised), so a healthy disc reads almost
+		// entirely "none" and trouble spots stand out by colour rather than
+		// relative height. Pioneer E22 is included as a clearly marked
+		// diagnostic row; it remains excluded from copy/no-copy decisions.
 		const bool includeC2InCombined = !pioneerScan;
 
 		std::vector<Console::HeatmapRow> heat;
@@ -1344,6 +1395,14 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 			r.highThresh = 20;
 			heat.push_back(std::move(r));
 		}
+		if (pioneerScan) {
+			Console::HeatmapRow r;
+			r.label = "E22*";
+			r.values = Console::BucketData(e22Vals, GRAPH_WIDTH);
+			r.lowThresh = 25;
+			r.highThresh = 100;
+			heat.push_back(std::move(r));
+		}
 		if (cuMeasured) {
 			Console::HeatmapRow r;
 			r.label = "CU";
@@ -1354,13 +1413,14 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 		}
 
 		const std::string subtitle = pioneerScan
-			? "Each column = a time slice; cell colour = error severity (Pioneer E22 excluded)"
+			? "Each column = a time slice; E22* is Pioneer diagnostic only, not C2/CU"
 			: "Each column = a time slice; cell colour = error severity";
 
 		// Build the "(C1, C2, CU)" title from the rows actually shown so it can't
 		// advertise a CU row the backend never measured.
 		std::string heatTitle = "Disc Health Map (C1";
 		if (includeC2InCombined) heatTitle += ", C2";
+		if (pioneerScan) heatTitle += ", E22*";
 		if (cuMeasured) heatTitle += ", CU";
 		heatTitle += ")";
 
@@ -1390,8 +1450,8 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 	else
 		Console::SetColorRGB(Console::Theme::RedR, Console::Theme::RedG, Console::Theme::RedB);
 
-	std::cout << (pioneerScan ? "  C1/CU QUALITY: " : "  QUALITY:       ")
-		<< qr << "\n";
+	std::cout << (pioneerScan && !result.pioneerCdCheckRun
+		? "  C1 QUALITY:    " : "  QUALITY:       ") << qr << "\n";
 	Console::Reset();
 
 	// Repeat total-C1 and archival ratings in the summary block so the
@@ -1418,7 +1478,7 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 	Console::Reset();
 	std::cout << " (peak " << result.maxC1PerSecond << "/sec)\n";
 
-	if (result.totalC2 > 0) {
+	if (!pioneerScan && result.totalC2 > 0) {
 		std::cout << "  C2:            ";
 		if (result.avgC2PerSecond < 1.0)
 			Console::SetColorRGB(Console::Theme::YellowR, Console::Theme::YellowG, Console::Theme::YellowB);
@@ -1448,7 +1508,16 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 			<< " total, peak " << result.maxPioneerE22PerSecond << "/sec)\n";
 	}
 	if (pioneerScan) {
-		std::cout << "  Copy Decision: NOT TESTED by Pioneer Q-Check\n";
+		if (result.pioneerCdCheckRun) {
+			std::cout << "  Copy Decision: "
+				<< (result.pioneerCdCheckC2Bytes > 0
+					? "DATA LOSS DETECTED by Pioneer CD Check"
+					: "No uncorrectable data reported by Pioneer CD Check")
+				<< "\n";
+		}
+		else {
+			std::cout << "  Copy Decision: NOT TESTED - CU/E32 unavailable on this firmware\n";
+		}
 	}
 
 	Console::SetColorRGB(Console::Theme::DimR, Console::Theme::DimG, Console::Theme::DimB);
@@ -1457,14 +1526,14 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 
 	// Actionable recommendation based on the overall rating.
 	if (qr == "EXCELLENT") {
-		if (pioneerScan)
-			std::cout << "  C1/CU scan is excellent, but copyability was not tested here.\n";
+		if (pioneerScan && !result.pioneerCdCheckRun)
+			std::cout << "  C1 quality is excellent; copyability remains unmeasured.\n";
 		else
 			std::cout << "  Disc is in excellent condition.\n";
 	}
 	else if (qr == "GOOD") {
-		if (pioneerScan)
-			std::cout << "  C1/CU scan shows normal wear, but copyability was not tested here.\n";
+		if (pioneerScan && !result.pioneerCdCheckRun)
+			std::cout << "  C1 scan shows normal wear; copyability remains unmeasured.\n";
 		else
 			std::cout << "  Normal wear, no concerns.\n";
 	}
@@ -1504,17 +1573,18 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 // SaveQCheckLog — Export scan data to CSV for external analysis
 // ============================================================================
 // Format: commented header block with summary statistics, followed by a
-// CSV table with one row per time-slice sample (Time, Second, LBA, C1, C2, CU).
+// CSV table with one row per time-slice sample. Plextor/LiteOn rows contain
+// C1/C2/CU; Pioneer rows contain only the measured C1 and diagnostic E22.
 // The header uses '#' prefixes so it's ignored by most CSV parsers but
 // readable when opened in a text editor.
 // ============================================================================
 bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring& filename) {
 	std::ofstream log(std::filesystem::path(filename), std::ios::out | std::ios::trunc);
 	if (!log) return false;
-	// Pioneer's E22 counter is logged as C2 (see RunQCheckScan), so the CSV is a
-	// standard C1/C2/CU log regardless of backend. The scan-method field still
-	// records "Pioneer (0x3B/0x3C)" for provenance.
-	const bool pioneerScan = false;
+	// Pioneer E22 is a separate diagnostic column. Do not export placeholder
+	// numeric-zero C2/CU fields: downstream tools could mistake them for clean
+	// measurements even when the metadata says those counters were unavailable.
+	const bool pioneerScan = IsPioneerScanMethod(result.scanMethod);
 
 	// ── Header block: summary statistics ─────────────────────
 	// Written as '#'-prefixed comments so CSV parsers skip them but
@@ -1525,10 +1595,21 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 	log << "#\n";
 	if (!result.scanMethod.empty())
 		log << "# Scan Method:           " << result.scanMethod << "\n";
-	log << (pioneerScan ? "# C1/CU Quality:         " : "# Quality Rating:        ")
+	log << (pioneerScan && !result.pioneerCdCheckRun
+		? "# C1 Quality Rating:     " : "# Quality Rating:        ")
 		<< result.qualityRating << "\n";
-	if (pioneerScan)
-		log << "# Copy Decision:         NOT TESTED by Pioneer Q-Check\n";
+	if (pioneerScan) {
+		if (result.pioneerCdCheckRun) {
+			log << "# Copy Decision:         "
+				<< (result.pioneerCdCheckC2Bytes > 0
+					? "DATA LOSS DETECTED by Pioneer CD Check"
+					: "No uncorrectable data reported by Pioneer CD Check")
+				<< "\n";
+		}
+		else {
+			log << "# Copy Decision:         NOT TESTED - CU/E32 unavailable on this firmware\n";
+		}
+	}
 	log << "# Total Sectors:         " << result.totalSectors << "\n";
 	log << "# Samples Collected:     " << result.samples.size() << "\n";
 	log << "# Disc Length:           "
@@ -1548,25 +1629,28 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 		<< " (Red Book limit: 220/sec)\n";
 	log << "#\n";
 	log << "# --- C2 Statistics ---\n";
-	if (pioneerScan)
+	if (pioneerScan) {
 		log << "# Verified C2:           Not checked by Pioneer Q-Check vendor scan\n";
-	log << "# Total C2:              " << result.totalC2 << "\n";
-	log << "# Avg C2/sec:            " << std::fixed << std::setprecision(2)
-		<< result.avgC2PerSecond << "\n";
-	log << "# Max C2/sec:            " << result.maxC2PerSecond;
-	if (result.maxC2SecondIndex >= 0 && result.maxC2SecondIndex < static_cast<int>(result.samples.size()))
-		log << " (at LBA " << result.samples[result.maxC2SecondIndex].lba << ")";
-	log << "\n";
-	if (result.totalC2 > 0) {
-		log << "# C2 Affected Tracks:    ";
-		bool first = true;
-		for (const auto& te : result.errorTracks) {
-			if (te.c2Count == 0) continue;
-			log << (first ? "" : ", ") << te.trackNumber << "(" << te.c2Count << ")";
-			first = false;
-		}
-		if (first) log << "(none mapped)";
+	}
+	else {
+		log << "# Total C2:              " << result.totalC2 << "\n";
+		log << "# Avg C2/sec:            " << std::fixed << std::setprecision(2)
+			<< result.avgC2PerSecond << "\n";
+		log << "# Max C2/sec:            " << result.maxC2PerSecond;
+		if (result.maxC2SecondIndex >= 0 && result.maxC2SecondIndex < static_cast<int>(result.samples.size()))
+			log << " (at LBA " << result.samples[result.maxC2SecondIndex].lba << ")";
 		log << "\n";
+		if (result.totalC2 > 0) {
+			log << "# C2 Affected Tracks:    ";
+			bool first = true;
+			for (const auto& te : result.errorTracks) {
+				if (te.c2Count == 0) continue;
+				log << (first ? "" : ", ") << te.trackNumber << "(" << te.c2Count << ")";
+				first = false;
+			}
+			if (first) log << "(none mapped)";
+			log << "\n";
+		}
 	}
 	if (pioneerScan) {
 		log << "#\n";
@@ -1596,23 +1680,20 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 				<< (result.pioneerCdCheckC2Bytes == 0 ? "GOOD - none reported"
 					: "BAD - uncorrectable data present")
 				<< "\n";
-			log << "#                        (per-slice CU column below is 0 by omission)\n";
-		}
-		else if (result.pioneerCdCheckSkippedClean) {
-			// Disc scanned pristine, so the extra uncorrectable pass was skipped.
-			log << "# CU Measured:           NOT CHECKED - disc scanned clean (no C2/E22, low C1)\n";
-			log << "#                        (uncorrectable errors not possible; CD Check pass skipped)\n";
+			log << "#                        (no per-slice CU data is available)\n";
 		}
 		else {
-			// Pioneer vendor scan: CU is not measured, so the 0s below and in the
-			// per-sample CU column are placeholders, not a passed uncorrectable check.
+			// Pioneer vendor scan: CU is not measured and is omitted from per-sample
+			// CSV data rather than serialized as a misleading zero.
 			log << "# CU Measured:           NO - Pioneer vendor scan reports C1/E22 only\n";
-			log << "#                        (CU column below is 0 by omission, not measurement)\n";
+			log << "#                        (no per-slice CU column is exported)\n";
 		}
 	}
-	log << "# Total CU:              " << result.totalCU << "\n";
-	log << "# Max CU/sec:            " << result.maxCUPerSecond << "\n";
-	if (result.totalCU > 0) {
+	if (result.cuMeasured) {
+		log << "# Total CU:              " << result.totalCU << "\n";
+		log << "# Max CU/sec:            " << result.maxCUPerSecond << "\n";
+	}
+	if (result.cuMeasured && result.totalCU > 0) {
 		log << "# CU Affected Tracks:    ";
 		bool first = true;
 		for (const auto& te : result.errorTracks) {
@@ -1641,9 +1722,9 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 	// One row per time slice.  "Time" is formatted as M:SS for human
 	// readability; "Second" is the zero-based sample index for plotting.
 	log << "# ==============================\n";
-	log << (pioneerScan ? "# Per-Second C1/C2/CU/PioneerE22 Data\n" : "# Per-Second C1/C2/CU Data\n");
+	log << (pioneerScan ? "# Per-Second Pioneer C1/E22 Data\n" : "# Per-Second C1/C2/CU Data\n");
 	log << "# ==============================\n";
-	log << (pioneerScan ? "Time,Second,LBA,C1,C2,CU,PioneerE22\n" : "Time,Second,LBA,C1,C2,CU\n");
+	log << (pioneerScan ? "Time,Second,LBA,C1,PioneerE22\n" : "Time,Second,LBA,C1,C2,CU\n");
 
 	for (size_t i = 0; i < result.samples.size(); i++) {
 		const auto& s = result.samples[i];
@@ -1654,11 +1735,14 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 			<< std::setfill(' ')
 			<< "," << i
 			<< "," << s.lba
-			<< "," << s.c1
-			<< "," << s.c2
-			<< "," << s.cu;
-		if (pioneerScan)
+			<< "," << s.c1;
+		if (pioneerScan) {
 			log << "," << s.pioneerE22;
+		}
+		else {
+			log << "," << s.c2
+				<< "," << s.cu;
+		}
 		log << "\n";
 	}
 

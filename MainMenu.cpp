@@ -77,13 +77,21 @@ void RunPioneerCdCheck(OpticalDrive& copier, DiscInfo& disc) {
         return;
     }
 
-    // Build audio range: from track 1 start through last audio-track end.
-    DWORD startLBA = disc.tracks.front().startLBA;
+    // Match the hardware quality scan's audio span, including track 1's
+    // hidden pregap and later tracks' pregaps.
+    DWORD startLBA = 0;
     DWORD endLBA = 0;
+    bool foundAudio = false;
     for (const auto& t : disc.tracks) {
-        if (t.isAudio && t.endLBA > endLBA) endLBA = t.endLBA;
+        if (!t.isAudio) continue;
+        DWORD start = (t.trackNumber == 1) ? 0 : t.pregapLBA;
+        if (!foundAudio) {
+            startLBA = start;
+            foundAudio = true;
+        }
+        if (t.endLBA > endLBA) endLBA = t.endLBA;
     }
-    if (endLBA <= startLBA) {
+    if (!foundAudio || endLBA <= startLBA) {
         Console::Warning("No audio tracks on this disc.\n");
         return;
     }
@@ -118,8 +126,9 @@ void RunPioneerCdCheck(OpticalDrive& copier, DiscInfo& disc) {
             }
             Console::Info("\n  Alternative: use option 6 (Quality Scan). It drives Pioneer drives via\n");
             Console::Info("  the 0x3B/0x3C vendor quality-scan protocol (PioneerScanStart) and produces\n");
-            Console::Info("  C1/C2/CU error counts across the disc. Options 7 (C2 scan) and 8 (BLER\n");
-            Console::Info("  scan) now fall back to that same vendor scan on Pioneer drives too.\n");
+            Console::Info("  C1/BLER plus diagnostic E22 counts across the disc; it does not report\n");
+            Console::Info("  verified C2/E32 or CU on firmware without CD Check. Options 7 (C2 scan)\n");
+            Console::Info("  and 8 (BLER scan) fall back to that same vendor scan on Pioneer too.\n");
             return;
         }
     }
@@ -136,6 +145,10 @@ void RunPioneerCdCheck(OpticalDrive& copier, DiscInfo& disc) {
     bool sawProgress = false;
     bool sawValidMeasurement = false;
     bool sawInvalidMeasurement = false;
+    bool completedRange = false;
+    bool cancelled = false;
+    bool readFailed = false;
+    bool stalled = false;
     // Worst case: full 80-minute audio CD scanned at 1x = ~75 minutes.
     // Cap at 90 minutes wall-clock to allow for slow drives + start-up latency.
     constexpr int kPollMs = 500;
@@ -144,9 +157,17 @@ void RunPioneerCdCheck(OpticalDrive& copier, DiscInfo& disc) {
     constexpr int kStartupGraceIters = 20;                   // 10 s before declaring stall
 
     for (int i = 0; i < kMaxIters; i++) {
+        if (InterruptHandler::Instance().IsInterrupted() ||
+            InterruptHandler::Instance().CheckEscapeKey()) {
+            cancelled = true;
+            break;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(kPollMs));
         PioneerCdCheckResult r;
-        if (!pv.CdCheckRead(r)) break;
+        if (!pv.CdCheckRead(r)) {
+            readFailed = true;
+            break;
+        }
         if (r.dataValid) {
             lastValid = r;
             sawValidMeasurement = true;
@@ -171,25 +192,42 @@ void RunPioneerCdCheck(OpticalDrive& copier, DiscInfo& disc) {
             // Only count stalls once the drive has reported progress, or
             // after the startup grace window expires (drive hung at start).
             if (sawProgress || i >= kStartupGraceIters) {
-                if (++stallTicks >= kStallLimit) break;
+                if (++stallTicks >= kStallLimit) {
+                    stalled = true;
+                    break;
+                }
             }
         } else {
             stallTicks = 0;
             lastEnd = ea;
         }
-        if (sawProgress && ea >= endFrameAddress) break;
+        if (sawProgress && ea >= endFrameAddress) {
+            completedRange = true;
+            break;
+        }
     }
 
-    prog.Finish(sawProgress);
+    prog.Finish(completedRange && sawValidMeasurement && !cancelled);
     pv.CdCheckStop();
 
-    if (!sawProgress) {
-        Console::Error("CD Check did not produce any progress - drive may not support this feature.\n");
+    if (cancelled) {
+        Console::Warning("CD Check cancelled; partial measurements were discarded.\n");
         return;
     }
-
+    if (!completedRange) {
+        if (readFailed)
+            Console::Error("CD Check communication failed before the requested range completed.\n");
+        else if (stalled)
+            Console::Error("CD Check stalled before the requested range completed.\n");
+        else
+            Console::Error("CD Check timed out before the requested range completed.\n");
+        if (sawProgress)
+            std::cout << "  Last frame: " << lastEnd << " of " << endFrameAddress << "\n";
+        Console::Info("  Partial measurements were discarded; no Pioneer grade was assigned.\n");
+        return;
+    }
     if (!sawValidMeasurement) {
-        Console::Error("CD Check produced progress but no valid measurement data.\n");
+        Console::Error("CD Check completed but produced no valid measurement data.\n");
         return;
     }
 
@@ -294,7 +332,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			//  Disc Quality
 			// ════════════════════════════════════════════════════════════
 
-			// ── 5. Plextor Q-Check scan ─────────────────────────────────
+			// ── 5. Hardware quality scan ─────────────────────────────────
 		case 5: {
 			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
 			int speed = copier.SelectScanSpeed();
@@ -309,12 +347,12 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			}
 			else {
 				if (!qcheckResult.supported) {
-					Console::Warning("Q-Check is not available on this drive.\n");
-					Console::Info("Q-Check requires a classic Plextor drive:\n");
-					Console::Info("  PX-708A, PX-712A/SA, PX-716A/SA/AL, PX-755A/SA, PX-760A/SA\n");
-					Console::Info("\nIf your drive supports D8 reads, use option 8 (BLER Scan) for\n");
-					Console::Info("C2 error analysis. C1 block error rates are not measurable\n");
-					Console::Info("without a Q-Check-capable drive.\n");
+					Console::Warning("A hardware quality scan is not available on this drive.\n");
+					Console::Info("Supported backends are Plextor Q-Check, Pioneer 0x3B/0x3C,\n");
+					Console::Info("and LiteOn/MediaTek vendor quality scans.\n");
+					Console::Info("\nOptions 7/8 can use READ CD C2 only when the drive reports a\n");
+					Console::Info("functional C2 error-pointer bitmap; a zero-only unsupported\n");
+					Console::Info("bitmap must not be interpreted as a clean disc.\n");
 				}
 				else {
 					Console::Error("Q-Check scan failed.\n");

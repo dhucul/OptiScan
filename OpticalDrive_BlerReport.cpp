@@ -29,6 +29,8 @@ void OpticalDrive::PrintBlerReport(const DiscInfo& disc, const BlerResult& resul
 		std::cout << "  C1 reporting:    Yes (block error bytes 294-295)\n";
 	else
 		std::cout << "  C1 reporting:    No (drive does not support C1 stats)\n";
+	if (!result.measurementMethod.empty())
+		std::cout << "  Method:          " << result.measurementMethod << "\n";
 
 	// C1 Error Report
 	if (hasC1Support) {
@@ -62,6 +64,31 @@ void OpticalDrive::PrintBlerReport(const DiscInfo& disc, const BlerResult& resul
 			std::cout << "  C1 Assessment:        FAIR - elevated but within Red Book limits\n";
 		else
 			std::cout << "  C1 Assessment:        POOR - exceeds Red Book BLER limit\n";
+	}
+
+	if (result.c2Unverified) {
+		std::cout << "\n--- C2 Measurement ---\n";
+		std::cout << "  Status:           NOT VERIFIED / NOT MEASURED\n";
+		std::cout << "  A zero C2 total is not a clean result because this drive did not\n"
+			<< "  provide a trustworthy C2 error-pointer measurement.\n";
+		if (result.pioneerVendorQuality) {
+			std::cout << "\n--- Pioneer E22 Diagnostic (not C2) ---\n";
+			std::cout << "  Total E22:        " << result.pioneerE22Total << "\n";
+			std::cout << "  Avg E22/sec:      " << std::fixed << std::setprecision(2)
+				<< result.pioneerE22AvgPerSecond << "\n";
+			std::cout << "  Peak E22/sec:     " << result.pioneerE22Peak << "\n";
+			std::cout << "  Rating:           " << result.pioneerE22Rating << " (diagnostic only)\n";
+			std::cout << "  Uncorrectable:    ";
+			if (!result.pioneerCdCheckRun)
+				std::cout << "NOT MEASURED\n";
+			else if (result.pioneerCdCheckC2Bytes > 0)
+				std::cout << "YES - " << result.pioneerCdCheckC2Bytes
+					<< " C2-uncorrectable byte(s), worst window; DATA LOSS\n";
+			else
+				std::cout << "NO - completed Pioneer CD Check\n";
+		}
+		std::cout << "\n" << std::string(60, '=') << "\n";
+		return;
 	}
 
 	std::cout << "\n--- C2 Error Statistics ---\n";

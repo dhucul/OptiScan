@@ -302,13 +302,13 @@ private:
 
 	// Pioneer vendor-scan fallback for the per-sector C2 scans (display options
 	// 7 "C2 Error Scan" and 8 "BLER Scan"). On Pioneer BD burners (e.g. BDR-S13U)
-	// the per-sector READ CD C2 area reads all-zero, so those scans would report
-	// a clean disc regardless of its real condition. When the drive is Pioneer
-	// with the vendor quality scan available, this runs that scan (the same
-	// 0x3B/0x3C path as option 6) and fills `result` from it so the caller's
-	// report and CSV log reflect real C1/C2/CU. Returns true when it handled the
-	// scan; false to let the caller fall through to the per-sector path.
-	bool RunPioneerVendorC2Fallback(const DiscInfo& disc, BlerResult& result,
+	// the per-sector READ CD C2 area reads all-zero. The 0x3B/0x3C path supplies
+	// BLER and diagnostic E22, but verified C2/E32 remains marked unavailable
+	// unless the separate CD Check cross-check succeeds. Distinguish a backend
+	// that does not apply from one that was selected but failed, so callers never
+	// fall through to a known-unreliable all-zero C2 path after a vendor failure.
+	enum class PioneerQualityFallbackResult { NotApplicable, Completed, Failed };
+	PioneerQualityFallbackResult RunPioneerVendorQualityFallback(const DiscInfo& disc, BlerResult& result,
 		int scanSpeed, const char* featureLabel);
 
 	// Pioneer CU cross-check for the vendor quality scan (option 6). The Pioneer
