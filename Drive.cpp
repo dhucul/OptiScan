@@ -47,10 +47,40 @@ std::string GetDriveName(HANDLE h) {
 	return name.empty() ? "CD/DVD drive" : name;
 }
 
-int GetAudioTrackCount(HANDLE h) {
+// IOCTL_STORAGE_CHECK_VERIFY reports two transient conditions that are *not*
+// "no disc", and treating either as one is what makes a disc moved from one
+// drive to another read as an empty tray:
+//
+//   ERROR_MEDIA_CHANGED — the storage stack latches a media-change event and
+//     reports it exactly once, on the first access after the swap. A handle
+//     opened right after the user moves a disc hits this every time, so the
+//     retry below is unconditional: it consumes the latched event and the next
+//     call gives the real answer at no cost.
+//   ERROR_NOT_READY — returned both by an empty tray and by a disc that is
+//     still spinning up, indistinguishable at this layer. Only a bounded wait
+//     can tell them apart, so the caller supplies the budget it can afford.
+int GetAudioTrackCount(HANDLE h, int notReadyWaitMs) {
 	DWORD ret;
-	if (!DeviceIoControl(h, IOCTL_STORAGE_CHECK_VERIFY, nullptr, 0, nullptr, 0, &ret, nullptr))
-		return -1;
+	const auto start = std::chrono::steady_clock::now();
+	int mediaChangedRetries = 4;   // bounded: never spin on a wedged device
+
+	while (!DeviceIoControl(h, IOCTL_STORAGE_CHECK_VERIFY, nullptr, 0, nullptr, 0, &ret, nullptr)) {
+		const DWORD err = GetLastError();
+
+		if (err == ERROR_MEDIA_CHANGED) {
+			if (mediaChangedRetries-- > 0)
+				continue;          // event consumed; re-ask immediately
+			return -1;
+		}
+		if (err != ERROR_NOT_READY)
+			return -1;             // a real failure, not a spin-up
+
+		const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now() - start).count();
+		if (elapsed >= notReadyWaitMs)
+			return -1;
+		Sleep(250);
+	}
 
 	CDROM_TOC toc = {};
 	if (!DeviceIoControl(h, IOCTL_CDROM_READ_TOC, nullptr, 0, &toc, sizeof(toc), &ret, nullptr))
@@ -66,6 +96,7 @@ int GetAudioTrackCount(HANDLE h) {
 
 bool WaitForMediaReady(HANDLE h, int maxWaitMs) {
 	auto start = std::chrono::steady_clock::now();
+	int mediaChangedRetries = 4;
 	while (true) {
 		DWORD ret;
 		if (DeviceIoControl(h, IOCTL_STORAGE_CHECK_VERIFY, nullptr, 0, nullptr, 0, &ret, nullptr)) {
@@ -76,7 +107,11 @@ bool WaitForMediaReady(HANDLE h, int maxWaitMs) {
 			Sleep(250);
 		}
 		else if (err == ERROR_MEDIA_CHANGED) {
-			continue;
+			// Latched media-change event: re-ask at once rather than sleeping.
+			// Bounded, because this branch doesn't sleep — the old `continue`
+			// here also skipped the timeout check below, so a device that kept
+			// re-reporting the event span forever.
+			if (mediaChangedRetries-- <= 0) break;
 		}
 		else {
 			break;
@@ -94,11 +129,40 @@ bool CheckForAudioTracks(HANDLE h) {
 	return count > 0;
 }
 
+namespace {
+
+// One CD/DVD drive and what the media probe made of its contents.
+struct DriveProbe {
+	wchar_t     letter = 0;
+	bool        opened = false;
+	std::string name;
+	int         audioTracks = -1;  // >0 audio CD, 0 data, -1 no disc, -2 empty/blank
+};
+
+// Extra time ScanDrives will spend waiting out disc spin-up, in total and per
+// drive. Only ever spent when the quick pass found no audio disc at all — i.e.
+// exactly when the alternative is reporting "no audio CD anywhere" for a disc
+// the user has just seated.
+constexpr int SCAN_SPINUP_BUDGET_MS = 5000;
+constexpr int SCAN_SPINUP_PER_DRIVE_MS = 4000;
+
+// Once one disc has answered, the remaining candidates get only a short look.
+// They still have to be probed — stopping at the first hit would under-report
+// `audioDrives`, and a caller that sees one disc where there are two switches
+// to it silently instead of offering the choice. But a drive loaded alongside
+// one that just came ready is either ready too or empty, so a brief probe is
+// enough and an empty tray costs little.
+constexpr int SCAN_SPINUP_AFTER_HIT_MS = 750;
+
+}  // namespace
+
 std::vector<wchar_t> ScanDrives(std::vector<wchar_t>& audioDrives, bool verbose) {
 	std::vector<wchar_t> cdDrives;
 	audioDrives.clear();
 	DWORD driveMask = GetLogicalDrives();
 
+	// ── Pass 1: probe every drive, no spin-up wait ───────────
+	std::vector<DriveProbe> probes;
 	for (wchar_t letter = L'A'; letter <= L'Z'; letter++) {
 		if (!(driveMask & (1 << (letter - L'A'))))
 			continue;
@@ -108,52 +172,97 @@ std::vector<wchar_t> ScanDrives(std::vector<wchar_t>& audioDrives, bool verbose)
 			continue;
 
 		cdDrives.push_back(letter);
-		if (verbose) {
-			std::cout << "  [";
-			Console::SetColor(Console::Color::Yellow);
-			std::cout << static_cast<char>(letter) << ":";
-			Console::Reset();
-			std::cout << "] ";
-		}
+
+		DriveProbe p;
+		p.letter = letter;
 
 		HANDLE h = OpenDriveHandle(letter);
-		if (h == INVALID_HANDLE_VALUE) {
-			if (verbose) std::cout << "\n";
+		if (h != INVALID_HANDLE_VALUE) {
+			p.opened = true;
+			if (verbose) p.name = GetDriveName(h);
+			p.audioTracks = GetAudioTrackCount(h);
+			CloseHandle(h);
+		}
+		probes.push_back(p);
+	}
+
+	// ── Pass 2: re-probe the "no disc" drives with a grace ───
+	// A disc the user has just moved between drives is usually still spinning up
+	// when the next workflow rescans, so the quick pass reads it as an empty
+	// tray. Callers treat an empty result as "keep the drive we already had"
+	// (see ReselectSourceDriveIfMultiple), which silently runs the workflow
+	// against the drive the disc was taken *out* of. Re-probe only when nothing
+	// was found, so a scan that already succeeded never pays the wait.
+	bool foundAudio = false;
+	for (const auto& p : probes) {
+		if (p.audioTracks > 0) { foundAudio = true; break; }
+	}
+
+	if (!foundAudio) {
+		if (verbose) Console::Info("  Waiting for a disc to become ready...\n");
+
+		int budget = SCAN_SPINUP_BUDGET_MS;
+		bool hit = false;
+		for (auto& p : probes) {
+			if (budget <= 0) break;
+			// A data disc (0) is a definitive answer; so is a drive we couldn't open.
+			if (!p.opened || p.audioTracks >= 0) continue;
+
+			HANDLE h = OpenDriveHandle(p.letter);
+			if (h == INVALID_HANDLE_VALUE) continue;
+
+			const int slice = (std::min)(
+				budget, hit ? SCAN_SPINUP_AFTER_HIT_MS : SCAN_SPINUP_PER_DRIVE_MS);
+
+			const auto start = std::chrono::steady_clock::now();
+			p.audioTracks = GetAudioTrackCount(h, slice);
+			budget -= static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now() - start).count());
+			CloseHandle(h);
+
+			if (p.audioTracks > 0) hit = true;
+		}
+	}
+
+	// ── Report ───────────────────────────────────────────────
+	for (const auto& p : probes) {
+		if (p.audioTracks > 0)
+			audioDrives.push_back(p.letter);
+
+		if (!verbose) continue;
+
+		std::cout << "  [";
+		Console::SetColor(Console::Color::Yellow);
+		std::cout << static_cast<char>(p.letter) << ":";
+		Console::Reset();
+		std::cout << "] ";
+
+		if (!p.opened) {
+			std::cout << "\n";
 			continue;
 		}
 
-		if (verbose) std::cout << GetDriveName(h);
-
-		int audioTracks = GetAudioTrackCount(h);
-		if (audioTracks == -1) {
-			if (verbose) {
-				Console::SetColor(Console::Color::DarkGray);
-				std::cout << " - No disc";
-				Console::Reset();
-			}
+		std::cout << p.name;
+		if (p.audioTracks == -1) {
+			Console::SetColor(Console::Color::DarkGray);
+			std::cout << " - No disc";
+			Console::Reset();
 		}
-		else if (audioTracks == -2) {
-			if (verbose) {
-				Console::SetColor(Console::Color::DarkGray);
-				std::cout << " - Empty/Blank";
-				Console::Reset();
-			}
+		else if (p.audioTracks == -2) {
+			Console::SetColor(Console::Color::DarkGray);
+			std::cout << " - Empty/Blank";
+			Console::Reset();
 		}
-		else if (audioTracks > 0) {
-			if (verbose) {
-				std::cout << " - ";
-				Console::SetColor(Console::Color::Green);
-				std::cout << "AUDIO CD (" << audioTracks << " tracks)";
-				Console::Reset();
-			}
-			audioDrives.push_back(letter);
+		else if (p.audioTracks > 0) {
+			std::cout << " - ";
+			Console::SetColor(Console::Color::Green);
+			std::cout << "AUDIO CD (" << p.audioTracks << " tracks)";
+			Console::Reset();
 		}
 		else {
-			if (verbose) std::cout << " - Data disc";
+			std::cout << " - Data disc";
 		}
-
-		CloseHandle(h);
-		if (verbose) std::cout << "\n";
+		std::cout << "\n";
 	}
 
 	return cdDrives;

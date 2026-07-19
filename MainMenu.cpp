@@ -1031,6 +1031,47 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 		case 31: {
 			Console::Heading("\n=== Erase CD-RW ===\n");
 
+			// Erase is destructive and, unlike every other write path, used to run
+			// against whatever drive happened to be open — the audio-source drive
+			// after any earlier scan, or an arbitrary one on a fresh launch. Pick
+			// the target the way Copy disc / Write tracks do, defaulting to the
+			// drive already open.
+			{
+				std::vector<wchar_t> eraseAudioDrives;
+				// Quiet scan — SelectWriterDrive prints the numbered list itself.
+				std::vector<wchar_t> eraseCdDrives =
+					ScanDrives(eraseAudioDrives, /*verbose=*/false);
+				if (eraseCdDrives.empty()) {
+					Console::Error("No CD/DVD drives detected.\n");
+					break;
+				}
+
+				wchar_t pick = eraseCdDrives.front();
+				if (eraseCdDrives.size() > 1) {
+					Console::Info("\nPick the drive holding the disc to erase.\n");
+					pick = SelectWriterDrive(eraseCdDrives, audioDrive);
+					if (!pick) { Console::Info("Erase cancelled.\n"); break; }
+				}
+
+				if (pick != audioDrive) {
+					copier.Close();
+					if (!copier.Open(pick)) {
+						Console::Error("Failed to open the selected drive.\n");
+						copier.Open(audioDrive);   // leave the session usable
+						break;
+					}
+					audioDrive = pick;
+					// The cached TOC describes the disc in the drive we just left.
+					disc = DiscInfo{};
+					hasTOC = false;
+				}
+
+				std::string target = "Erasing in drive ";
+				target += static_cast<char>(audioDrive);
+				target += ":\n";
+				Console::Info(target.c_str());
+			}
+
 			bool isFull = false, isRewritable = false, isBlank = false;
 			bool detected = copier.CheckRewritableDisk(isFull, isRewritable, false, &isBlank);
 
@@ -1078,6 +1119,12 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			// skipConfirm=true: the Quick/Full choice above (and the force prompt for
 			// an unreadable disc) already confirm this destructive action.
 			copier.BlankRewritableDisk(speed, quickBlank, /*skipConfirm=*/true);
+
+			// The disc's contents are gone, so any cached TOC for it is now a
+			// lie. Drop it rather than let a later operation act on a layout
+			// that no longer exists on the medium.
+			disc = DiscInfo{};
+			hasTOC = false;
 			break;
 		}
 

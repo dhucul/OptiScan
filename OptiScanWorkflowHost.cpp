@@ -9,10 +9,12 @@
 #include "DriveSelection.h"
 #include "FileUtils.h"
 #include "InterruptHandler.h"
+#include "OptiScanUi.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Disc / drive state retained across button clicks.
@@ -151,23 +153,24 @@ bool ButtonDisablesMenu(int btnIndex) {
     return btnIndex != 26 && btnIndex != 27;  // Check updates / Help
 }
 
-// GUI button indices (0-based) whose label ends in "*" — these workflows
-// rely on per-track pregap data, so the TOC must be freshly read before
-// they run. Kept in sync with the `*` markers in CommandLabels[].
+// A trailing "*" in CommandLabels[] marks a workflow that depends on the source
+// disc — its TOC, its pregaps, or its surface. Those must re-offer the drive
+// selector and re-read the disc before running; without it they operate on
+// whatever disc was last scanned, in whatever drive it was last seen in, and
+// quietly report results for the wrong disc.
+//
+// This is derived from the label rather than listed separately on purpose. It
+// used to be a hand-maintained parallel array of button indices, and every
+// workflow added after it was written — Pioneer CD Check, the LiteOn jitter and
+// FE/TE scans, the fingerprint and lead-area checks — was missed, so none of
+// them ever refreshed the disc. One source of truth can't drift.
 bool ButtonNeedsPrescan(int btnIndex) {
-    static const int prescanButtons[] = {
-        0, 1, 2, 3,   // Copy disc, Rip tracks, Write disc, Write tracks
-        4,            // Recovery rip (drive-independent)
-        5, 6, 7, 8,   // Quality scan, C2 scan, BLER scan, Disc rot
-        9, 10,        // Surface map, Multi-pass verify
-        12,           // Audio content analysis
-        15, 16,       // Subchannel integrity, Verify subchannel burn
-        24,           // Disc balance check
-    };
-    for (int b : prescanButtons) {
-        if (b == btnIndex) return true;
-    }
-    return false;
+    if (btnIndex < 0 || btnIndex >= COMMAND_BUTTON_COUNT) return false;
+
+    std::wstring_view label(CommandLabels[btnIndex]);
+    while (!label.empty() && label.back() == L' ')
+        label.remove_suffix(1);
+    return !label.empty() && label.back() == L'*';
 }
 
 // Re-runs the TOC + pregap probe and refreshes the cached disc state.
@@ -210,7 +213,14 @@ void RefreshDisc() {
     DiscInfo fresh;
     bool ok = false;
     for (int attempt = 0; attempt < 10; attempt++) {
-        if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) return;
+        if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
+            // Abandoning the refresh must not leave the *previous* disc's TOC
+            // looking current — the drive was just closed and reopened, so the
+            // cached DiscInfo describes a disc we can no longer vouch for.
+            g_disc = DiscInfo{};
+            g_hasTOC = false;
+            return;
+        }
         if (g_copier.ReadTOC(fresh)) { ok = true; break; }
         Console::Info("Waiting for disc to become ready...\n");
         Sleep(2000);
@@ -249,7 +259,20 @@ void ReselectSourceDriveIfMultiple() {
     // Quiet scan — SelectAudioDrive prints its own numbered list.
     ScanDrives(audioDrives, /*verbose=*/false);
 
-    if (audioDrives.empty()) return;            // keep current drive
+    if (audioDrives.empty()) {
+        // Keep the current drive, but say so. Silently falling through here is
+        // indistinguishable from a successful re-select, so a disc that wasn't
+        // detected looked like "the disc didn't refresh" while the workflow
+        // quietly re-ran against the drive it was moved out of.
+        if (g_audioDrive) {
+            char buf[96];
+            std::snprintf(buf, sizeof(buf),
+                          "No audio disc detected in any drive; staying on %c:.\n",
+                          static_cast<char>(g_audioDrive));
+            Console::Warning(buf);
+        }
+        return;
+    }
 
     if (audioDrives.size() == 1) {
         g_audioDrive = audioDrives[0];          // switch if different; same = no-op

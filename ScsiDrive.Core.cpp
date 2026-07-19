@@ -111,6 +111,8 @@ bool ScsiDrive::Open(wchar_t driveLetter) {
 		// Reset cached probe results — new handle may be a different drive
 		m_qcheckProbed = -1;
 		m_liteonScanProbed = -1;
+		m_liteonJitterProbed = -1;   // these two were omitted, so a jitter/FE-TE
+		m_liteonFeTeProbed = -1;     // verdict leaked across a drive switch
 		m_pioneerScanProbed = -1;
 		m_pioneerSpeedMode = 0;
 		m_cddaMainChannelFlags = 0xF8;  // Re-probe the CD-DA read form per drive

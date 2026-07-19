@@ -10,7 +10,13 @@ constexpr DWORD AUDIO_TRACK_MASK = 0x04;
 // Drive information and operations
 HANDLE OpenDriveHandle(wchar_t letter);
 std::string GetDriveName(HANDLE h);
-int GetAudioTrackCount(HANDLE h);
+// Returns the number of audio tracks, -1 for "no disc" and -2 for empty/blank.
+// A freshly seated disc reports neither state cleanly: the storage stack raises
+// a one-shot media-change event and then ERROR_NOT_READY while the disc spins
+// up. The media-change retry is unconditional (it costs nothing); `notReadyWaitMs`
+// is the extra budget the caller is willing to spend waiting out a spin-up
+// before accepting "no disc".
+int GetAudioTrackCount(HANDLE h, int notReadyWaitMs = 0);
 bool WaitForMediaReady(HANDLE h, int maxWaitMs = 5000);
 bool CheckForAudioTracks(HANDLE h);
 // Enumerate CD/DVD drives. `audioDrives` is filled with drives that currently
