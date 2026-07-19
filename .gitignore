@@ -364,3 +364,5 @@ FodyWeavers.xsd
 
 # Claude Code local worktrees and session artifacts (never commit these)
 .claude/
+# Scratch dumps produced by scans
+toc_dump.bin
