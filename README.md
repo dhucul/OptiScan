@@ -6,6 +6,8 @@ A Windows **GUI application** for high-quality audio CD ripping, writing, and ad
 
 OptiScan reads and writes audio CDs at the raw sector level using SCSI/MMC commands and provides multiple quality scanning modes to assess disc health before, during, or after extraction.
 
+**[Download the latest release](https://github.com/dhucul/OptiScan/releases/latest)** — `OptiScan-<version>-Setup.exe`, a 64-bit installer for Windows 10 or later. It installs the Microsoft Visual C++ 2015–2022 runtime if the system doesn't already have it, so it requires administrator rights.
+
 > [!IMPORTANT]
 > **Drive compatibility is not universal.** OptiScan relies on low-level SCSI/MMC and vendor-specific optical-drive commands, so support depends on the exact drive model, firmware, chipset, USB bridge, and media type. A drive may work for normal ripping but still fail features such as pregap detection, subchannel reading/writing, CD-Text writing, C2/C1 reporting, or hardware quality scans.
 >
