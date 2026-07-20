@@ -81,7 +81,7 @@ The original command-line workflow has been ported to a native Win32 GUI: every 
 - **Rescan disc** — re-reads disc TOC and metadata; supports switching between multiple drives
 - **Check for updates** — queries GitHub Releases for newer versions
 - **Help** — built-in test descriptions
-- **Pioneer CD Check** — hardware audio-quality measurement on supported Pioneer drives (`WRITE/READ BUFFER 0xE6`) reporting C1/C2 frame counts and tracking-error peaks with Pioneer's NORMAL / LOW / BAD grading
+- **Pioneer CD Check** — hardware audio-quality measurement on supported Pioneer drives (`WRITE/READ BUFFER 0xE6`) with Quick 0.05 mm radial sampling or a full-range pass, reporting C1/C2 uncorrectable counts and tracking-error peaks with Pioneer's A/B/C/D grading
 - **Jitter / beta scan** — LiteOn/MediaTek vendor scan (`0xDF/0x1B`) reporting per-time-slice EFM jitter and pit/land asymmetry
 - **Batch run** — runs multiple menu items in succession with a single shared pre-scan (TOC + CD-Text + ISRC) at the start, instead of re-reading the disc between each operation
 - **Clear info box** — clears the GUI output pane when idle; doubles as Cancel for the active workflow (or current batch step) while a workflow is running
@@ -188,6 +188,12 @@ All secure modes use C2 error pointers when available — a clean C2 read is tru
 
 For discs that fail even Secure Paranoid — or when the drive's C2 reporting can't be trusted — use the separate **[Recovery Rip](#recovery-rip-drive-independent)** engine (menu option 5), which rebuilds hard sectors from cross-read consensus instead of relying on the drive's C2.
 
+### Pioneer Real-Time PureRead diagnostics
+
+On Pioneer drives that support Real-Time PureRead, full-disc and selected-track rips isolate the firmware's cumulative PureRead counters to the current read session. After all extraction and requested physical-verification passes finish, OptiScan reports the number of PureRead error-sector events, transferred sectors, their ratio, the last transfer position, and Pioneer's **Perfect / Better / Good / Not Good / Bad / Fatal** indicator.
+
+The summary is diagnostic only: a PureRead error event is not verified C2/CU data and does not by itself prove the output is incorrect. Rip success, error handling, and AccurateRip decisions remain unchanged. Full-disc copies write `<basename>_pureread.log`; selected-track rips write `PioneerPureRead.log` in the output folder. OptiScan reads the counters only before and after the session, never concurrently with audio-sector transfers.
+
 ### When to Use Each Mode
 
 | Mode | Best for | Speed | Trade-off |
@@ -240,6 +246,8 @@ OptiScan offers multiple quality scans. Each answers a different question about 
 **Question answered:** *"What quality counters does this drive's hardware report across the disc?"*
 
 This scan uses **vendor-specific hardware commands** to put the drive into a dedicated error-measurement mode — **no audio data is transferred**. Plextor and LiteOn backends report C1/C2/CU statistics. Pioneer reports C1/BLER plus its raw E22 diagnostic counter; E22 is not treated as verified C2/E32 or CU, and cannot by itself establish copy integrity.
+
+On a Pioneer backend, Q-Check also invokes the separate CD Check protocol over the full audio range when firmware supports it. BLER, C2, and Disc Rot use that same shared path through their Pioneer fallback. The engine disables PureRead temporarily, enters the utility's prepare/inspect state, retries transient commands three times, always stops measurement and restores inspection mode, and accepts a clean zero only after the requested range completed with valid data. Unsupported, partial, cancelled, stalled, and invalid scans remain explicitly **unmeasured**.
 
 Three command sets are supported:
 
@@ -434,7 +442,7 @@ Each metric produces a 0–100 sub-score. These are blended into a single **Bala
 | 50–74 | **FAIR** — some wobble detected | Reduce rip speed |
 | 0–49 | **POOR** — significant balance problem | Use 4×–8× maximum |
 
-The scan also determines the **maximum safe rip speed** — the highest speed at which no wobble degradation was detected.
+The scan also determines the **maximum safe rip speed** — the highest speed at which no wobble degradation was detected. On Pioneer drives, Disc Balance additionally runs the utility-compatible Quick CD Check at 0.05 mm radial intervals and reports genuine uncorrectable bytes separately. That sampled data-loss result never changes the mechanical balance score, and a failed or unsupported CD Check is shown as **unmeasured**, never as zero errors.
 
 **Output:** Per-speed error rates, jitter statistics, sub-scores, balance score, and safe speed recommendation.
 

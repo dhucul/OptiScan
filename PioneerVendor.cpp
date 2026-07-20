@@ -5,11 +5,17 @@
 #include "PioneerVendor.h"
 #include "ScsiDrive.h"
 #include "Constants.h"
+#include "ConsoleColors.h"
+#include <algorithm>
 #include <cstring>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <iomanip>
-#include <algorithm>
+#include <sstream>
+#include <chrono>
+#include <thread>
 
 namespace {
     // Big-endian helpers.
@@ -293,6 +299,23 @@ PioneerPerformanceModeGuard::~PioneerPerformanceModeGuard() {
     }
 }
 
+PioneerCdInspectionGuard::PioneerCdInspectionGuard(ScsiDrive& drive, bool active)
+    : m_pioneer(drive), m_active(active) {
+    if (!m_active) return;
+
+    // The Pioneer utility enters prepare state before inspecting the loaded
+    // audio disc, then enters inspection state immediately before measurement.
+    // Arm cleanup before the writes so every partial transition gets mode 2.
+    m_restore = true;
+    m_pioneer.SetCdInspectionMode(0);
+    m_inspectionModeActive = m_pioneer.SetCdInspectionMode(1);
+}
+
+PioneerCdInspectionGuard::~PioneerCdInspectionGuard() {
+    if (m_restore)
+        m_pioneer.SetCdInspectionMode(2);
+}
+
 bool PioneerVendor::GetRealTimePureReadStatus(PioneerRtPureReadStatus& status) {
     status = {};
     if (!IsPioneerDrive()) return false;
@@ -320,6 +343,234 @@ bool PioneerVendor::ClearRealTimePureReadStatus() {
     cdb[1] = 0x02;
     cdb[2] = PioneerBufId::RealTimePureRead;
     return m_drive.SendSCSI(cdb, 10, &empty, 0, /*dataIn=*/false);
+}
+
+// ── Real-Time PureRead rip diagnostics ──────────────────────────────────────
+PioneerPureReadSummary AssessPioneerPureRead(uint32_t errorSectors,
+    uint32_t transferredSectors, uint32_t lastLBA) {
+    PioneerPureReadSummary summary;
+    summary.valid = true;
+    summary.errorSectors = errorSectors;
+    summary.transferredSectors = transferredSectors;
+    summary.lastLBA = lastLBA;
+
+    // The Pioneer utility maps a zero transfer count to level 0. For a rip
+    // report that would look like a clean measurement when no measurement was
+    // actually collected, so retain it explicitly as No Data instead.
+    if (transferredSectors == 0) {
+        summary.assessment = PioneerPureReadAssessment::NoData;
+        summary.indicatorLevel = -1;
+        return summary;
+    }
+
+    summary.errorRatio = static_cast<double>(errorSectors)
+        / static_cast<double>(transferredSectors);
+    if (errorSectors == 0) {
+        summary.indicatorLevel = 0;
+        summary.assessment = PioneerPureReadAssessment::Perfect;
+    }
+    else if (summary.errorRatio < 0.000125) {
+        summary.indicatorLevel = 1;
+        summary.assessment = PioneerPureReadAssessment::Better;
+    }
+    else if (summary.errorRatio < 0.00025) {
+        summary.indicatorLevel = 2;
+        summary.assessment = PioneerPureReadAssessment::Good;
+    }
+    else if (summary.errorRatio < 0.000525) {
+        summary.indicatorLevel = 3;
+        summary.assessment = PioneerPureReadAssessment::NotGood;
+    }
+    else if (summary.errorRatio < 0.001155) {
+        summary.indicatorLevel = 4;
+        summary.assessment = PioneerPureReadAssessment::NotGood;
+    }
+    else if (summary.errorRatio < 0.0026565) {
+        summary.indicatorLevel = 5;
+        summary.assessment = PioneerPureReadAssessment::NotGood;
+    }
+    else if (summary.errorRatio < 0.0079695) {
+        summary.indicatorLevel = 6;
+        summary.assessment = PioneerPureReadAssessment::Bad;
+    }
+    else if (summary.errorRatio < 0.031878) {
+        summary.indicatorLevel = 7;
+        summary.assessment = PioneerPureReadAssessment::Bad;
+    }
+    else {
+        summary.indicatorLevel = 8;
+        summary.assessment = PioneerPureReadAssessment::Fatal;
+    }
+    return summary;
+}
+
+const char* PioneerPureReadAssessmentName(PioneerPureReadAssessment assessment) {
+    switch (assessment) {
+    case PioneerPureReadAssessment::Perfect: return "Perfect";
+    case PioneerPureReadAssessment::Better:  return "Better";
+    case PioneerPureReadAssessment::Good:    return "Good";
+    case PioneerPureReadAssessment::NotGood: return "Not Good";
+    case PioneerPureReadAssessment::Bad:     return "Bad";
+    case PioneerPureReadAssessment::Fatal:   return "Fatal";
+    default:                                 return "No Data";
+    }
+}
+
+std::string FormatPioneerPureReadMsf(uint32_t lba) {
+    const uint32_t minutes = lba / (75u * 60u);
+    const uint32_t seconds = (lba / 75u) % 60u;
+    const uint32_t frames = lba % 75u;
+    std::ostringstream out;
+    out << std::setfill('0') << std::setw(2) << minutes << ':'
+        << std::setw(2) << seconds << ':' << std::setw(2) << frames;
+    return out.str();
+}
+
+bool PioneerPureReadSession::Begin() {
+    if (m_started || m_finished) return false;
+
+    PureReadMode mode = PureReadMode::Off;
+    bool realTimeEnabled = false;
+    if (!m_pioneer.GetPureReadMode(mode, realTimeEnabled)
+        || mode == PureReadMode::Off || !realTimeEnabled) {
+        return false;
+    }
+
+    PioneerRtPureReadStatus before;
+    const bool haveBefore = m_pioneer.GetRealTimePureReadStatus(before);
+    const bool cleared = m_pioneer.ClearRealTimePureReadStatus();
+
+    if (cleared) {
+        // Use the post-clear values when the firmware exposes them immediately;
+        // otherwise retain the pre-clear snapshot. If the firmware really did
+        // reset, Finish() detects the lower final counters and safely uses them
+        // directly; if it did not, subtracting this snapshot excludes stale data.
+        PioneerRtPureReadStatus afterClear;
+        if (m_pioneer.GetRealTimePureReadStatus(afterClear)) {
+            m_baseErrorSectors = afterClear.errorSectors;
+            m_baseTransferredSectors = afterClear.playSectors;
+        }
+        else if (haveBefore) {
+            m_baseErrorSectors = before.errorSectors;
+            m_baseTransferredSectors = before.playSectors;
+        }
+    }
+    else if (haveBefore) {
+        // Clearing is optional for correctness: subtract the cumulative values
+        // observed immediately before the rip.
+        m_baseErrorSectors = before.errorSectors;
+        m_baseTransferredSectors = before.playSectors;
+    }
+    else {
+        return false;
+    }
+
+    m_started = true;
+    return true;
+}
+
+bool PioneerPureReadSession::Finish(PioneerPureReadSummary& summary) {
+    if (m_finished) {
+        summary = m_cachedSummary;
+        return summary.valid;
+    }
+    if (!m_started) return false;
+
+    PioneerRtPureReadStatus finalStatus;
+    constexpr int kStatusRetries = 3;
+    bool haveFinalStatus = false;
+    for (int attempt = 0; attempt < kStatusRetries; ++attempt) {
+        if (m_pioneer.GetRealTimePureReadStatus(finalStatus)) {
+            haveFinalStatus = true;
+            break;
+        }
+        if (attempt + 1 < kStatusRetries)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    // Leave the session unfinished on failure so a later Finish() call can
+    // retry instead of permanently returning a cached invalid summary.
+    if (!haveFinalStatus) return false;
+
+    // A lower final value means the firmware reset the counter after Begin;
+    // use the final value rather than turning it into an unsigned underflow.
+    const uint32_t errorDelta = (finalStatus.errorSectors >= m_baseErrorSectors)
+        ? finalStatus.errorSectors - m_baseErrorSectors
+        : finalStatus.errorSectors;
+    const uint32_t transferredDelta = (finalStatus.playSectors >= m_baseTransferredSectors)
+        ? finalStatus.playSectors - m_baseTransferredSectors
+        : finalStatus.playSectors;
+
+    m_cachedSummary = AssessPioneerPureRead(errorDelta, transferredDelta,
+        finalStatus.currentLBA);
+    m_finished = true;
+    summary = m_cachedSummary;
+    return true;
+}
+
+void PrintPioneerPureReadSummary(const PioneerPureReadSummary& summary) {
+    if (!summary.valid) return;
+
+    Console::Heading("\n=== Pioneer Real-Time PureRead Summary ===\n");
+    std::cout << "  Error sectors:       " << summary.errorSectors << "\n";
+    std::cout << "  Transferred sectors: " << summary.transferredSectors << "\n";
+    if (summary.transferredSectors > 0) {
+        std::cout << "  Error ratio:         " << std::fixed << std::setprecision(6)
+            << summary.errorRatio << "  (" << std::setprecision(4)
+            << summary.errorRatio * 100.0 << "%)\n" << std::defaultfloat;
+        std::cout << "  Indicator level:     " << summary.indicatorLevel << "/8\n";
+    }
+    else {
+        std::cout << "  Error ratio:         unavailable (no transfer count)\n";
+        std::cout << "  Indicator level:     unavailable\n";
+    }
+    std::cout << "  Assessment:          "
+        << PioneerPureReadAssessmentName(summary.assessment) << "\n";
+    std::cout << "  Last transfer:       LBA " << summary.lastLBA << "  ("
+        << FormatPioneerPureReadMsf(summary.lastLBA) << ")\n";
+
+    if (summary.transferredSectors == 0) {
+        Console::Warning("  PureRead returned no transferred-sector count; no clean/error verdict was assigned.\n");
+    }
+    else if (summary.errorSectors == 0) {
+        Console::Success("  PureRead reported no error-sector events during this read session.\n");
+    }
+    else {
+        Console::Warning("  PureRead handled one or more firmware-detected error sectors during this read session.\n");
+    }
+    Console::Info("  Diagnostic only: this is not verified C2/CU data or proof that the output is incorrect.\n");
+}
+
+bool SavePioneerPureReadSummary(const std::wstring& filename,
+    const PioneerPureReadSummary& summary, const std::string& workflow,
+    const std::string& readOutcome) {
+    if (!summary.valid) return false;
+
+    std::ofstream log(std::filesystem::path(filename), std::ios::out | std::ios::trunc);
+    if (!log) return false;
+
+    log << "# Pioneer Real-Time PureRead Rip Summary\n";
+    log << "Workflow: " << workflow << "\n";
+    log << "Read phase: " << readOutcome << "\n";
+    log << "PureRead error sectors: " << summary.errorSectors << "\n";
+    log << "Transferred sectors: " << summary.transferredSectors << "\n";
+    if (summary.transferredSectors > 0) {
+        log << "Error ratio: " << std::fixed << std::setprecision(8)
+            << summary.errorRatio << "\n";
+        log << "Error percentage: " << std::setprecision(6)
+            << summary.errorRatio * 100.0 << "%\n";
+        log << "Indicator level: " << summary.indicatorLevel << "/8\n";
+    }
+    else {
+        log << "Error ratio: unavailable\n";
+        log << "Indicator level: unavailable\n";
+    }
+    log << "Assessment: " << PioneerPureReadAssessmentName(summary.assessment) << "\n";
+    log << "Last transfer LBA: " << summary.lastLBA << "\n";
+    log << "Last transfer MSF: " << FormatPioneerPureReadMsf(summary.lastLBA) << "\n";
+    log << "\n# This is a Pioneer firmware diagnostic. It is not verified C2/CU data\n";
+    log << "# and does not by itself prove that the extracted audio is incorrect.\n";
+    log << "# Use secure rereads, physical comparison, or AccurateRip for integrity.\n";
+    return static_cast<bool>(log);
 }
 
 // ── Quiet / Performance ─────────────────────────────────────────────────────
@@ -417,6 +668,17 @@ bool PioneerVendor::RunBusPowerCheck(uint32_t& reading) {
 // flag as 0 even though the 0xE6+0x300000 protocol is implemented). The drive
 // is the authoritative oracle — it will reject the SCSI command with a sense
 // error if the feature is genuinely unsupported.
+bool PioneerVendor::SetCdInspectionMode(BYTE mode) {
+    if (!IsPioneerDrive() || mode > 2) return false;
+
+    BYTE payload[32] = {};
+    payload[0] = 0x91;
+    payload[1] = 0x60;
+    payload[2] = mode;
+    return WriteBuffer(PioneerBufId::McDirectAlt, 0, payload,
+        static_cast<DWORD>(sizeof(payload)), 2);
+}
+
 bool PioneerVendor::CdCheckStart(uint32_t startLBA, uint32_t unitSize) {
     BYTE sk = 0, asc = 0, ascq = 0;
     return CdCheckStartWithSense(startLBA, unitSize, sk, asc, ascq);
@@ -479,6 +741,58 @@ bool PioneerVendor::CdCheckRead(PioneerCdCheckResult& result) {
     result.teIntegrationMax = LoadBE16(buf + 62);
     result.teDataValid = (result.tePeak != 0xFFFF && result.teIntegrationMax != 0xFFFF);
     return true;
+}
+
+bool PioneerVendor::GetCdPhysicalTrackParameters(uint32_t leadoutInnerAddress,
+    double& linearVelocity, double& trackPitch) {
+    linearVelocity = 0.0;
+    trackPitch = 0.0;
+    if (!IsPioneerDrive()) return false;
+
+    BYTE payload[32] = {};
+    payload[0] = 0x50;
+    payload[1] = 0x54;
+    StoreBE32(payload + 5, leadoutInnerAddress);
+    payload[12] = 1;
+    if (!WriteBuffer(PioneerBufId::McDirect, 0, payload,
+        static_cast<DWORD>(sizeof(payload)), 2)) {
+        return false;
+    }
+
+    BYTE response[32] = {};
+    if (!ReadBuffer(PioneerBufId::McDirect, 0, response,
+        static_cast<DWORD>(sizeof(response)), 2)) {
+        return false;
+    }
+
+    linearVelocity = static_cast<double>(LoadBE32(response + 3)) * 6.103515625e-05;
+    trackPitch = static_cast<double>(LoadBE32(response + 7)) * 0.0001220703125;
+    return linearVelocity > 0.0 && trackPitch > 0.0;
+}
+
+PioneerCdCheckGrade GradePioneerCdCheckSample(const PioneerCdCheckResult& result) {
+    // Pioneer BD Drive Utility's CInspectionResult::SetData thresholds.
+    if (!result.valid || !result.dataValid)
+        return PioneerCdCheckGrade::D;
+    if (result.teDataValid && result.teIntegrationMax > 1140 && result.tePeak >= 45)
+        return PioneerCdCheckGrade::D;
+    if (result.c2Uncorrectable > 15)
+        return PioneerCdCheckGrade::D;
+    if (result.c2Uncorrectable != 0)
+        return PioneerCdCheckGrade::C;
+    if (result.c1Uncorrectable > 25)
+        return PioneerCdCheckGrade::B;
+    return PioneerCdCheckGrade::A;
+}
+
+const char* PioneerCdCheckGradeName(PioneerCdCheckGrade grade) {
+    switch (grade) {
+    case PioneerCdCheckGrade::A: return "A";
+    case PioneerCdCheckGrade::B: return "B";
+    case PioneerCdCheckGrade::C: return "C";
+    case PioneerCdCheckGrade::D: return "D";
+    }
+    return "?";
 }
 
 // ── Media code / Media ID / write protection ────────────────────────────────

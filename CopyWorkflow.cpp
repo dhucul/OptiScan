@@ -316,6 +316,33 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstring& /
 		}
 	}
 
+	PioneerPureReadSession pureReadSession(copier.GetDriveRef());
+	const bool pureReadMonitoring = pureReadSession.Begin();
+	bool pureReadFinalized = false;
+	auto finishPureReadMonitoring = [&](const char* readOutcome) {
+		if (!pureReadMonitoring || pureReadFinalized) return;
+		pureReadFinalized = true;
+
+		PioneerPureReadSummary summary;
+		if (!pureReadSession.Finish(summary)) {
+			Console::Warning("Pioneer Real-Time PureRead counters could not be read after extraction.\n");
+			return;
+		}
+
+		PrintPioneerPureReadSummary(summary);
+		std::wstring reportPath = path + L"_pureread.log";
+		if (SavePioneerPureReadSummary(reportPath, summary, "Full-disc copy", readOutcome)) {
+			Console::Success("PureRead diagnostic log saved to: ");
+			std::wcout << reportPath << L"\n";
+		}
+		else {
+			Console::Warning("Could not save the PureRead diagnostic log.\n");
+		}
+	};
+	if (pureReadMonitoring) {
+		Console::Info("Pioneer Real-Time PureRead monitoring started for this read session.\n");
+	}
+
 	Console::Info("\nReading disc...\n");
 	ProgressIndicator prog;
 	prog.SetLabel("Reading");
@@ -345,6 +372,7 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstring& /
 
 	if (!readSuccess) {
 		prog.Finish(false);
+		finishPureReadMonitoring("Failed before completion");
 		return false;
 	}
 	prog.Finish(true);
@@ -410,6 +438,7 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstring& /
 			}
 
 			if (!readSuccess) {
+				finishPureReadMonitoring("C2-disabled retry failed");
 				return false;
 			}
 
@@ -418,6 +447,10 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstring& /
 				Console::Success("Retry succeeded with C2 disabled.\n");
 			}
 		}
+
+		finishPureReadMonitoring(anyAudio
+			? "Completed"
+			: "Completed with no extracted audio data");
 
 		if (!disc.rawSectors.empty() && !anyAudio) {
 			// badSectors only flavors the message — the trigger is the all-zero

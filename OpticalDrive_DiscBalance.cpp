@@ -51,7 +51,10 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 	// here — this check sweeps read speed on purpose, so the drive's speed must
 	// stay under our control.
 	PioneerVendor pioneerProbe(m_drive);
-	PioneerPureReadOffGuard pioneerPureReadGuard(m_drive, pioneerProbe.IsPioneerDrive());
+	const bool isPioneerDrive = pioneerProbe.IsPioneerDrive();
+	PioneerPureReadOffGuard pioneerPureReadGuard(m_drive, isPioneerDrive);
+	PioneerCdCheckSummary balanceCdCheck;
+	bool balanceCdCheckAttempted = false;
 
 	// Probe hardware quality-scan availability early — these probes print
 	// diagnostics, so do them before the progress bar starts.  Prefer
@@ -533,6 +536,23 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 		}
 	}
 
+	// Pioneer E22 is diagnostic-only. Add the utility's quick radial CD Check so
+	// Disc Balance reports genuine uncorrectable bytes with the same lifecycle
+	// and unmeasured-vs-clean rules as Q-Check, BLER, C2, and Disc Rot. This is a
+	// data-loss cross-check only; it does not alter the mechanical balance score.
+	if (isPioneerDrive) {
+		balanceCdCheckAttempted = true;
+		RunPioneerCdCheckMeasurement(disc, PioneerCdCheckScanMode::Quick,
+			balanceCdCheck, "  CD Check");
+		if (balanceCdCheck.cancelled ||
+			InterruptHandler::Instance().IsInterrupted()) {
+			m_drive.SetSpeed(0);
+			m_drive.SpinDown();
+			std::cout << "\n*** Balance check cancelled during CD Check cross-check ***\n";
+			return false;
+		}
+	}
+
 	m_drive.SetSpeed(0);
 	m_drive.SpinDown();
 
@@ -995,6 +1015,31 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 	std::cout << "  (Detects vibration / wobble by sweeping read speed)\n\n";
 	std::cout << "  This is a mechanical/read-stability assessment, not a C2/CU\n"
 		<< "  data-loss test or proof that an extraction is bit-perfect.\n\n";
+	if (balanceCdCheckAttempted) {
+		std::cout << "--- Pioneer CD Check Data-Loss Cross-Check ---\n";
+		if (balanceCdCheck.reliable) {
+			std::cout << "  Coverage: Quick radial sampling (0.05 mm), "
+				<< balanceCdCheck.validSamples << " / "
+				<< balanceCdCheck.plannedSamples << " samples\n";
+			std::cout << "  Worst C1 uncorrectable: "
+				<< balanceCdCheck.worstC1Frames << " frames\n";
+			std::cout << "  Worst C2 uncorrectable: "
+				<< balanceCdCheck.worstC2Bytes << " bytes";
+			if (balanceCdCheck.worstC2Bytes == 0)
+				std::cout << "  (none in sampled windows)\n";
+			else
+				std::cout << "  ** DATA LOSS DETECTED **\n";
+			std::cout << "  This sampled result is reported separately and does not change\n"
+				<< "  the mechanical Balance Score or Suggested Max Rip Speed.\n\n";
+		}
+		else {
+			std::cout << "  Uncorrectable status: UNMEASURED ("
+				<< (balanceCdCheck.failureReason.empty()
+					? "no complete valid measurement" : balanceCdCheck.failureReason)
+				<< ")\n"
+				<< "  A missing measurement is not reported as a clean zero.\n\n";
+		}
+	}
 	auto PrintReadSignalReport = [&]() {
 		std::cout << "--- READ CD / Read-Stability Signal by Speed ---\n";
 		for (int s = 0; s < NUM_SPEEDS; s++) {

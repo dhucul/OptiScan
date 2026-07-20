@@ -325,24 +325,20 @@ void PrintHelpMenu() {
 
 	PrintEntry({ "29. Pioneer CD Check (Audio Quality)",
 		"Pioneer-only hardware audio-quality measurement. The drive scans the\n"
-		"   audio range internally at ~1x using vendor command WRITE/READ BUFFER\n"
-		"   0xE6 at offset 0x300000, then reports:\n"
+		"   audio range internally using WRITE/READ BUFFER 0xE6 at offset\n"
+		"   0x300000. Quick mode samples every 0.05 mm of disc radius; Full mode\n"
+		"   measures the complete audio range. Both report:\n"
 		"     - C1 uncorrectable frame count\n"
 		"     - C2 uncorrectable byte count\n"
 		"     - Tracking-error (TE) peak and integration max\n"
-		"   75 sectors of audio = 1 second; one frame is 1/75 second.\n"
 		"\n"
-		"   Results are classified per Pioneer's own thresholds:\n"
-		"     NORMAL - Some part may be unable to read smoothly, though the\n"
-		"              disc remains playable as original sound in most CD players.\n"
-		"     LOW    - The disc remains playable in most CD players, though its\n"
-		"              data may be incorporated. PureRead can help recover\n"
-		"              original sound by duplicating the disc.\n"
-		"     BAD    - The disc might not be played back in some CD players.\n"
+		"   Pioneer's A/B/C/D thresholds grade corrected, uncorrectable, and\n"
+		"   tracking-error measurements. PureRead is temporarily disabled so it\n"
+		"   cannot hide raw errors, and the previous setting is restored afterward.\n"
 		"\n"
-		"   Requires a Pioneer drive whose capability block (READ BUFFER 0xF4)\n"
-		"   advertises CD Check support at byte 44. Available on most modern\n"
-		"   Pioneer BDR-* drives.",
+		"   Firmware support varies. Capability byte 44 is advisory because some\n"
+		"   drives report it incorrectly; OptiScan probes the command and leaves\n"
+		"   unsupported or incomplete measurements explicitly unmeasured.",
 		"Authoritative quality assessment of an audio CD on Pioneer drives." });
 
 	PrintEntry({ "30. Jitter / Beta Scan (LiteOn)",

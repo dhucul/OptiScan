@@ -10,6 +10,9 @@
 #include <functional>
 #include <string>
 
+enum class PioneerCdCheckScanMode;
+struct PioneerCdCheckSummary;
+
 class OpticalDrive {
 public:
 	OpticalDrive() = default;
@@ -78,6 +81,12 @@ public:
 	// Quality scanning
 	bool RunBlerScan(const DiscInfo& disc, BlerResult& result, int scanSpeed = 8);
 	bool RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int scanSpeed = 8);
+	// Shared Pioneer CD Check engine used by the standalone utility and all
+	// Pioneer quality workflows. Full scans every measurement window; Quick
+	// mirrors the Pioneer utility's 0.05 mm radial sampling mode.
+	bool RunPioneerCdCheckMeasurement(const DiscInfo& disc,
+		PioneerCdCheckScanMode mode, PioneerCdCheckSummary& summary,
+		const char* progressLabel = "  CD Check");
 	void PrintQCheckReport(const QCheckResult& result);
 	bool SaveQCheckLog(const QCheckResult& result, const std::wstring& filename);
 	bool RunJitterScan(const DiscInfo& disc, JitterResult& result, int scanSpeed = 8);
@@ -316,7 +325,7 @@ private:
 	// but no uncorrectable (E32/CU) figure. This runs the separate Pioneer CD
 	// Check (0xE6+0x300000) protocol over the same audio range to obtain a real
 	// uncorrectable measurement, filling the pioneerCdCheck* fields of `result`.
-	// Returns true only when the CD Check produced valid data. Quick no-op on
+	// Returns true only when the CD Check produced valid data. Returns immediately on
 	// non-Pioneer drives and on Pioneer firmware that dropped the protocol (e.g.
 	// BDR-S13U: the start command fails fast). Cancellable via ESC/Ctrl+C.
 	bool RunPioneerCdCheckCrosscheck(const DiscInfo& disc, QCheckResult& result);

@@ -28,6 +28,7 @@
 #include <functional>
 #include <fstream>
 #include <filesystem>
+#include <cmath>
 
 namespace {
 bool IsPioneerScanMethod(const std::string& method) {
@@ -884,140 +885,410 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 // Pioneer CD Check (0xE6+0x300000) protocol DOES report a real C2-uncorrectable
 // byte count. When the drive implements it, run it over the same audio range so
 // the quality-scan report can show a genuine uncorrectable result. Fills the
-// result.pioneerCdCheck* fields; returns true only on a valid measurement.
-// Mirrors the polling shape of RunPioneerCdCheck (MainMenu.cpp) but condensed:
-// no grading/printout, just the worst-window C1/C2 uncorrectable figures.
+// result.pioneerCdCheck* fields; returns true only on a complete valid
+// measurement. The shared engine below also serves the standalone utility and
+// Disc Balance, keeping inspection-state, retries, cleanup and validity aligned.
 // ============================================================================
-bool OpticalDrive::RunPioneerCdCheckCrosscheck(const DiscInfo& disc, QCheckResult& result) {
+bool OpticalDrive::RunPioneerCdCheckMeasurement(const DiscInfo& disc,
+	PioneerCdCheckScanMode mode, PioneerCdCheckSummary& summary,
+	const char* progressLabel) {
+	summary = {};
+	summary.mode = mode;
+
 	PioneerVendor pv(m_drive);
-	if (!pv.IsPioneerDrive())
+	if (!pv.IsPioneerDrive()) {
+		summary.failureReason = "Pioneer drive required";
 		return false;
+	}
+
+	struct AudioRange {
+		DWORD startLBA;
+		DWORD endLBA;
+	};
+	std::vector<AudioRange> audioRanges;
+	for (const auto& track : disc.tracks) {
+		if (!track.isAudio) continue;
+		// Pioneer BD Drive Utility starts and stops CD Check for each audio
+		// track. Keeping separate ranges prevents mixed-mode/data tracks from
+		// being silently included in an audio error-verification pass.
+		if (track.endLBA >= track.startLBA)
+			audioRanges.push_back({ track.startLBA, track.endLBA });
+	}
+	if (audioRanges.empty()) {
+		summary.failureReason = "no usable audio range";
+		return false;
+	}
+	std::sort(audioRanges.begin(), audioRanges.end(),
+		[](const AudioRange& a, const AudioRange& b) {
+			return a.startLBA < b.startLBA;
+		});
+	const DWORD startLBA = audioRanges.front().startLBA;
+	const DWORD endLBA = audioRanges.back().endLBA;
+
+	constexpr DWORD kFrameOffset = 150;
+	constexpr DWORD kInnerOffset = 0x6000 + kFrameOffset;
+	constexpr DWORD kFrameToInner = 0x6000;
+	constexpr DWORD kUnitSectors = 38;
+	constexpr int kCommandRetries = 3;
+	summary.startFrame = startLBA + kFrameOffset;
+	summary.endFrame = endLBA + kFrameOffset;
+	summary.lastFrame = summary.startFrame;
+
+	// These guards also make the standalone menu option behave like Q-Check,
+	// BLER, C2, Disc Rot, and Disc Balance. Nested uses are reference-safe.
+	DriveDoorLockGuard doorLock(m_drive);
+	PioneerPureReadOffGuard pureReadOff(m_drive, true);
+	PioneerPerformanceModeGuard performanceMode(m_drive, true);
+	PioneerCdInspectionGuard inspectionMode(m_drive, true);
+	summary.inspectionModeActive = inspectionMode.inspectionModeActive();
+	if (!summary.inspectionModeActive) {
+		std::cout << "  NOTE: Pioneer inspection-state command was rejected; "
+			"trying CD Check directly.\n";
+	}
+
+	auto interrupted = [] {
+		return InterruptHandler::Instance().IsInterrupted() ||
+			InterruptHandler::Instance().CheckEscapeKey();
+	};
+
+	BYTE lastSenseKey = 0, lastAsc = 0, lastAscq = 0;
+	auto startMeasurement = [&](DWORD frameAddress) {
+		for (int attempt = 0; attempt < kCommandRetries; ++attempt) {
+			if (interrupted()) return false;
+			if (pv.CdCheckStartWithSense(frameAddress + kFrameToInner,
+				kUnitSectors, lastSenseKey, lastAsc, lastAscq)) {
+				summary.protocolStarted = true;
+				return true;
+			}
+			if (attempt + 1 < kCommandRetries)
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		}
+		return false;
+	};
+
+	auto readMeasurement = [&](PioneerCdCheckResult& reading) {
+		for (int attempt = 0; attempt < kCommandRetries; ++attempt) {
+			if (pv.CdCheckRead(reading)) return true;
+			if (attempt + 1 < kCommandRetries)
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		}
+		return false;
+	};
+
+	auto recordMeasurement = [&](const PioneerCdCheckResult& reading) {
+		summary.lastValid = reading;
+		++summary.validSamples;
+		summary.worstC1Frames = std::max(summary.worstC1Frames,
+			static_cast<int>(reading.c1Uncorrectable));
+		summary.worstC2Bytes = std::max(summary.worstC2Bytes,
+			static_cast<int>(reading.c2Uncorrectable));
+		const PioneerCdCheckGrade grade = GradePioneerCdCheckSample(reading);
+		const bool moreSevere = static_cast<int>(grade) >
+			static_cast<int>(summary.worstGrade);
+		const bool worseSameGrade = grade == summary.worstGrade &&
+			(reading.c2Uncorrectable > summary.worstSample.c2Uncorrectable ||
+			(reading.c2Uncorrectable == summary.worstSample.c2Uncorrectable &&
+				reading.c1Uncorrectable > summary.worstSample.c1Uncorrectable));
+		if (!summary.worstSample.valid || moreSevere || worseSameGrade) {
+			summary.worstGrade = grade;
+			summary.worstSample = reading;
+		}
+	};
+
+	std::cout << "\n  Pioneer CD Check "
+		<< (mode == PioneerCdCheckScanMode::Quick
+			? "quick radial cross-check (0.05 mm samples)"
+			: "full-range uncorrectable cross-check")
+		<< " (0xE6)...\n";
+
+	ProgressIndicator progress(40);
+	progress.SetLabel(progressLabel ? progressLabel : "  CD Check");
+	progress.Start();
+
+	if (mode == PioneerCdCheckScanMode::Full) {
+		DWORD totalSectors = 0;
+		for (const auto& range : audioRanges) {
+			const DWORD rangeSectors = range.endLBA - range.startLBA + 1;
+			totalSectors += rangeSectors;
+			summary.plannedSamples += static_cast<int>(
+				(rangeSectors + kUnitSectors - 1) / kUnitSectors);
+		}
+
+		// READ BUFFER is the pacing operation used by the Pioneer utility. Do not
+		// add a fixed polling delay: at the utility's estimated 8x inspection rate,
+		// a new 38-sector result can be available about every 63 ms. Address
+		// continuity below makes a skipped result an explicit unmeasured outcome.
+		const auto scanDeadline = std::chrono::steady_clock::now() +
+			std::chrono::minutes(90);
+		constexpr auto kStallTimeout = std::chrono::seconds(30);
+		DWORD completedSectors = 0;
+		bool allRangesCompleted = true;
+
+		for (const auto& range : audioRanges) {
+			const DWORD rangeStartFrame = range.startLBA + kFrameOffset;
+			const DWORD rangeEndFrame = range.endLBA + kFrameOffset;
+			const DWORD rangeSectors = range.endLBA - range.startLBA + 1;
+
+			if (!startMeasurement(rangeStartFrame)) {
+				// A transport failure can be ambiguous about whether the device accepted
+				// the command, so issue the idempotent stop before leaving the lifecycle.
+				pv.CdCheckStop();
+				allRangesCompleted = false;
+				if (interrupted()) {
+					summary.cancelled = true;
+					summary.failureReason = "cancelled";
+				}
+				else {
+					std::ostringstream reason;
+					reason << "start rejected (sense " << std::hex << std::uppercase
+						<< static_cast<int>(lastSenseKey) << "/"
+						<< static_cast<int>(lastAsc) << "/"
+						<< static_cast<int>(lastAscq) << ")";
+					summary.failureReason = reason.str();
+				}
+				break;
+			}
+
+			DWORD lastRecordedEnd = 0;
+			bool haveRecordedAddress = false;
+			bool rangeCompleted = false;
+			auto lastProgressAt = std::chrono::steady_clock::now();
+
+			while (std::chrono::steady_clock::now() < scanDeadline) {
+				if (interrupted()) {
+					summary.cancelled = true;
+					summary.failureReason = "cancelled";
+					break;
+				}
+
+				PioneerCdCheckResult reading;
+				if (!readMeasurement(reading)) {
+					summary.failureReason = "communication failed while reading results";
+					break;
+				}
+
+				const DWORD endAddress = reading.endAddress;
+				summary.lastFrame = std::max(summary.lastFrame,
+					static_cast<uint32_t>(endAddress));
+
+				// Values below this track's start can be the completed result from the
+				// preceding track. Ignore them until this track produces its first unit.
+				if (endAddress >= rangeStartFrame &&
+					(!haveRecordedAddress || endAddress != lastRecordedEnd)) {
+					const DWORD maxNextAddress = haveRecordedAddress
+						? lastRecordedEnd + kUnitSectors
+						: rangeStartFrame + kUnitSectors;
+					if ((haveRecordedAddress && endAddress < lastRecordedEnd) ||
+						endAddress > maxNextAddress) {
+						summary.sawInvalidMeasurement = true;
+						summary.failureReason = "measurement address gap detected";
+						break;
+					}
+					if (!reading.dataValid) {
+						summary.sawInvalidMeasurement = true;
+						summary.failureReason = "invalid error data in measurement sequence";
+						break;
+					}
+
+					recordMeasurement(reading);
+					lastRecordedEnd = endAddress;
+					haveRecordedAddress = true;
+					lastProgressAt = std::chrono::steady_clock::now();
+
+					const DWORD rangeDone = std::min<DWORD>(
+						endAddress - rangeStartFrame + 1, rangeSectors);
+					progress.Update(static_cast<int>(completedSectors + rangeDone),
+						static_cast<int>(totalSectors));
+
+					if (endAddress >= rangeEndFrame) {
+						rangeCompleted = true;
+						break;
+					}
+				}
+
+				if (std::chrono::steady_clock::now() - lastProgressAt >=
+					kStallTimeout) {
+					summary.failureReason = "measurement stalled";
+					break;
+				}
+			}
+
+			pv.CdCheckStop();
+			if (!rangeCompleted) {
+				allRangesCompleted = false;
+				if (summary.failureReason.empty())
+					summary.failureReason = "measurement timed out";
+				break;
+			}
+			completedSectors += rangeSectors;
+		}
+
+		summary.completed = allRangesCompleted && !summary.cancelled &&
+			!summary.sawInvalidMeasurement &&
+			summary.validSamples >= summary.plannedSamples;
+		progress.Finish(summary.completed);
+	}
+	else {
+		// The utility's CD table has a dynamic coefficient at index 5:
+		//   radius = sqrt(coefficient * frame + 655360000) / 1024
+		// where coefficient = pitch * velocity / 75 / pi * 1048576.
+		double linearVelocity = 0.0, trackPitch = 0.0;
+		bool physicalParametersValid = false;
+		for (int attempt = 0; attempt < kCommandRetries; ++attempt) {
+			physicalParametersValid =
+				pv.GetCdPhysicalTrackParameters(endLBA + kInnerOffset,
+					linearVelocity, trackPitch) &&
+				std::isfinite(linearVelocity) && std::isfinite(trackPitch) &&
+				linearVelocity >= 0.5 && linearVelocity <= 2.5 &&
+				trackPitch >= 0.5 && trackPitch <= 3.0;
+			if (physicalParametersValid) break;
+			if (attempt + 1 < kCommandRetries)
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		}
+		if (!physicalParametersValid) {
+			// Standard CD CLV geometry keeps quick mode useful on firmware that
+			// supports measurement but not the auxiliary physical-parameter query.
+			linearVelocity = 1.2;
+			trackPitch = 1.6; // micrometres, matching the vendor response units
+			summary.usedFallbackGeometry = true;
+		}
+		constexpr double kPi = 3.1415926535;
+		constexpr double kRadiusIntercept = 655360000.0; // 25 mm squared * 1024^2
+		constexpr double kRadiusStepMm = 0.05;
+		const double coefficient = trackPitch * linearVelocity / 75.0 / kPi *
+			1048576.0;
+
+		std::vector<DWORD> sampleFrames;
+		for (const auto& range : audioRanges) {
+			const DWORD rangeStartFrame = range.startLBA + kFrameOffset;
+			const DWORD rangeEndFrame = range.endLBA + kFrameOffset;
+			if (rangeEndFrame < rangeStartFrame + (kUnitSectors - 1)) {
+				summary.sawInvalidMeasurement = true;
+				summary.failureReason =
+					"an audio track is shorter than one complete measurement window";
+				break;
+			}
+
+			const DWORD lastSampleFrame = rangeEndFrame - (kUnitSectors - 1);
+			DWORD frame = rangeStartFrame;
+			const size_t firstRangeSample = sampleFrames.size();
+			while (frame <= lastSampleFrame) {
+				sampleFrames.push_back(frame);
+				const double radius =
+					std::sqrt(coefficient * frame + kRadiusIntercept) / 1024.0;
+				const double nextRadius = radius + kRadiusStepMm;
+				const double nextAddress =
+					(nextRadius * nextRadius * 1048576.0 - kRadiusIntercept) /
+					coefficient;
+				DWORD nextFrame = static_cast<DWORD>(
+					std::floor(std::max(0.0, nextAddress)));
+				if (nextFrame <= frame)
+					nextFrame = frame + kUnitSectors;
+				frame = nextFrame;
+			}
+			if (sampleFrames.size() == firstRangeSample ||
+				sampleFrames.back() != lastSampleFrame) {
+				sampleFrames.push_back(lastSampleFrame);
+			}
+		}
+		if (sampleFrames.empty()) {
+			summary.sawInvalidMeasurement = true;
+			if (summary.failureReason.empty()) {
+				summary.failureReason =
+					"no audio track contains a complete measurement window";
+			}
+		}
+		summary.plannedSamples = static_cast<int>(sampleFrames.size());
+
+		for (size_t sampleIndex = 0; sampleIndex < sampleFrames.size() &&
+			!summary.sawInvalidMeasurement; ++sampleIndex) {
+			if (interrupted()) {
+				summary.cancelled = true;
+				summary.failureReason = "cancelled";
+				break;
+			}
+
+			const DWORD targetFrame = sampleFrames[sampleIndex];
+			bool sampleValid = false;
+			for (int measurementAttempt = 0;
+				measurementAttempt < kCommandRetries && !sampleValid;
+				++measurementAttempt) {
+				if (!startMeasurement(targetFrame)) {
+					pv.CdCheckStop();
+					continue;
+				}
+
+				constexpr int kQuickPollMs = 100;
+				constexpr int kQuickPollLimit = 50; // 5 s for a 38-sector window
+				for (int poll = 0; poll < kQuickPollLimit; ++poll) {
+					if (interrupted()) {
+						summary.cancelled = true;
+						break;
+					}
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(kQuickPollMs));
+					PioneerCdCheckResult reading;
+					if (!readMeasurement(reading))
+						break;
+					// The Pioneer utility advances to the next radial sample only after
+					// both the error counters and the TE fields are valid. Accepting the
+					// error fields early can miss a TE-based Grade D result.
+					if (reading.dataValid && reading.teDataValid &&
+						reading.endAddress >= targetFrame) {
+						recordMeasurement(reading);
+						summary.lastFrame = std::max(summary.lastFrame,
+							static_cast<uint32_t>(reading.endAddress));
+						sampleValid = true;
+						break;
+					}
+				}
+				pv.CdCheckStop();
+				if (summary.cancelled) break;
+			}
+
+			if (summary.cancelled) break;
+			if (!sampleValid) {
+				summary.sawInvalidMeasurement = true;
+				summary.failureReason = "a radial sample failed after three attempts";
+				break;
+			}
+			progress.Update(static_cast<int>(sampleIndex + 1),
+				static_cast<int>(sampleFrames.size()));
+		}
+		summary.completed = !summary.cancelled && !summary.sawInvalidMeasurement &&
+			summary.validSamples == summary.plannedSamples;
+		progress.Finish(summary.completed);
+	}
+
+	summary.reliable = summary.completed && summary.validSamples > 0 &&
+		!summary.sawInvalidMeasurement && !summary.cancelled;
+	if (!summary.reliable) {
+		if (summary.failureReason.empty())
+			summary.failureReason = "no complete valid measurement was produced";
+		std::cout << "  CD Check " << summary.failureReason
+			<< " - uncorrectable status remains unmeasured.\n";
+	}
+	else if (summary.usedFallbackGeometry) {
+		std::cout << "  NOTE: Quick mode used standard CD geometry because the drive "
+			"did not return physical track parameters.\n";
+	}
+	return summary.reliable;
+}
+
+bool OpticalDrive::RunPioneerCdCheckCrosscheck(const DiscInfo& disc, QCheckResult& result) {
 	result.pioneerCdCheckRun = false;
 	result.pioneerCdCheckC1Frames = 0;
 	result.pioneerCdCheckC2Bytes = 0;
 
-	// Audio range: track 1 start .. last audio-track end (same span the vendor
-	// scan covered).
-	DWORD startLBA = 0, endLBA = 0;
-	bool first = true;
-	for (const auto& t : disc.tracks) {
-		if (!t.isAudio) continue;
-		DWORD start = (t.trackNumber == 1) ? 0 : t.pregapLBA;
-		if (first) { startLBA = start; first = false; }
-		if (t.endLBA > endLBA) endLBA = t.endLBA;
-	}
-	if (first || endLBA <= startLBA)
-		return false;
-
-	// Address conventions match RunPioneerCdCheck: the CD Check start takes an
-	// "inner" address (LBA + 0x6000 + 150) while progress is reported in frame
-	// addresses (LBA + 150). Unit size 38 sectors per measurement window.
-	constexpr DWORD kInnerOffset = 0x6000 + 150;
-	constexpr DWORD kFrameOffset = 150;
-	constexpr DWORD kUnitSectors = 38;
-	const DWORD startFrame = startLBA + kFrameOffset;
-	const DWORD endFrame   = endLBA + kFrameOffset;
-	const DWORD startInner = startLBA + kInnerOffset;
-	const DWORD totalSectors = endLBA - startLBA + 1;
-
-	std::cout << "\n  Pioneer CD Check uncorrectable cross-check (0xE6)...\n";
-
-	{
-		BYTE sk = 0, asc = 0, ascq = 0;
-		if (!pv.CdCheckStartWithSense(startInner, kUnitSectors, sk, asc, ascq)) {
-			// Most likely this firmware doesn't implement CD Check (e.g. BDR-S13U
-			// returns Illegal Request). CU stays unmeasured; not an error.
-			std::cout << "  CD Check not available on this drive - CU left unmeasured.\n";
-			return false;
-		}
-	}
-
-	ProgressIndicator prog(40);
-	prog.SetLabel("  CD Check");
-	prog.Start();
-
-	int worstC1 = 0, worstC2 = 0;
-	bool sawValid = false, sawProgress = false, cancelled = false;
-	bool completedRange = false, readFailed = false, stalled = false;
-	DWORD lastEnd = startFrame;
-	int stallTicks = 0;
-	// Worst case: a full 80-minute CD at 1x. Cap wall-clock at 90 minutes.
-	constexpr int kPollMs = 500;
-	constexpr int kMaxIters = (90 * 60 * 1000) / kPollMs;
-	constexpr int kStallLimit = 60;            // 30 s with no advance
-	constexpr int kStartupGraceIters = 20;     // 10 s before declaring a start-up stall
-
-	for (int i = 0; i < kMaxIters; i++) {
-		if (InterruptHandler::Instance().IsInterrupted() ||
-			InterruptHandler::Instance().CheckEscapeKey()) {
-			cancelled = true;
-			break;
-		}
-		std::this_thread::sleep_for(std::chrono::milliseconds(kPollMs));
-
-		PioneerCdCheckResult r;
-		if (!pv.CdCheckRead(r)) {
-			readFailed = true;
-			break;
-		}
-		if (r.dataValid) {
-			sawValid = true;
-			if (r.c1Uncorrectable > worstC1) worstC1 = r.c1Uncorrectable;
-			if (r.c2Uncorrectable > worstC2) worstC2 = r.c2Uncorrectable;
-		}
-
-		DWORD ea = r.endAddress;
-		if (ea > startFrame) {
-			sawProgress = true;
-			DWORD done = std::min<DWORD>(ea - startFrame, totalSectors);
-			prog.Update(static_cast<int>(done), static_cast<int>(totalSectors));
-		}
-
-		if (ea == lastEnd) {
-			if (sawProgress || i >= kStartupGraceIters) {
-				if (++stallTicks >= kStallLimit) {
-					stalled = true;
-					break;
-				}
-			}
-		}
-		else {
-			stallTicks = 0;
-			lastEnd = ea;
-		}
-		if (sawProgress && ea >= endFrame) {
-			completedRange = true;
-			break;
-		}
-	}
-
-	prog.Finish(completedRange && sawValid && !cancelled);
-	pv.CdCheckStop();
-
-	if (cancelled) {
-		std::cout << "  CD Check cross-check cancelled - CU left unmeasured.\n";
-		return false;
-	}
-	if (!completedRange) {
-		if (readFailed)
-			std::cout << "  CD Check communication failed before the requested range completed";
-		else if (stalled)
-			std::cout << "  CD Check stalled before the requested range completed";
-		else
-			std::cout << "  CD Check timed out before the requested range completed";
-		if (sawProgress)
-			std::cout << " (last frame " << lastEnd << " of " << endFrame << ")";
-		std::cout << " - partial data discarded; CU left unmeasured.\n";
-		return false;
-	}
-	if (!sawValid) {
-		std::cout << "  CD Check produced no valid measurement - CU left unmeasured.\n";
+	PioneerCdCheckSummary summary;
+	if (!RunPioneerCdCheckMeasurement(disc, PioneerCdCheckScanMode::Full,
+		summary, "  CD Check")) {
 		return false;
 	}
 
 	result.pioneerCdCheckRun = true;
-	result.pioneerCdCheckC1Frames = worstC1;
-	result.pioneerCdCheckC2Bytes = worstC2;
+	result.pioneerCdCheckC1Frames = summary.worstC1Frames;
+	result.pioneerCdCheckC2Bytes = summary.worstC2Bytes;
 	return true;
 }
 

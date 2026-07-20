@@ -604,6 +604,33 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 	}
 	ripDisc.selectedSession = 0;   // not needed — we already picked the tracks
 
+	PioneerPureReadSession pureReadSession(copier.GetDriveRef());
+	const bool pureReadMonitoring = pureReadSession.Begin();
+	bool pureReadFinalized = false;
+	auto finishPureReadMonitoring = [&](const char* readOutcome) {
+		if (!pureReadMonitoring || pureReadFinalized) return;
+		pureReadFinalized = true;
+
+		PioneerPureReadSummary summary;
+		if (!pureReadSession.Finish(summary)) {
+			Console::Warning("Pioneer Real-Time PureRead counters could not be read after extraction.\n");
+			return;
+		}
+
+		PrintPioneerPureReadSummary(summary);
+		std::wstring reportPath = outputDir + L"PioneerPureRead.log";
+		if (SavePioneerPureReadSummary(reportPath, summary, "Selected-track rip", readOutcome)) {
+			Console::Success("PureRead diagnostic log saved to: ");
+			std::wcout << reportPath << L"\n";
+		}
+		else {
+			Console::Warning("Could not save the PureRead diagnostic log.\n");
+		}
+	};
+	if (pureReadMonitoring) {
+		Console::Info(" Pioneer Real-Time PureRead monitoring started for this read session.\n");
+	}
+
 	// ── 10. Read only the selected tracks ───────────────────────────────
 	Console::Info("\nReading disc...\n");
 	ProgressIndicator prog;
@@ -624,6 +651,7 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 	if (!readOk) {
 		prog.Finish(false);
 		Console::Error("Disc read failed.\n");
+		finishPureReadMonitoring("Initial read failed");
 		return false;
 	}
 	prog.Finish(true);
@@ -656,6 +684,7 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 		Console::Info("No tracks were written. Re-run with a skip mode to save a best-effort (zero-filled) copy.\n");
 		ripDisc.rawSectors.clear();
 		ripDisc.rawSectors.shrink_to_fit();
+		finishPureReadMonitoring("Read completed; output aborted by error policy");
 		return false;
 	}
 
@@ -766,6 +795,7 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 		ripDisc.rawSectors.clear();
 		ripDisc.rawSectors.shrink_to_fit();
 		std::cout << "\n";
+		finishPureReadMonitoring("Read completed; no track files were saved");
 		return false;
 	}
 
@@ -935,6 +965,10 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 				Console::Info("Consider Secure Paranoid rip mode for the next attempt.\n");
 		}
 	}
+
+	finishPureReadMonitoring(verifyRip
+		? "Read and physical verification completed"
+		: "Read completed");
 
 	// ── 14. Cleanup ─────────────────────────────────────────────────────
 	ripDisc.rawSectors.clear();

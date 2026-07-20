@@ -121,6 +121,28 @@ struct PioneerRtPureReadStatus {
     uint32_t currentLBA = 0;     // r[8..11]
 };
 
+enum class PioneerPureReadAssessment {
+    NoData,
+    Perfect,
+    Better,
+    Good,
+    NotGood,
+    Bad,
+    Fatal
+};
+
+// Per-rip delta derived from the drive's cumulative Real-Time PureRead
+// counters. This is a firmware diagnostic, not a verified C2/CU result.
+struct PioneerPureReadSummary {
+    bool valid = false;
+    uint32_t errorSectors = 0;
+    uint32_t transferredSectors = 0;
+    uint32_t lastLBA = 0;
+    double errorRatio = 0.0;
+    int indicatorLevel = -1;  // Pioneer utility scale: 0..8; -1 = no data
+    PioneerPureReadAssessment assessment = PioneerPureReadAssessment::NoData;
+};
+
 // Media families used by Pioneer utility for ID extraction.
 enum class PioneerMediaFamily {
     CDROM = 0,
@@ -152,6 +174,47 @@ struct PioneerCdCheckResult {
     uint16_t teIntegrationMax = 0;  // r[62..63]
     bool teDataValid = false;       // TE fields are valid only when neither is 0xFFFF
 };
+
+enum class PioneerCdCheckScanMode {
+    Full,
+    Quick
+};
+
+enum class PioneerCdCheckGrade {
+    A,
+    B,
+    C,
+    D
+};
+
+// Result of the shared Pioneer CD Check scan engine. `reliable` is deliberately
+// stricter than `completed`: it is true only when the entire requested full
+// range (or every requested quick radial sample) completed with valid data.
+// This keeps an unavailable/partial measurement distinct from a measured zero.
+struct PioneerCdCheckSummary {
+    PioneerCdCheckScanMode mode = PioneerCdCheckScanMode::Full;
+    bool protocolStarted = false;
+    bool inspectionModeActive = false;
+    bool completed = false;
+    bool reliable = false;
+    bool cancelled = false;
+    bool sawInvalidMeasurement = false;
+    bool usedFallbackGeometry = false;
+    uint32_t startFrame = 0;
+    uint32_t endFrame = 0;
+    uint32_t lastFrame = 0;
+    int plannedSamples = 0;
+    int validSamples = 0;
+    int worstC1Frames = 0;
+    int worstC2Bytes = 0;
+    PioneerCdCheckGrade worstGrade = PioneerCdCheckGrade::A;
+    PioneerCdCheckResult lastValid{};
+    PioneerCdCheckResult worstSample{};
+    std::string failureReason;
+};
+
+PioneerCdCheckGrade GradePioneerCdCheckSample(const PioneerCdCheckResult& result);
+const char* PioneerCdCheckGradeName(PioneerCdCheckGrade grade);
 
 class PioneerVendor {
 public:
@@ -209,12 +272,19 @@ public:
     bool RunBusPowerCheck(uint32_t& reading);
 
     // ── CD Check (audio quality measurement) ───────────────────────
+    // Pioneer utility inspection-state lifecycle: 0=prepare, 1=inspect,
+    // 2=finish/restore. Uses WRITE BUFFER 0xE1 command 0x91/0x60.
+    bool SetCdInspectionMode(BYTE mode);
     bool CdCheckStart(uint32_t startLBA, uint32_t unitSize);
     bool CdCheckStop();
     bool CdCheckRead(PioneerCdCheckResult& result);
     // Same as CdCheckStart but returns SCSI sense bytes for diagnostics.
     bool CdCheckStartWithSense(uint32_t startLBA, uint32_t unitSize,
         BYTE& senseKey, BYTE& asc, BYTE& ascq);
+    // Reads the physical CD parameters used by the Pioneer utility to place
+    // Quick-mode samples every 0.05 mm of radius.
+    bool GetCdPhysicalTrackParameters(uint32_t leadoutInnerAddress,
+        double& linearVelocity, double& trackPitch);
 
     // ── Media code / Media ID / write protection ───────────────────
     // Reads the Pioneer vendor media-code via WRITE/READ BUFFER 0xE1 with
@@ -277,6 +347,38 @@ private:
         BYTE arg5 = 0, BYTE arg6 = 0);
 };
 
+// Creates a session-local view of the cumulative Real-Time PureRead counters.
+// Begin() clears the counters when possible, falling back to a baseline
+// snapshot. Finish() reads with bounded retries after extraction and returns the delta. No
+// status commands are issued while the audio read itself is in progress.
+class PioneerPureReadSession {
+public:
+    explicit PioneerPureReadSession(ScsiDrive& drive) : m_pioneer(drive) {}
+
+    bool Begin();
+    bool Finish(PioneerPureReadSummary& summary);
+
+    PioneerPureReadSession(const PioneerPureReadSession&) = delete;
+    PioneerPureReadSession& operator=(const PioneerPureReadSession&) = delete;
+
+private:
+    PioneerVendor m_pioneer;
+    bool m_started = false;
+    bool m_finished = false;
+    uint32_t m_baseErrorSectors = 0;
+    uint32_t m_baseTransferredSectors = 0;
+    PioneerPureReadSummary m_cachedSummary;
+};
+
+PioneerPureReadSummary AssessPioneerPureRead(uint32_t errorSectors,
+    uint32_t transferredSectors, uint32_t lastLBA);
+const char* PioneerPureReadAssessmentName(PioneerPureReadAssessment assessment);
+std::string FormatPioneerPureReadMsf(uint32_t lba);
+void PrintPioneerPureReadSummary(const PioneerPureReadSummary& summary);
+bool SavePioneerPureReadSummary(const std::wstring& filename,
+    const PioneerPureReadSummary& summary, const std::string& workflow,
+    const std::string& readOutcome);
+
 // ── RAII: temporarily disable Pioneer PureRead for a measurement scan ───────
 // PureRead interpolates after retries on audio reads, which would mask the
 // raw C1/C2 error counts a quality scan is trying to measure. The guard
@@ -326,4 +428,24 @@ private:
     bool m_active = false;
     bool m_restore = false;
     PioneerSpeedMode m_previousMode = PioneerSpeedMode::Default;
+};
+
+// RAII wrapper for the utility's CD inspection state. The scan command is
+// still attempted if an older/odd firmware rejects this auxiliary command,
+// but mode 2 is always sent on scope exit whenever preparation was attempted.
+class PioneerCdInspectionGuard {
+public:
+    explicit PioneerCdInspectionGuard(ScsiDrive& drive, bool active);
+    ~PioneerCdInspectionGuard();
+
+    PioneerCdInspectionGuard(const PioneerCdInspectionGuard&) = delete;
+    PioneerCdInspectionGuard& operator=(const PioneerCdInspectionGuard&) = delete;
+
+    bool inspectionModeActive() const { return m_inspectionModeActive; }
+
+private:
+    PioneerVendor m_pioneer;
+    bool m_active = false;
+    bool m_restore = false;
+    bool m_inspectionModeActive = false;
 };
