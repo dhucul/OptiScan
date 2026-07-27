@@ -141,10 +141,22 @@ bool RunRecoveryRipWorkflow(OpticalDrive& copier, DiscInfo& disc,
 		return false;
 	}
 
+	if (disc.pregapMode != PregapMode::Separate) {
+		std::vector<DWORD> mismatched;
+		if (!copier.VerifyWrittenFile(path + L".bin", disc, mismatched)) {
+			Console::Error("Written .bin file did not match recovered in-memory data.\n");
+			return false;
+		}
+	}
+
 	std::wstring reportPath = path + L"_recovery.txt";
 	if (copier.SaveRecoveryReport(result, reportPath)) {
 		Console::Success("Recovery report saved to: ");
 		std::wcout << reportPath << L"\n";
+	}
+	else {
+		Console::Error("Failed to save the recovery report.\n");
+		return false;
 	}
 
 	if (result.unrecovered > 0) {

@@ -2,6 +2,7 @@
 #include "OpticalDrive.h"
 #include "InterruptHandler.h"
 #include <iostream>
+#include <limits>
 
 // ============================================================================
 // Burst Mode Reading (Maximum Speed, No Verification)
@@ -11,12 +12,23 @@ bool OpticalDrive::ReadDiscBurst(DiscInfo& disc, std::function<void(int, int)> p
 	// Lock the tray for the duration of the read (auto-unlocked on return, before
 	// any caller-level eject such as the disc swap in Compare Disc CRCs).
 	DriveDoorLockGuard doorLock(m_drive);
-	DWORD total = 0;
+	uint64_t total64 = 0;
 	for (size_t i = 0; i < disc.tracks.size(); i++) {
 		if (disc.selectedSession > 0 && disc.tracks[i].session != disc.selectedSession) continue;
 		DWORD start = (disc.pregapMode == PregapMode::Skip) ? disc.tracks[i].startLBA : disc.tracks[i].pregapLBA;
-		total += disc.tracks[i].endLBA - start + 1;
+		if (disc.tracks[i].endLBA < start) {
+			std::cerr << "Error: Invalid track read range for track "
+				<< disc.tracks[i].trackNumber << "\n";
+			return false;
+		}
+		uint64_t count = static_cast<uint64_t>(disc.tracks[i].endLBA) - start + 1;
+		if (count > std::numeric_limits<DWORD>::max() - total64) {
+			std::cerr << "Error: Disc read range is too large\n";
+			return false;
+		}
+		total64 += count;
 	}
+	DWORD total = static_cast<DWORD>(total64);
 
 	try {
 		disc.rawSectors.clear();

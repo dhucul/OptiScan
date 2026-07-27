@@ -9,6 +9,7 @@
 #include <map>
 #include <cstring>
 #include <unordered_map>
+#include <limits>
 
 // ============================================================================
 // Secure Rip Mode
@@ -59,12 +60,23 @@ bool OpticalDrive::ReadDiscSecure(DiscInfo& disc, const SecureRipConfig& config,
 		}
 	}
 
-	DWORD total = 0;
+	uint64_t total64 = 0;
 	for (size_t i = 0; i < disc.tracks.size(); i++) {
 		if (disc.selectedSession > 0 && disc.tracks[i].session != disc.selectedSession) continue;
 		DWORD start = (disc.pregapMode == PregapMode::Skip) ? disc.tracks[i].startLBA : disc.tracks[i].pregapLBA;
-		total += disc.tracks[i].endLBA - start + 1;
+		if (disc.tracks[i].endLBA < start) {
+			std::cerr << "Error: Invalid track read range for track "
+				<< disc.tracks[i].trackNumber << "\n";
+			return false;
+		}
+		uint64_t count = static_cast<uint64_t>(disc.tracks[i].endLBA) - start + 1;
+		if (count > std::numeric_limits<DWORD>::max() - total64) {
+			std::cerr << "Error: Disc read range is too large\n";
+			return false;
+		}
+		total64 += count;
 	}
+	DWORD total = static_cast<DWORD>(total64);
 
 	result = SecureRipResult{};
 	result.totalSectors = static_cast<int>(total);
@@ -136,7 +148,7 @@ bool OpticalDrive::ReadDiscSecure(DiscInfo& disc, const SecureRipConfig& config,
 		DWORD start = (disc.pregapMode == PregapMode::Skip) ? t.startLBA : t.pregapLBA;
 		int sectorSize = (disc.includeSubchannel && t.isAudio) ? RAW_SECTOR_SIZE : AUDIO_SECTOR_SIZE;
 
-		for (DWORD lba = start; lba <= t.endLBA; lba++) {
+		for (DWORD lba = start;; lba++) {
 			if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
 				return false;
 			}
@@ -199,6 +211,7 @@ bool OpticalDrive::ReadDiscSecure(DiscInfo& disc, const SecureRipConfig& config,
 
 			cur++;
 			if (progress) progress(cur, total);
+			if (lba == t.endLBA) break;
 		}
 	}
 

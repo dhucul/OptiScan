@@ -143,6 +143,7 @@ static bool IsInternetAvailable() {
 
 bool AccurateRip::Lookup(DiscInfo& disc, std::vector<std::vector<uint32_t>>& pressingCRCs) {
 	pressingCRCs.clear();
+	disc.accurateRipLookupAttempted = true;
 
 	if (!IsInternetAvailable()) {
 		std::cout << "  SKIPPED: No internet connection available\n";
@@ -276,6 +277,16 @@ bool AccurateRip::Lookup(DiscInfo& disc, std::vector<std::vector<uint32_t>>& pre
 
 bool AccurateRip::VerifyCRCs(const DiscInfo& disc, const std::vector<std::vector<uint32_t>>& pressingCRCs) {
 	std::cout << "\n=== AccurateRip CRC Verification ===\n";
+	if (pressingCRCs.empty()) {
+		std::cout << "AccurateRip verification unavailable: no reference CRCs.\n";
+		return false;
+	}
+	if (disc.pregapMode == PregapMode::Skip) {
+		std::cout << "AccurateRip verification unavailable: the read omitted "
+			"pregap sectors required by AccurateRip track boundaries.\n";
+		return false;
+	}
+
 	bool allMatch = true;
 	int audioTrackIdx = 0;
 	int totalAudioTracks = CountAudioTracks(disc);
@@ -344,10 +355,7 @@ bool AccurateRip::VerifyCRCs(const DiscInfo& disc, const std::vector<std::vector
 			<< std::hex << std::setw(8) << std::setfill('0') << crc
 			<< std::dec << std::setfill(' ');
 
-		if (pressingCRCs.empty()) {
-			std::cout << "  [NO REFERENCE]\n";
-		}
-		else if (match) {
+		if (match) {
 			std::cout << "  [OK - pressing #" << matchedPressing << "]\n";
 		}
 		else {

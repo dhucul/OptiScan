@@ -369,8 +369,9 @@ bool ScsiDrive::TrySetSpeedAndVerify(int multiplier, int writeMultiplier,
 }
 
 bool ScsiDrive::GetActualSpeed(WORD& readSpeed, WORD& writeSpeed) {
-	// Need header (8) + page 2A up to byte 19 (current write speed) + slack
-	// for possible block descriptors.
+	// Need the MODE SENSE header plus the fixed portion of page 2Ah. Modern
+	// drives can append write-speed descriptors, but the selected-speed fields
+	// themselves fit in this buffer.
 	static constexpr int BUF_SIZE = 64;
 	BYTE cdb[10] = { 0x5A, 0, 0x2A, 0, 0, 0, 0, 0, BUF_SIZE, 0 };
 	BYTE buffer[BUF_SIZE] = {};
@@ -382,13 +383,30 @@ bool ScsiDrive::GetActualSpeed(WORD& readSpeed, WORD& writeSpeed) {
 	int bdLen = (buffer[6] << 8) | buffer[7];
 	int pageOff = 8 + bdLen;
 
-	// Sanity: verify page 2A was returned and we have enough data.
-	if (pageOff + 20 > BUF_SIZE || (buffer[pageOff] & 0x3F) != 0x2A)
+	// Sanity: verify page 2A was returned and includes Current Read Speed.
+	if (pageOff + 16 > BUF_SIZE || (buffer[pageOff] & 0x3F) != 0x2A)
 		return false;
 
 	BYTE* page = &buffer[pageOff];
+	const int pageBytes = (std::min)(
+		static_cast<int>(page[1]) + 2,
+		BUF_SIZE - pageOff);
+	if (pageBytes < 16)
+		return false;
+
 	readSpeed = (page[14] << 8) | page[15];   // Current read speed  (kB/s)
-	writeSpeed = (page[18] << 8) | page[19];  // Current write speed (kB/s)
+
+	// Page 2Ah has two layouts in the field:
+	//   legacy (20h-byte page): Current Write Speed at bytes 20-21
+	//   MMC-3+ extended page:   Current Write Speed at bytes 28-29
+	// Bytes 18-19 are Maximum Write Speed in the legacy layout and must never
+	// be presented as the speed the drive selected.
+	if (pageBytes >= 30)
+		writeSpeed = (page[28] << 8) | page[29];
+	else if (pageBytes >= 22)
+		writeSpeed = (page[20] << 8) | page[21];
+	else
+		writeSpeed = 0;
 
 	return true;
 }

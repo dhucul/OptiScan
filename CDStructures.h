@@ -71,6 +71,8 @@ struct DiscInfo {
 	LogOutput loggingOutput = LogOutput::Console;       // Where to send log messages
 	std::vector<std::tuple<DWORD, int, double>> readLog;// Per-sector read log: (LBA, errors, timeMs)
 	uint32_t accurateRipCRC = 0;                        // AccurateRip CRC for verification
+	std::vector<std::vector<uint32_t>> accurateRipPressings; // Downloaded V1 CRCs, grouped by pressing
+	bool accurateRipLookupAttempted = false;            // Distinguish not queried from no references
 	int driveOffset = 0;                                // Sample-level read offset correction
 	PregapMode pregapMode = PregapMode::Include;        // How to handle pre-gaps
 	bool extractHiddenTrack = false;                    // Extract hidden track one audio (HTOA)

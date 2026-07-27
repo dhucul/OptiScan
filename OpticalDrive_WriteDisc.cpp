@@ -281,10 +281,34 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 		}
 	}
 
-	// Set drive write speed BEFORE power calibration (OPC is speed-dependent)
-	m_drive.SetSpeed(speed, speed);
-	Console::Success("Drive speed set to ");
-	std::cout << speed << "x\n";
+	// Set drive write speed BEFORE power calibration (OPC is speed-dependent).
+	// SET CD SPEED is only a request: modern media/firmware commonly clamp a
+	// 1x request to 4x, 8x, or another supported write strategy. Read back the
+	// selected value instead of unconditionally reporting the request as fact.
+	WORD actualReadKB = 0;
+	WORD actualWriteKB = 0;
+	bool exactSpeed = m_drive.TrySetSpeedAndVerify(
+		speed, speed, &actualReadKB, &actualWriteKB);
+	if (actualWriteKB > 0) {
+		int actualWriteX =
+			(static_cast<int>(actualWriteKB) + CD_SPEED_1X / 2) / CD_SPEED_1X;
+		if (actualWriteX < 1) actualWriteX = 1;
+
+		if (exactSpeed || actualWriteX == speed) {
+			Console::Success("Drive write speed confirmed at ");
+		}
+		else {
+			Console::Info("Drive selected write speed ");
+		}
+		std::cout << actualWriteX << "x (" << actualWriteKB << " KB/s";
+		if (actualWriteX != speed)
+			std::cout << "; requested " << speed << "x";
+		std::cout << ")\n";
+	}
+	else {
+		Console::Warning("Could not verify the drive's selected write speed; ");
+		std::cout << speed << "x was requested.\n";
+	}
 
 	// Plextor PoweRec: surface the drive's current state so the user knows
 	// whether the smarter Plextor-only calibration path is in effect.

@@ -791,15 +791,16 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 	}
 	std::wcout << outputDir << L"\n";
 
-	if (savedCount == 0) {
+	if (savedCount != static_cast<int>(selectedTracks.size())) {
 		ripDisc.rawSectors.clear();
 		ripDisc.rawSectors.shrink_to_fit();
 		std::cout << "\n";
-		finishPureReadMonitoring("Read completed; no track files were saved");
+		finishPureReadMonitoring("Read completed; one or more track files failed");
 		return false;
 	}
 
 	// ── 13. Verify ripped tracks against physical disk ──────────────────
+	bool physicalVerificationPassed = true;
 	if (verifyRip) {
 		// Per-track verification state. `verifiedAtAttempt` is 0 for verified-on-first-pass,
 		// N>0 for verified-after-N-retries, and -1 for unresolved.
@@ -952,6 +953,7 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 			}
 		}
 		else {
+			physicalVerificationPassed = false;
 			std::string msg = "\n" + std::to_string(verifiedCount) + "/" +
 				std::to_string(selectedTracks.size()) + " tracks verified, " +
 				std::to_string(unresolvedCount) + " did NOT match";
@@ -966,13 +968,20 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 		}
 	}
 
-	finishPureReadMonitoring(verifyRip
-		? "Read and physical verification completed"
-		: "Read completed");
+	finishPureReadMonitoring(!verifyRip
+		? "Read completed"
+		: (physicalVerificationPassed
+			? "Read and physical verification completed"
+			: "Read completed; physical verification failed"));
 
 	// ── 14. Cleanup ─────────────────────────────────────────────────────
 	ripDisc.rawSectors.clear();
 	ripDisc.rawSectors.shrink_to_fit();
+
+	if (!physicalVerificationPassed) {
+		Console::Warning("\nRip files were saved, but physical verification did not complete successfully.\n");
+		return false;
+	}
 
 	Console::Success("\nRip complete. Files written to: ");
 	std::wcout << outputDir << L"\n";

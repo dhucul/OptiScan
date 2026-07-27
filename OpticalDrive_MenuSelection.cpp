@@ -444,6 +444,7 @@ int OpticalDrive::SelectWriteSpeed() {
 	// so OptiScan always requests the lowest (1x) and lets the burner settle on
 	// the lowest write speed it actually supports for the loaded blank.
 	std::cout << "\n=== Write Speed ===\n";
-	std::cout << "  Using lowest write speed the drive honors (requesting 1x)\n";
+	std::cout << "  Requesting 1x; the burner may select a higher supported minimum.\n";
+	std::cout << "  OptiScan will read back and report the selected speed before writing.\n";
 	return 1;
 }

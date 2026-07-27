@@ -116,6 +116,7 @@ void RunPioneerCdCheck(OpticalDrive& copier, DiscInfo& disc) {
 int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
                        const std::wstring& workDir, wchar_t& audioDrive,
                        bool& hasTOC, int choice) {
+	int dispatchStatus = 0;
 	{
 		switch (choice) {
 
@@ -125,14 +126,22 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			// ── 1. Copy disc ────────────────────────────────────────────
 		case 1:
-			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
-			RunCopyWorkflow(copier, disc, workDir);
+			if (!hasTOC) {
+				Console::Error("This operation requires a disc with a valid TOC.\n");
+				dispatchStatus = 1;
+				break;
+			}
+			if (!RunCopyWorkflow(copier, disc, workDir)) dispatchStatus = 1;
 			break;
 
 			// ── 2. Rip tracks (WAV/FLAC) ────────────────────────────────
 		case 2:
-			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
-			RunTrackRipWorkflow(copier, disc, workDir);
+			if (!hasTOC) {
+				Console::Error("This operation requires a disc with a valid TOC.\n");
+				dispatchStatus = 1;
+				break;
+			}
+			if (!RunTrackRipWorkflow(copier, disc, workDir)) dispatchStatus = 1;
 			break;
 
 			// ── 3. Write disc ───────────────────────────────────────────
@@ -760,8 +769,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 				copier.ReadCDText(disc);
 				copier.ReadISRC(disc);
 				copier.ReadMCN(disc);
-				std::vector<std::vector<uint32_t>> pressingCRCs;
-				AccurateRip::Lookup(disc, pressingCRCs);
+				AccurateRip::Lookup(disc, disc.accurateRipPressings);
 				PrintDiscInfo(disc);
 				Console::Success("Disc rescan complete.\n");
 			}
@@ -834,8 +842,12 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			// ButtonToMenuChoice. Rebuilds hard sectors from cross-read
 			// consensus instead of trusting the drive's C2.
 		case 30:
-			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
-			RunRecoveryRipWorkflow(copier, disc, workDir);
+			if (!hasTOC) {
+				Console::Error("This operation requires a disc with a valid TOC.\n");
+				dispatchStatus = 1;
+				break;
+			}
+			if (!RunRecoveryRipWorkflow(copier, disc, workDir)) dispatchStatus = 1;
 			break;
 
 			// ── 31. Erase CD-RW (rewritable) ────────────────────────
@@ -948,9 +960,10 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 		default:
 			Console::Warning("Unknown option.\n");
+			dispatchStatus = 1;
 			break;
 		}
 	}
 
-	return 0;
+	return dispatchStatus;
 }

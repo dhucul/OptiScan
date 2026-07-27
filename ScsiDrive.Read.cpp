@@ -3,6 +3,7 @@
 // ============================================================================
 #include "ScsiDrive.h"
 #include <climits>
+#include <cstring>
 #include <cstdio>
 #include <vector>
 
@@ -625,10 +626,13 @@ bool ScsiDrive::ValidateC2Accuracy(DWORD testLBA) {
 	// (errors might be real, so variation is expected)
 	if (preTestErrors > 0) {
 		SetSpeed(0);
-		return true; // PASS - can't disprove C2 accuracy on error-containing sectors
+		return false; // Inconclusive is not proof that C2 is reliable
 	}
+	std::vector<BYTE> reference = audio;
 
-	// PHASE 2: Now verify the sector stays clean at all speeds
+	// PHASE 2: Verify the sector stays both C2-clean and byte-identical at all
+	// speeds. A drive that always reports zero C2 while returning varying audio
+	// must fail the reliability gate.
 	for (int i = 0; i < NUM_READS; i++) {
 		SetSpeed(SPEEDS[i]);
 
@@ -645,10 +649,12 @@ bool ScsiDrive::ValidateC2Accuracy(DWORD testLBA) {
 			return false; // Read failure
 		}
 
-		// If a previously-clean sector now shows C2 errors, the reporting is unreliable
-		if (c2Errors > 0) {
+		// A C2 transition or byte-level audio disagreement makes the C2 verdict
+		// unsuitable as a single-pass trust signal.
+		if (c2Errors > 0 ||
+			memcmp(audio.data(), reference.data(), AUDIO_SECTOR_SIZE) != 0) {
 			SetSpeed(0);
-			return false; // FAIL - phantom errors appeared
+			return false;
 		}
 	}
 

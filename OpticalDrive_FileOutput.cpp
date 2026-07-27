@@ -59,27 +59,45 @@ bool OpticalDrive::SaveToFile(const DiscInfo& disc, const std::wstring& base) {
 			std::wstring pregapPath = base + L"_track" +
 				std::to_wstring(t.trackNumber) + L"_pregap.bin";
 			std::ofstream pregapFile(std::filesystem::path(pregapPath), std::ios::binary);
-			if (pregapFile) {
-				DWORD pregapCount = t.startLBA - t.pregapLBA;
-				for (DWORD j = 0; j < pregapCount && sectorIdx < disc.rawSectors.size(); j++) {
-					const auto& s = disc.rawSectors[sectorIdx++];
-					pregapFile.write(reinterpret_cast<const char*>(s.data()), AUDIO_SECTOR_SIZE);
-				}
-				pregapFiles.push_back(pregapPath);
+			if (!pregapFile) return false;
+
+			DWORD pregapCount = t.startLBA - t.pregapLBA;
+			for (DWORD j = 0; j < pregapCount; j++) {
+				if (sectorIdx >= disc.rawSectors.size()) return false;
+				const auto& s = disc.rawSectors[sectorIdx++];
+				if (s.size() < AUDIO_SECTOR_SIZE) return false;
+				pregapFile.write(reinterpret_cast<const char*>(s.data()), AUDIO_SECTOR_SIZE);
+				if (!pregapFile) return false;
 			}
+			pregapFile.flush();
+			if (!pregapFile.good()) return false;
+			pregapFiles.push_back(pregapPath);
 			start = t.startLBA;
 			if (t.endLBA < t.startLBA) continue;
 			count = t.endLBA - t.startLBA + 1;
 		}
 
-		for (DWORD j = 0; j < count&& sectorIdx < disc.rawSectors.size(); j++) {
+		for (DWORD j = 0; j < count; j++) {
+			if (sectorIdx >= disc.rawSectors.size()) return false;
 			const auto& s = disc.rawSectors[sectorIdx++];
+			if (s.size() < AUDIO_SECTOR_SIZE) return false;
 			img.write(reinterpret_cast<const char*>(s.data()), AUDIO_SECTOR_SIZE);
+			if (!img) return false;
 
-			if (disc.includeSubchannel && t.isAudio && s.size() > AUDIO_SECTOR_SIZE) {
+			if (disc.includeSubchannel && t.isAudio) {
+				if (s.size() < RAW_SECTOR_SIZE) return false;
 				sub.write(reinterpret_cast<const char*>(s.data() + AUDIO_SECTOR_SIZE), SUBCHANNEL_SIZE);
+				if (!sub) return false;
 			}
 		}
+	}
+
+	if (sectorIdx != disc.rawSectors.size()) return false;
+	img.flush();
+	if (!img.good()) return false;
+	if (disc.includeSubchannel) {
+		sub.flush();
+		if (!sub.good()) return false;
 	}
 
 	int fnLen = WideCharToMultiByte(CP_ACP, 0, base.c_str(), -1, nullptr, 0, nullptr, nullptr);
@@ -169,6 +187,9 @@ bool OpticalDrive::SaveToFile(const DiscInfo& disc, const std::wstring& base) {
 				off += t.endLBA - t.startLBA + 1;
 		}
 	}
+
+	cue.flush();
+	if (!cue.good()) return false;
 
 	std::cout << "\n=== Files Created ===\n";
 	std::wcout << L"  " << base << L".bin\n";

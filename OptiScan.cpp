@@ -767,12 +767,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                     // How the loop ended, so the closing line reports what actually
                                     // happened. This used to print "Batch complete." unconditionally
                                     // — including after a cancel or an abort, which read as success.
-                                    enum class BatchEnd { Completed, Cancelled, DiscGone };
+                                    enum class BatchEnd { Completed, Cancelled, DiscGone, StepFailed };
                                     BatchEnd batchEnd = BatchEnd::Completed;
                                     size_t stepsRun = 0;
 
                                     for (size_t i = 0; i < choices.size(); i++) {
-                                        stepsRun = i;
                                         if (g_interrupt.IsInterrupted()) {
                                             Console::Warning("Batch cancelled by user.\n");
                                             batchEnd = BatchEnd::Cancelled;
@@ -827,9 +826,17 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                                 break;
                                             }
                                         }
-                                        DispatchMenuChoice(g_copier, g_disc, g_workDir,
-                                                           g_audioDrive, g_hasTOC,
-                                                           batchOpId);
+                                        int stepStatus =
+                                            DispatchMenuChoice(g_copier, g_disc, g_workDir,
+                                                               g_audioDrive, g_hasTOC,
+                                                               batchOpId);
+                                        stepsRun = i + 1;
+                                        if (stepStatus != 0) {
+                                            batchEnd = g_interrupt.IsInterrupted()
+                                                ? BatchEnd::Cancelled
+                                                : BatchEnd::StepFailed;
+                                            break;
+                                        }
                                     }
                                     Console::Info("\n");
                                     if (batchEnd == BatchEnd::Completed) {
@@ -840,6 +847,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                             " steps ran; the rest were skipped.\n";
                                         if (batchEnd == BatchEnd::Cancelled)
                                             Console::Warning(("Batch cancelled — " + msg).c_str());
+                                        else if (batchEnd == BatchEnd::StepFailed)
+                                            Console::Error(("Batch stopped after a failed step — " + msg).c_str());
                                         else
                                             Console::Error(("Batch stopped — " + msg).c_str());
                                     }

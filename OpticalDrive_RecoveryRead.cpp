@@ -33,6 +33,7 @@
 #include <climits>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 
 namespace {
 
@@ -207,7 +208,8 @@ bool OpticalDrive::RescueSectorConsensus(DWORD lba, BYTE* audioOut,
 			int c2Opinions = 0, c2Bad = 0;   // C2 verdicts for this byte
 			for (const auto& pp : passes) {
 				tally[pp.audio[i]]++;
-				if (pp.c2Clean[i]) cleanTally[pp.audio[i]]++;
+				if (pp.c2Opinion && pp.c2Clean[i])
+					cleanTally[pp.audio[i]]++;
 				if (pp.c2Opinion) {
 					c2Opinions++;
 					if (!pp.c2Clean[i]) c2Bad++;
@@ -269,12 +271,23 @@ bool OpticalDrive::ReadDiscRecovery(DiscInfo& disc, const RecoveryRipConfig& con
 
 	if (config.maxSpeed > 0) m_drive.SetSpeed(config.maxSpeed);
 
-	DWORD total = 0;
+	uint64_t total64 = 0;
 	for (const auto& t : disc.tracks) {
 		if (disc.selectedSession > 0 && t.session != disc.selectedSession) continue;
 		DWORD start = (disc.pregapMode == PregapMode::Skip) ? t.startLBA : t.pregapLBA;
-		if (t.endLBA >= start) total += t.endLBA - start + 1;
+		if (t.endLBA < start) {
+			std::cerr << "Error: Invalid track read range for track "
+				<< t.trackNumber << "\n";
+			return false;
+		}
+		uint64_t count = static_cast<uint64_t>(t.endLBA) - start + 1;
+		if (count > std::numeric_limits<DWORD>::max() - total64) {
+			std::cerr << "Error: Disc read range is too large\n";
+			return false;
+		}
+		total64 += count;
 	}
+	DWORD total = static_cast<DWORD>(total64);
 
 	result = RecoveryRipResult{};
 	result.totalSectors = static_cast<int>(total);
@@ -335,7 +348,13 @@ bool OpticalDrive::ReadDiscRecovery(DiscInfo& disc, const RecoveryRipConfig& con
 		DWORD start = (disc.pregapMode == PregapMode::Skip) ? t.startLBA : t.pregapLBA;
 		int sectorSize = (disc.includeSubchannel && t.isAudio) ? RAW_SECTOR_SIZE : AUDIO_SECTOR_SIZE;
 
-		for (DWORD lba = start; lba <= t.endLBA; lba++) {
+		if (t.endLBA < start) {
+			std::cerr << "Error: Invalid track read range for track "
+				<< t.trackNumber << "\n";
+			return false;
+		}
+
+		for (DWORD lba = start;; lba++) {
 			if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey())
 				return false;
 
@@ -343,11 +362,17 @@ bool OpticalDrive::ReadDiscRecovery(DiscInfo& disc, const RecoveryRipConfig& con
 			int c2Errors = 0;
 			bool ok = false;
 
-			if (t.isAudio) {
+			if (t.isAudio && c2TieBreak) {
 				ScsiDrive::C2ReadOptions o;
 				o.countBytes = false;
 				BYTE* subPtr = (sectorSize > AUDIO_SECTOR_SIZE) ? sec.data() + AUDIO_SECTOR_SIZE : nullptr;
 				ok = m_drive.ReadSectorWithC2Ex(lba, sec.data(), subPtr, c2Errors, nullptr, o);
+			}
+			else if (t.isAudio) {
+				if (sectorSize > AUDIO_SECTOR_SIZE)
+					ok = m_drive.ReadSector(lba, sec.data(), sec.data() + AUDIO_SECTOR_SIZE);
+				else
+					ok = m_drive.ReadSectorAudioOnly(lba, sec.data());
 			}
 			else {
 				ok = m_drive.ReadDataSector(lba, sec.data());
@@ -356,7 +381,11 @@ bool OpticalDrive::ReadDiscRecovery(DiscInfo& disc, const RecoveryRipConfig& con
 			size_t idx = disc.rawSectors.size();
 			disc.rawSectors.push_back(std::move(sec));
 
-			if (t.isAudio && (!ok || c2Errors > 0)) {
+			// A single read is trusted only when C2 passed the reliability gate.
+			// With unavailable/untrusted C2, every audio sector goes through
+			// independent aligned consensus so a false-negative C2 report cannot
+			// silently certify corrupted data.
+			if (t.isAudio && (!ok || !c2TieBreak || c2Errors > 0)) {
 				problems.push_back({ idx, lba, t.trackNumber, true });
 			}
 			else if (!t.isAudio && !ok) {
@@ -368,6 +397,7 @@ bool OpticalDrive::ReadDiscRecovery(DiscInfo& disc, const RecoveryRipConfig& con
 
 			cur++;
 			if (progress) progress(cur, total);
+			if (lba == t.endLBA) break;
 		}
 	}
 

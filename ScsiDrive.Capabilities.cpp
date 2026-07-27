@@ -378,26 +378,31 @@ bool ScsiDrive::DetectCapabilities(DriveCapabilities& caps) {
 						OutputDebugStringA(dbgStr);
 					}
 
-					if (pageLen >= 25) {
-						// Bytes 24-25: Current write speed (kB/s) — MMC-3+
-						caps.currentWriteSpeedKB = (page[24] << 8) | page[25];
+					if (pageLen >= 28) {
+						// MMC-3+ extended layout: bytes 28-29 contain the
+						// currently selected write speed.
+						caps.currentWriteSpeedKB = (page[28] << 8) | page[29];
 						char dbgStr[256];
 						snprintf(dbgStr, sizeof(dbgStr), "Mode Page 2A: currentWriteSpeedKB=%d\n", caps.currentWriteSpeedKB);
 						OutputDebugStringA(dbgStr);
 					}
+					else if (pageLen >= 20) {
+						// Legacy 20h-byte layout: bytes 20-21 contain the
+						// currently selected write speed.
+						caps.currentWriteSpeedKB = (page[20] << 8) | page[21];
+					}
 
-					// Write speed descriptors (MMC-3+): starting at byte 28
-					// Bytes 26-27: total length (in bytes) of descriptor table
-					if (pageLen >= 28) {
-						int wsdTotalLen = (page[26] << 8) | page[27];
-						int numWsd = wsdTotalLen / 4;
+					// MMC-3+ write-speed descriptors start at byte 32. Bytes
+					// 30-31 contain the descriptor count (not a byte length).
+					if (pageLen >= 30) {
+						int numWsd = (page[30] << 8) | page[31];
 						char dbgStr[256];
-						snprintf(dbgStr, sizeof(dbgStr), "Mode Page 2A: wsdTotalLen=%d, numWsd=%d\n", wsdTotalLen, numWsd);
+						snprintf(dbgStr, sizeof(dbgStr), "Mode Page 2A: numWsd=%d\n", numWsd);
 						OutputDebugStringA(dbgStr);
 						
 						caps.maxWriteSpeedKB = 0;
-						for (int w = 0; w < numWsd && (28 + w * 4 + 3) < pageLen + 2; w++) {
-							int woff = 28 + w * 4;
+						for (int w = 0; w < numWsd && (32 + w * 4 + 3) < pageLen + 2; w++) {
+							int woff = 32 + w * 4;
 							int wspeed = (page[woff + 2] << 8) | page[woff + 3];
 							if (wspeed > 0) {
 								snprintf(dbgStr, sizeof(dbgStr), "  Mode Page 2A WSD[%d]: speed=%d\n", w, wspeed);

@@ -18,10 +18,10 @@ bool OpticalDrive::ValidateDiscStructure(const DiscInfo& disc, std::vector<std::
 
 	for (size_t i = 0; i < disc.tracks.size(); i++) {
 		const auto& t = disc.tracks[i];
-		if (t.endLBA <= t.startLBA) {
+		if (t.endLBA < t.startLBA) {
 			issues.push_back("Track " + std::to_string(t.trackNumber) + " has invalid LBA range");
 		}
-		if (i > 0 && t.startLBA < disc.tracks[i - 1].endLBA) {
+		if (i > 0 && t.startLBA <= disc.tracks[i - 1].endLBA) {
 			issues.push_back("Track " + std::to_string(t.trackNumber) + " overlaps with previous track");
 		}
 	}
@@ -46,10 +46,15 @@ bool OpticalDrive::VerifyWrittenFile(const std::wstring& filename, const DiscInf
 
 	size_t expectedSectors = disc.rawSectors.size();
 	size_t expectedSize = expectedSectors * AUDIO_SECTOR_SIZE;
+	if (expectedSectors == 0) {
+		std::cout << "ERROR: No in-memory sectors are available for verification.\n";
+		return false;
+	}
 
-	if (static_cast<size_t>(fileSize) != expectedSize) {
+	if (fileSize < 0 || static_cast<uint64_t>(fileSize) != expectedSize) {
 		std::cout << "WARNING: File size mismatch. Expected: " << expectedSize
 			<< ", Actual: " << fileSize << "\n";
+		return false;
 	}
 
 	std::cout << "Verifying " << expectedSectors << " sectors...\n";
@@ -60,6 +65,7 @@ bool OpticalDrive::VerifyWrittenFile(const std::wstring& filename, const DiscInf
 
 	std::vector<BYTE> fileSector(AUDIO_SECTOR_SIZE);
 	DWORD sectorNum = 0;
+	bool readFailed = false;
 
 	for (size_t i = 0; i < disc.rawSectors.size(); i++) {
 		if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
@@ -70,13 +76,19 @@ bool OpticalDrive::VerifyWrittenFile(const std::wstring& filename, const DiscInf
 		file.read(reinterpret_cast<char*>(fileSector.data()), AUDIO_SECTOR_SIZE);
 		if (!file) {
 			std::cout << "\nERROR: Read error at sector " << sectorNum << "\n";
+			readFailed = true;
 			break;
 		}
 
 		const auto& origSector = disc.rawSectors[i];
-		size_t compareSize = std::min(origSector.size(), static_cast<size_t>(AUDIO_SECTOR_SIZE));
+		if (origSector.size() < AUDIO_SECTOR_SIZE) {
+			std::cout << "\nERROR: In-memory sector " << sectorNum
+				<< " is shorter than an audio sector\n";
+			readFailed = true;
+			break;
+		}
 
-		if (memcmp(fileSector.data(), origSector.data(), compareSize) != 0) {
+		if (memcmp(fileSector.data(), origSector.data(), AUDIO_SECTOR_SIZE) != 0) {
 			mismatchedSectors.push_back(sectorNum);
 		}
 
@@ -84,14 +96,17 @@ bool OpticalDrive::VerifyWrittenFile(const std::wstring& filename, const DiscInf
 		progress.Update(static_cast<int>(sectorNum), static_cast<int>(expectedSectors));
 	}
 
-	progress.Finish(true);
+	const bool complete = !readFailed &&
+		sectorNum == expectedSectors &&
+		mismatchedSectors.empty();
+	progress.Finish(complete);
 	file.close();
 
 	std::cout << "\n=== Verification Results ===\n";
 	std::cout << "Sectors verified: " << sectorNum << "\n";
 	std::cout << "Mismatches: " << mismatchedSectors.size() << "\n";
 
-	if (mismatchedSectors.empty()) {
+	if (complete) {
 		std::cout << "*** FILE VERIFIED SUCCESSFULLY ***\n";
 		return true;
 	}
@@ -127,4 +142,3 @@ bool OpticalDrive::RunPreflightChecks(DiscInfo& disc, std::vector<std::string>& 
 
 	return warnings.empty();
 }
-

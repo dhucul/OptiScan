@@ -109,6 +109,13 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstring& /
 		Console::Info("Multi-session disc detected - automatically using session 1 (audio).\n");
 	}
 
+	// A full close/reopen refresh replaces DiscInfo and may leave it without the
+	// pressing records fetched at initial drive open. Query once for this disc
+	// so the offset-corrected extraction can be verified after the read.
+	if (!disc.accurateRipLookupAttempted) {
+		AccurateRip::Lookup(disc, disc.accurateRipPressings);
+	}
+
 	int speed = copier.SelectSpeed();
 	if (speed == -1) return false;
 
@@ -518,16 +525,35 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstring& /
 		copier.ApplyOffsetCorrection(disc);
 	}
 
+	bool accurateRipVerificationPerformed = false;
+	bool accurateRipMatched = false;
+	if (!disc.accurateRipPressings.empty()) {
+		if (disc.pregapMode == PregapMode::Skip) {
+			Console::Warning("\nAccurateRip verification unavailable: Skip mode omitted "
+				"pregap sectors required by AccurateRip track boundaries.\n");
+		}
+		else {
+			accurateRipVerificationPerformed = true;
+			accurateRipMatched =
+				AccurateRip::VerifyCRCs(disc, disc.accurateRipPressings);
+			if (!accurateRipMatched) {
+				Console::Error("AccurateRip verification failed; the image will be "
+					"saved for inspection but will not be reported as verified.\n");
+			}
+		}
+	}
+
 	Console::Info("Saving files...\n");
 	if (!copier.SaveToFile(disc, path)) {
 		Console::Error("Failed to save!\n");
 		return false;
 	}
 
-	if (disc.pregapMode == PregapMode::Include) {
+	if (disc.pregapMode != PregapMode::Separate) {
 		std::vector<DWORD> mismatched;
 		if (!copier.VerifyWrittenFile(path + L".bin", disc, mismatched)) {
-			Console::Warning("Written .bin file did not match in-memory disc data.\n");
+			Console::Error("Written .bin file did not match in-memory disc data.\n");
+			return false;
 		}
 	}
 
@@ -547,11 +573,16 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstring& /
 
 	copier.Eject();
 
-	Console::Success("\nCopy complete. Files written to: ");
+	if (accurateRipVerificationPerformed && !accurateRipMatched) {
+		Console::Warning("\nCopy saved, but AccurateRip verification FAILED. Files written to: ");
+	}
+	else {
+		Console::Success("\nCopy complete. Files written to: ");
+	}
 	std::wcout << outputDir << L"\n";
 	Console::Info("Output basename: ");
 	std::wcout << path << L"\n";
-	return true;
+	return !accurateRipVerificationPerformed || accurateRipMatched;
 }
 
 void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,

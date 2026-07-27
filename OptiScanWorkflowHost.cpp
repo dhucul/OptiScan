@@ -97,11 +97,10 @@ bool EnsureDriveOpen(HWND hOwner, bool* outFreshlyScanned,
         // Query AccurateRip at disc open so the disc's recognition status is shown
         // up front, without requiring a manual "Rescan disc". Mirrors the original
         // console workflow. Network-gated and timeout-bounded inside Lookup(); the
-        // returned pressing CRCs aren't retained here — this is purely the
-        // FOUND/NOT FOUND + disc-ID readout.
+        // Retain the returned pressing CRCs so a later full-disc copy can
+        // verify its offset-corrected audio without another network request.
         if (g_hasTOC) {
-            std::vector<std::vector<uint32_t>> pressingCRCs;
-            AccurateRip::Lookup(g_disc, pressingCRCs);
+            AccurateRip::Lookup(g_disc, g_disc.accurateRipPressings);
             // Capture the disc's metadata at open so it's available to the FIRST
             // workflow without a separate rescan. This is load-bearing: the first
             // asterisked op after a fresh open skips Prescan()/RefreshDisc() (the
