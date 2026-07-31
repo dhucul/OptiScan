@@ -63,6 +63,10 @@ private:
 	// from m_cddaReadFormProbed, which additionally resolves the HL-DT-ST
 	// GOOD-but-zero ambiguity for the audio main channel. Reset on Open().
 	bool m_cddaFormDiscovered = false;
+	// Some firmware returns READ CD + C2 + raw subchannel as data/sub/C2
+	// instead of the MMC data/C2/sub order. Characterization validates the
+	// Q-channel CRC and caches the observed layout for extraction.
+	RawSectorLayout m_rawSectorLayout = RawSectorLayout::DataC2Sub;
 
 	// Sense (key/ASC/ASCQ) of the most recent failed CD-DA read. Lets the
 	// copy workflow report *why* a drive rejected extraction instead of
@@ -90,6 +94,8 @@ private:
 	// the drive clamped to. -1 = not yet probed. Cached for the open handle
 	// since the floor is a fixed drive/media property; reset on Open().
 	int m_lowestHonoredSpeed = -1;
+
+	void LoadCachedCharacterization();
 
 public:
 	// ── Type aliases for backward compatibility ──────────────
@@ -137,6 +143,7 @@ public:
 	bool ReadSectorAudioOnly(DWORD lba, BYTE* audio);
 	bool ReadSectorsAudioOnly(DWORD startLBA, DWORD count, BYTE* audio);
 	bool ReadDataSector(DWORD lba, BYTE* data);
+	bool ReadDataSectorWithSubchannel(DWORD lba, BYTE* data, BYTE* subchannel);
 	bool ReadSectorQ(DWORD lba, int& qTrack, int& qIndex);
 	bool ReadSectorQSingle(DWORD lba, int& qTrack, int& qIndex);
 	bool ReadSectorQAdaptive(DWORD lba, int& qTrack, int& qIndex,
@@ -217,6 +224,10 @@ public:
 	bool DetectCapabilities(DriveCapabilities& caps);
 	bool GetModePage2A(std::vector<BYTE>& pageData);
 	bool TestOverread(bool leadIn);
+	bool Characterize(DWORD audioLBA, DWORD leadOutLBA,
+		const DriveCapabilities& caps, DriveCharacterization& result);
+	void ApplyCharacterization(const DriveCharacterization& profile);
+	RawSectorLayout GetRawSectorLayout() const { return m_rawSectorLayout; }
 
 	// ── Chipset / controller identification ──────────────────────
 	bool DetectChipset(ChipsetInfo& info);

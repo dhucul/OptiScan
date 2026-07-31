@@ -41,7 +41,8 @@ bool ScsiDrive::ParseRawSubchannel(const BYTE* sub, int& qTrack, int& qIndex) {
 	// Validate CRC-16 (bytes 0-9 checked against bytes 10-11)
 	uint16_t calcCrc = SubchannelCRC16(qchannel, 10);
 	uint16_t storedCrc = (static_cast<uint16_t>(qchannel[10]) << 8) | qchannel[11];
-	if (calcCrc != storedCrc) {
+	if (calcCrc != storedCrc &&
+		static_cast<uint16_t>(calcCrc ^ 0xFFFF) != storedCrc) {
 		return false;  // CRC mismatch — data is unreliable
 	}
 
@@ -400,6 +401,11 @@ bool ScsiDrive::ReadSectorWithC2Ex(DWORD lba, BYTE* audio, BYTE* subchannel,
 	memcpy(audio, buffer.data(), AUDIO_SECTOR_SIZE);
 
 	const BYTE* c2Data = buffer.data() + AUDIO_SECTOR_SIZE;
+	const BYTE* subData = buffer.data() + AUDIO_SECTOR_SIZE + C2_ERROR_SIZE;
+	if (subchannel && m_rawSectorLayout == RawSectorLayout::DataSubC2) {
+		subData = buffer.data() + AUDIO_SECTOR_SIZE;
+		c2Data = subData + SUBCHANNEL_SIZE;
+	}
 
 	// Only count the 294 actual C2 error pointer bytes.  Bytes 294-295
 	// in ErrorPointers mode are C1/C2 block error statistics — C1 counts are
@@ -452,7 +458,7 @@ bool ScsiDrive::ReadSectorWithC2Ex(DWORD lba, BYTE* audio, BYTE* subchannel,
 	}
 
 	if (subchannel) {
-		memcpy(subchannel, buffer.data() + AUDIO_SECTOR_SIZE + C2_ERROR_SIZE, SUBCHANNEL_SIZE);
+		memcpy(subchannel, subData, SUBCHANNEL_SIZE);
 	}
 
 	return true;
@@ -680,6 +686,25 @@ bool ScsiDrive::ReadDataSector(DWORD lba, BYTE* data) {
 	return SendSCSI(cdb, 12, data, AUDIO_SECTOR_SIZE);
 }
 
+bool ScsiDrive::ReadDataSectorWithSubchannel(DWORD lba, BYTE* data, BYTE* subchannel) {
+	BYTE cdb[12] = {};
+	std::vector<BYTE> buffer(RAW_SECTOR_SIZE);
+	cdb[0] = SCSI_READ_CD;
+	cdb[1] = 0x00; // any sector type; required for mixed-mode data tracks
+	cdb[2] = (lba >> 24) & 0xFF;
+	cdb[3] = (lba >> 16) & 0xFF;
+	cdb[4] = (lba >> 8) & 0xFF;
+	cdb[5] = lba & 0xFF;
+	cdb[8] = 1;
+	cdb[9] = 0xF8;
+	cdb[10] = 0x01; // raw P-W
+	if (!SendSCSI(cdb, 12, buffer.data(), static_cast<DWORD>(buffer.size())))
+		return false;
+	memcpy(data, buffer.data(), AUDIO_SECTOR_SIZE);
+	memcpy(subchannel, buffer.data() + AUDIO_SECTOR_SIZE, SUBCHANNEL_SIZE);
+	return true;
+}
+
 bool ScsiDrive::ReadSectorQRaw(DWORD lba, int& qTrack, int& qIndex) {
 	// Adopt the READ CD form the drive accepts for CD-DA (sector type +
 	// main channel) so subchannel reads work on drives that reject the
@@ -744,7 +769,9 @@ bool ScsiDrive::ReadSectorQControl(DWORD lba, int& control) {
 
 		uint16_t calcCrc = SubchannelCRC16(qchannel, 10);
 		uint16_t storedCrc = (static_cast<uint16_t>(qchannel[10]) << 8) | qchannel[11];
-		if (calcCrc != storedCrc) continue;   // unreliable — retry once
+		if (calcCrc != storedCrc &&
+			static_cast<uint16_t>(calcCrc ^ 0xFFFF) != storedCrc)
+			continue;   // unreliable — retry once
 
 		if ((qchannel[0] & 0x0F) != 1) return false;  // not a position frame
 		control = (qchannel[0] >> 4) & 0x0F;           // high nibble = CONTROL

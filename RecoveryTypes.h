@@ -66,11 +66,15 @@ struct RecoverySectorResult {
 // ── Disc-wide recovery summary ──────────────────────────────────────────────
 struct RecoveryRipResult {
 	int totalSectors = 0;
+	bool resumedFromCheckpoint = false; // matching sidecar state was loaded
+	int resumedSectors = 0;             // sectors reused from an earlier run
+	std::string checkpointSourceDrive;  // drive identity recorded by prior run
 	int cleanFirstPass = 0;        // sectors that read clean on the baseline sweep
 	int recovered = 0;             // fully rebuilt by consensus
 	int partial = 0;               // partially rebuilt (some bytes unconfirmed)
 	int unrecovered = 0;           // never read successfully
 	int problemSectors = 0;        // sectors that entered the rescue phase
+	int subchannelFailures = 0;    // requested P-W sectors that could not be read
 	bool c2TieBreakActive = false; // C2 validation passed and C2 was used
 	long long c2DisputedBytes = 0; // total consensus-accepted bytes C2 flagged bad
 	int c2DisputedSectors = 0;     // sectors with at least one such byte

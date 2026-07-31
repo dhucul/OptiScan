@@ -146,7 +146,7 @@ bool OpticalDrive::ReadDiscSecure(DiscInfo& disc, const SecureRipConfig& config,
 		auto& t = disc.tracks[i];
 		if (disc.selectedSession > 0 && t.session != disc.selectedSession) continue;
 		DWORD start = (disc.pregapMode == PregapMode::Skip) ? t.startLBA : t.pregapLBA;
-		int sectorSize = (disc.includeSubchannel && t.isAudio) ? RAW_SECTOR_SIZE : AUDIO_SECTOR_SIZE;
+		int sectorSize = disc.includeSubchannel ? RAW_SECTOR_SIZE : AUDIO_SECTOR_SIZE;
 
 		for (DWORD lba = start;; lba++) {
 			if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
@@ -172,7 +172,10 @@ bool OpticalDrive::ReadDiscSecure(DiscInfo& disc, const SecureRipConfig& config,
 					ok = m_drive.ReadSectorAudioOnly(lba, sec.data());
 			}
 			else {
-				ok = m_drive.ReadDataSector(lba, sec.data());
+				ok = disc.includeSubchannel
+					? m_drive.ReadDataSectorWithSubchannel(
+						lba, sec.data(), sec.data() + AUDIO_SECTOR_SIZE)
+					: m_drive.ReadDataSector(lba, sec.data());
 			}
 
 			double readTimeMs = std::chrono::duration<double, std::milli>(
@@ -296,7 +299,10 @@ bool OpticalDrive::ReadDiscSecure(DiscInfo& disc, const SecureRipConfig& config,
 					ok = m_drive.ReadSectorAudioOnly(lba, buf.data());
 			}
 			else {
-				ok = m_drive.ReadDataSector(lba, buf.data());
+				ok = disc.includeSubchannel
+					? m_drive.ReadDataSectorWithSubchannel(
+						lba, buf.data(), buf.data() + AUDIO_SECTOR_SIZE)
+					: m_drive.ReadDataSector(lba, buf.data());
 			}
 
 			double readTimeMs = std::chrono::duration<double, std::milli>(

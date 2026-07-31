@@ -3,6 +3,8 @@
 #include "AccurateRip.h"
 #include "InterruptHandler.h"
 #include "MenuHelpers.h"
+#include <algorithm>
+#include <filesystem>
 #include <iostream>
 #include <fstream>
 #include <iomanip>
@@ -121,6 +123,119 @@ bool OpticalDrive::VerifyWrittenFile(const std::wstring& filename, const DiscInf
 		}
 		return false;
 	}
+}
+
+bool OpticalDrive::VerifyWrittenArtifacts(const std::wstring& basePath, const DiscInfo& disc,
+	std::vector<DWORD>& mismatchedSectors) {
+	std::cout << "\n=== Verifying Written Artifacts ===\n";
+	mismatchedSectors.clear();
+
+	if (disc.rawSectors.empty()) {
+		std::cout << "ERROR: No in-memory sectors are available for verification.\n";
+		return false;
+	}
+
+	auto recordMismatch = [&](size_t sectorIndex) {
+		const DWORD logicalIndex = static_cast<DWORD>(
+			std::min<size_t>(sectorIndex, static_cast<size_t>(MAXDWORD)));
+		if (std::find(mismatchedSectors.begin(), mismatchedSectors.end(), logicalIndex) ==
+			mismatchedSectors.end()) {
+			mismatchedSectors.push_back(logicalIndex);
+		}
+	};
+
+	auto verifyArtifact = [&](const std::wstring& path, const std::vector<size_t>& sectorIndices,
+		size_t sourceOffset, size_t bytesPerSector) {
+		std::ifstream input(std::filesystem::path(path), std::ios::binary | std::ios::ate);
+		const uint64_t expectedSize =
+			static_cast<uint64_t>(sectorIndices.size()) * static_cast<uint64_t>(bytesPerSector);
+		const std::streampos actualSize = input.is_open() ? input.tellg() : std::streampos(-1);
+		if (!input.is_open() || actualSize < 0 || static_cast<uint64_t>(actualSize) != expectedSize) {
+			std::wcout << L"ERROR: Missing or incorrectly sized artifact: " << path << L"\n";
+			for (const size_t sectorIndex : sectorIndices) recordMismatch(sectorIndex);
+			return false;
+		}
+
+		input.seekg(0, std::ios::beg);
+		std::vector<BYTE> actual(bytesPerSector);
+		bool matched = true;
+		for (const size_t sectorIndex : sectorIndices) {
+			if (sectorIndex >= disc.rawSectors.size() ||
+				sourceOffset + bytesPerSector > disc.rawSectors[sectorIndex].size()) {
+				recordMismatch(sectorIndex);
+				matched = false;
+				continue;
+			}
+
+			input.read(reinterpret_cast<char*>(actual.data()),
+				static_cast<std::streamsize>(actual.size()));
+			if (!input ||
+				!std::equal(actual.begin(), actual.end(),
+					disc.rawSectors[sectorIndex].begin() + sourceOffset)) {
+				recordMismatch(sectorIndex);
+				matched = false;
+			}
+		}
+		return matched;
+	};
+
+	bool matched = true;
+	std::vector<size_t> mainSectorIndices;
+	size_t sectorIndex = 0;
+	for (const auto& track : disc.tracks) {
+		if (disc.selectedSession > 0 && track.session != disc.selectedSession) continue;
+
+		DWORD start = track.pregapLBA;
+		if (track.endLBA < start) continue;
+		DWORD count = track.endLBA - start + 1;
+
+		if (disc.pregapMode == PregapMode::Skip) {
+			start = track.startLBA;
+			if (track.endLBA < start) continue;
+			count = track.endLBA - start + 1;
+		}
+		else if (disc.pregapMode == PregapMode::Separate && track.pregapLBA < track.startLBA) {
+			const DWORD pregapCount = track.startLBA - track.pregapLBA;
+			std::vector<size_t> pregapSectorIndices;
+			pregapSectorIndices.reserve(pregapCount);
+			for (DWORD i = 0; i < pregapCount; ++i) {
+				pregapSectorIndices.push_back(sectorIndex++);
+			}
+
+			const std::wstring pregapBase = basePath + L"_track" +
+				std::to_wstring(track.trackNumber) + L"_pregap";
+			matched = verifyArtifact(pregapBase + L".bin", pregapSectorIndices,
+				0, AUDIO_SECTOR_SIZE) && matched;
+			if (disc.includeSubchannel) {
+				matched = verifyArtifact(pregapBase + L".sub", pregapSectorIndices,
+					AUDIO_SECTOR_SIZE, SUBCHANNEL_SIZE) && matched;
+			}
+
+			start = track.startLBA;
+			if (track.endLBA < start) continue;
+			count = track.endLBA - start + 1;
+		}
+
+		for (DWORD i = 0; i < count; ++i) {
+			mainSectorIndices.push_back(sectorIndex++);
+		}
+	}
+
+	if (sectorIndex != disc.rawSectors.size()) {
+		std::cout << "ERROR: Artifact layout does not consume every in-memory sector.\n";
+		for (size_t i = sectorIndex; i < disc.rawSectors.size(); ++i) recordMismatch(i);
+		matched = false;
+	}
+
+	matched = verifyArtifact(basePath + L".bin", mainSectorIndices, 0, AUDIO_SECTOR_SIZE) && matched;
+	if (disc.includeSubchannel) {
+		matched = verifyArtifact(basePath + L".sub", mainSectorIndices,
+			AUDIO_SECTOR_SIZE, SUBCHANNEL_SIZE) && matched;
+	}
+
+	std::cout << "Artifacts verified: " << (matched && mismatchedSectors.empty() ? "YES" : "NO") << "\n";
+	std::cout << "Mismatched sectors: " << mismatchedSectors.size() << "\n";
+	return matched && mismatchedSectors.empty();
 }
 
 bool OpticalDrive::CheckDiskSpace(const std::wstring& path, DWORD sectorsNeeded) {

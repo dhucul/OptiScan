@@ -549,11 +549,31 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			   //  Drive Diagnostics
 			   // ════════════════════════════════════════════════════════════
 
-			   // ── 18. Drive capabilities ────────────────────────────────
+			   // ── 18. Drive capabilities & characterization ────────────
 		case 18: {
 			DriveCapabilities caps;
 			if (copier.DetectDriveCapabilities(caps)) {
 				copier.PrintDriveCapabilities(caps);
+				if (hasTOC) {
+					Console::Info("\nRunning read-only characterization probes...\n");
+					DriveCharacterization characterization;
+					if (copier.CharacterizeDrive(disc, caps, characterization)) {
+						copier.PrintDriveCharacterization(characterization);
+						if (characterization.profileSaved)
+							Console::Success("Drive profile characterized and cached.\n");
+						else
+							Console::Warning("Drive characterization completed, but the profile "
+								"could not be cached.\n");
+					}
+					else {
+						Console::Warning("Active characterization did not complete; "
+							"capability report is still available.\n");
+					}
+				}
+				else {
+					Console::Info("\nLoad an audio disc to run active characterization "
+						"(read method, layout, cache, and overread probes).\n");
+				}
 				std::cout << "\n";
 				copier.ShowDriveRecommendations();
 			}

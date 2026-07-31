@@ -7,6 +7,45 @@
 #include <vector>
 #include <string>
 
+enum class RawSectorLayout {
+	Unknown = 0,
+	DataC2Sub,
+	DataSubC2
+};
+
+enum class DriveReadMethod {
+	Unknown = 0,
+	ReadCD,
+	ReadCDDA
+};
+
+struct DriveCharacterization {
+	bool performed = false;
+	bool loadedFromCache = false;
+	bool profileSaved = false;
+	std::string vendor;
+	std::string model;
+	std::string firmware;
+	std::string serialNumber;
+	DriveReadMethod preferredReadMethod = DriveReadMethod::Unknown;
+	RawSectorLayout rawSectorLayout = RawSectorLayout::Unknown;
+	bool readCdAudio = false;
+	bool readCdda = false;
+	bool rawSubchannelFunctional = false;
+	bool c2Functional = false;
+	bool stableRepeatedReads = false;
+	bool cacheDefeatVerified = false;
+	int leadInReadableSectors = 0;
+	int leadOutReadableSectors = 0;
+	std::string notes;
+};
+
+bool LoadDriveCharacterizationProfile(const std::string& vendor,
+	const std::string& model, const std::string& firmware,
+	DriveCharacterization& profile);
+bool SaveDriveCharacterizationProfile(const DriveCharacterization& profile);
+std::wstring GetDriveCharacterizationProfilePath();
+
 // ── Drive health indicators ─────────────────────────────────────────────────
 // Quick status check for the physical drive and inserted media.
 struct DriveHealthCheck {

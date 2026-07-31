@@ -60,6 +60,13 @@ bool OpticalDrive::SaveToFile(const DiscInfo& disc, const std::wstring& base) {
 				std::to_wstring(t.trackNumber) + L"_pregap.bin";
 			std::ofstream pregapFile(std::filesystem::path(pregapPath), std::ios::binary);
 			if (!pregapFile) return false;
+			std::wstring pregapSubPath = base + L"_track" +
+				std::to_wstring(t.trackNumber) + L"_pregap.sub";
+			std::ofstream pregapSub;
+			if (disc.includeSubchannel) {
+				pregapSub.open(std::filesystem::path(pregapSubPath), std::ios::binary);
+				if (!pregapSub) return false;
+			}
 
 			DWORD pregapCount = t.startLBA - t.pregapLBA;
 			for (DWORD j = 0; j < pregapCount; j++) {
@@ -68,10 +75,21 @@ bool OpticalDrive::SaveToFile(const DiscInfo& disc, const std::wstring& base) {
 				if (s.size() < AUDIO_SECTOR_SIZE) return false;
 				pregapFile.write(reinterpret_cast<const char*>(s.data()), AUDIO_SECTOR_SIZE);
 				if (!pregapFile) return false;
+				if (disc.includeSubchannel) {
+					if (s.size() < RAW_SECTOR_SIZE) return false;
+					pregapSub.write(reinterpret_cast<const char*>(
+						s.data() + AUDIO_SECTOR_SIZE), SUBCHANNEL_SIZE);
+					if (!pregapSub) return false;
+				}
 			}
 			pregapFile.flush();
 			if (!pregapFile.good()) return false;
 			pregapFiles.push_back(pregapPath);
+			if (disc.includeSubchannel) {
+				pregapSub.flush();
+				if (!pregapSub.good()) return false;
+				pregapFiles.push_back(pregapSubPath);
+			}
 			start = t.startLBA;
 			if (t.endLBA < t.startLBA) continue;
 			count = t.endLBA - t.startLBA + 1;
@@ -84,7 +102,7 @@ bool OpticalDrive::SaveToFile(const DiscInfo& disc, const std::wstring& base) {
 			img.write(reinterpret_cast<const char*>(s.data()), AUDIO_SECTOR_SIZE);
 			if (!img) return false;
 
-			if (disc.includeSubchannel && t.isAudio) {
+			if (disc.includeSubchannel) {
 				if (s.size() < RAW_SECTOR_SIZE) return false;
 				sub.write(reinterpret_cast<const char*>(s.data() + AUDIO_SECTOR_SIZE), SUBCHANNEL_SIZE);
 				if (!sub) return false;
@@ -140,7 +158,8 @@ bool OpticalDrive::SaveToFile(const DiscInfo& disc, const std::wstring& base) {
 		if (disc.selectedSession > 0 && t.session != disc.selectedSession) continue;
 
 		cue << "  TRACK " << std::setfill('0') << std::setw(2) << t.trackNumber;
-		cue << (t.isAudio ? " AUDIO\n" : " MODE1/2352\n");
+		cue << (t.isAudio ? " AUDIO\n" :
+			(t.mode == 2 ? " MODE2/2352\n" : " MODE1/2352\n"));
 
 		if (t.trackNumber > 0 &&
 			static_cast<size_t>(t.trackNumber) <= disc.cdText.trackTitles.size() &&

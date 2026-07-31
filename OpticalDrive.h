@@ -75,7 +75,8 @@ public:
 	// consensus (per-byte majority voting + jitter alignment) rather than
 	// trusting the drive's C2.  See RecoveryTypes.h for the strategy.
 	bool ReadDiscRecovery(DiscInfo& disc, const RecoveryRipConfig& config,
-		RecoveryRipResult& result, std::function<void(int, int)> progress = nullptr);
+		RecoveryRipResult& result, std::function<void(int, int)> progress = nullptr,
+		const std::wstring& checkpointBasePath = L"");
 	bool SaveRecoveryReport(const RecoveryRipResult& result, const std::wstring& filename);
 
 	// Quality scanning
@@ -159,6 +160,8 @@ public:
 	bool ValidateDiscStructure(const DiscInfo& disc, std::vector<std::string>& issues);
 	bool VerifyWrittenFile(const std::wstring& filename, const DiscInfo& disc,
 		std::vector<DWORD>& mismatchedSectors);
+	bool VerifyWrittenArtifacts(const std::wstring& basePath, const DiscInfo& disc,
+		std::vector<DWORD>& mismatchedSectors);
 	bool CheckDiskSpace(const std::wstring& path, DWORD sectorsNeeded);
 	bool RunPreflightChecks(DiscInfo& disc, std::vector<std::string>& warnings);
 	ErrorStatistics CalculateErrorStatistics(const DiscInfo& disc);
@@ -176,6 +179,9 @@ public:
 	// Drive capabilities
 	bool DetectDriveCapabilities(DriveCapabilities& caps);
 	void PrintDriveCapabilities(const DriveCapabilities& caps);
+	bool CharacterizeDrive(const DiscInfo& disc, const DriveCapabilities& caps,
+		DriveCharacterization& result);
+	void PrintDriveCharacterization(const DriveCharacterization& result);
 
 	// CD-Text write-path probe (see OpticalDrive_DriveCapabilities.cpp). Runs
 	// MODE SELECT + MODE SENSE readback for each SAO/RAW + subchannel write mode
@@ -300,7 +306,8 @@ private:
 	// Recovery-rip per-sector consensus rescue. Rebuilds the 2352-byte audio
 	// payload of one hard sector into audioOut by aligned per-byte voting.
 	bool RescueSectorConsensus(DWORD lba, BYTE* audioOut, const RecoveryRipConfig& cfg,
-		DWORD maxLBA, bool c2TieBreak, RecoverySectorResult& sr);
+		DWORD maxLBA, bool c2TieBreak, RecoverySectorResult& sr,
+		int coordinateOffsetSamples = 0);
 	bool DefeatDriveCache(DWORD currentLBA, DWORD maxLBA = 0);
 	bool FlushDriveCache();
 	uint32_t HashSector(const BYTE* data, int size);

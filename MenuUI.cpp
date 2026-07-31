@@ -40,14 +40,20 @@ void PrintHelpMenu() {
 	PrintEntry({ "1. Copy Disc",
 		"Rips audio tracks to WAV/FLAC files with optional AccurateRip verification.\n"
 		"   Supports drive offset correction, subchannel extraction, pre-gap extraction,\n"
-		"   secure rip modes (burst/standard/paranoid), and detailed logging.",
+		"   secure rip modes (burst/standard/paranoid), and detailed logging.\n"
+		"   Every image also gets a JSON preservation manifest with CRC32, MD5,\n"
+		"   SHA-1, and SHA-256 hashes. Mixed-mode data tracks are mode-detected\n"
+		"   and checked using their sync, address, EDC, and ECC fields; raw P-W\n"
+		"   subchannel is captured for audio and data sectors when selected.\n"
+		"   A conservative disc write-offset estimate is recorded, never applied.",
 		"Creating high-quality digital backups of your audio CDs." });
 
 	PrintEntry({ "2. Rip Tracks (WAV/FLAC)",
 		"Rips individual or multiple tracks to separate WAV or FLAC files.\n"
 		"   Select specific tracks or rip the entire disc track-by-track.\n"
 		"   Supports burst and secure (C2-guided) rip modes, drive speed selection,\n"
-		"   and drive offset correction.\n"
+		"   and drive offset correction. A preservation manifest hashes every\n"
+		"   successfully written WAV/FLAC artifact.\n"
 		"\n"
 		"   FLAC encoding requires flac.exe in your system PATH or working directory.\n"
 		"   If FLAC encoding fails, the WAV file is kept as a fallback.",
@@ -99,7 +105,15 @@ void PrintHelpMenu() {
 		"   which sectors were recovered, partial, or never readable. Slow by\n"
 		"   design; use low speed on damaged discs. It cannot recover a sample\n"
 		"   that every read got wrong the same way (audio reads expose no CIRC\n"
-		"   parity) - those bytes are reported, not faked.",
+		"   parity) - those bytes are reported, not faked.\n"
+		"\n"
+		"   Progress is checkpointed to .recovery.state and .recovery.partial.bin.\n"
+		"   Re-running the same output basename resumes automatically, including\n"
+		"   on another drive, after stable disc-content identity is confirmed;\n"
+		"   drive-offset differences are translated before voting. Incompatible\n"
+		"   or corrupt sidecars are preserved with an .invalid suffix. Active\n"
+		"   sidecars are removed only after every requested channel is complete\n"
+		"   and image verification, reports, and the manifest are safely written.",
 		"Last-resort extraction of scratched or degrading discs that fail normal rips." });
 
 	// ═════════════════════════════════════════════════════════════════════
@@ -253,11 +267,17 @@ void PrintHelpMenu() {
 	// ═════════════════════════════════════════════════════════════════════
 	PrintSection("Drive");
 
-	PrintEntry({ "19. Drive Capabilities",
+	PrintEntry({ "19. Drive Capabilities & Characterization",
 		"Detects and displays your CD/DVD drive's hardware capabilities.\n"
 		"   Shows support for: C2 errors, accurate stream, CD-TEXT, subchannel.\n"
 		"   Also displays: read/write speeds, buffer size, overread capability.\n"
-		"   Provides a ripping quality score to assess drive suitability.",
+		"   Provides a ripping quality score to assess drive suitability.\n"
+		"\n"
+		"   With an audio disc loaded, read-only characterization probes the\n"
+		"   accepted BE/D8 read methods, validates raw subchannel and C2 layout,\n"
+		"   checks repeated reads/cache-defeat behavior, and measures readable\n"
+		"   lead-in/lead-out depth. The profile is cached per vendor/model/firmware\n"
+		"   and reused by all applicable rip and scan menu items.",
 		"Checking if your drive is suitable for accurate ripping." });
 
 	PrintEntry({ "20. Drive Offset Detection",
@@ -370,13 +390,13 @@ void PrintHelpMenu() {
 		"   A final confirmation is required before anything is erased.",
 		"Reusing a CD-RW, or fully wiping one before disposal." });
 
-	PrintEntry({ "32. Batch Run (multiple ops, 1 prescan)",
+	PrintEntry({ "33. Batch Run (multiple ops, 1 prescan)",
 		"Runs several menu items in succession with a single shared pre-scan\n"
 		"   (TOC + CD-Text + ISRC) at the start, so the disc only spins up once\n"
 		"   for the whole batch.\n"
 		"\n"
 		"   Prompts for a space- or comma-separated list of menu numbers in the\n"
-		"   range 1-30 (example: \"6 7 8 9\"). Duplicates are ignored and the\n"
+		"   supported operation range (example: \"6 7 8 9\"). Duplicates are ignored and the\n"
 		"   numbers are run in the order given. Use Clear output (View menu, or\n"
 		"   the Clear info box button) during the batch to cancel at the next\n"
 		"   operation boundary.\n"
@@ -388,7 +408,7 @@ void PrintHelpMenu() {
 		"   active drive partway through.",
 		"Running several quality scans or info readouts back-to-back on one disc." });
 
-	PrintEntry({ "33. Clear Info Box",
+	PrintEntry({ "34. Clear Info Box",
 		"Clears the output/info pane in the GUI.\n"
 		"   Does not affect the disc, drive, or any in-progress operation -\n"
 		"   only the on-screen log buffer is wiped. While a workflow is running\n"
@@ -396,7 +416,7 @@ void PrintHelpMenu() {
 		"   to stop at the next checkpoint.",
 		"Tidying the output area between operations, or cancelling a running workflow." });
 
-	PrintEntry({ "34. Exit",
+	PrintEntry({ "35. Exit",
 		"Exits the program. If a workflow is running, it is asked to cancel first.",
 		"Closing the tool when done." });
 

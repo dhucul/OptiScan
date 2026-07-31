@@ -21,7 +21,7 @@ OptiScan reads and writes audio CDs at the raw sector level using SCSI/MMC comma
 > | **LG/HL-DT-ST and other MediaTek-based drives** | Partially supported; some models work well for basic operations, while others may need slower reads or may reject raw read, subchannel, pregap, CD-Text, or write-mode commands |
 > | **Generic MMC optical drives** | Basic ripping, writing, and scans may work if the required MMC commands are accepted, but advanced features are not guaranteed |
 >
-> Unsupported or untested drives should be treated as experimental. Always run **Drive capabilities** first and verify results before relying on a rip, burn, or quality report.
+> Unsupported or untested drives should be treated as experimental. Always run **Drive capabilities & characterization** first and verify results before relying on a rip, burn, or quality report.
 
 The original command-line workflow has been ported to a native Win32 GUI: every menu item is a button, output streams into an in-window console pane, and prompts (drive selection, output directory, numeric inputs, yes/no confirmations) appear as modal dialogs. Folder and file paths are picked through the standard Windows folder picker rather than typed by hand.
 
@@ -37,8 +37,12 @@ The original command-line workflow has been ported to a native Win32 GUI: every 
 - **Pre-gap extraction** (include in image, skip, or extract separately)
 - **Hidden track detection** — detects hidden audio before Track 1 (HTOA) and after the last track
 - **Subchannel reading** with integrity verification
+- **Whole-disc raw subchannel capture** for both audio and mixed-mode data sectors
 - **CD-Text and ISRC extraction**
 - **CUE sheet generation**
+- **Archival preservation manifests** — CRC32, MD5, SHA-1, and SHA-256 for every rip artifact
+- **Raw data-track validation** — automatic Mode 1, original formless Mode 2, and Mode 2 XA detection with the checks each format actually carries
+- **Preservation write-offset analysis** — conservative header/index-boundary evidence recorded without changing playback or AccurateRip data
 - **Disc fingerprinting** — CDDB, MusicBrainz, and AccurateRip disc IDs
 - **TOC-less disc scanning** — reconstructs track layout from raw Q subchannel when the TOC is damaged or missing
 
@@ -71,7 +75,7 @@ The original command-line workflow has been ported to a native Win32 GUI: every 
 - **Copy-protection detection** — heuristic scan for common audio CD protection schemes
 
 ### Drive Diagnostics
-- **Drive capabilities** — queries and displays drive features, media support, and extraction suitability
+- **Drive capabilities & characterization** — active BE/D8, C2/subchannel layout, cache, and lead-area probes with per-firmware cached profiles
 - **Drive offset detection** — auto-detects read offset via AccurateRip database or pregap analysis
 - **C2 validation test** — verifies that the drive's C2 error reporting is reliable
 - **Speed comparison test** — reads sectors at two speeds to detect surface instability
@@ -118,7 +122,7 @@ The table below lists every operation with the number shown on its card. That nu
 | 16 | Analysis | Subchannel integrity check |
 | 17 | Analysis | Verify subchannel burn status |
 | 18 | Analysis | Copy-protection check |
-| 19 | Drive Tools | Drive capabilities |
+| 19 | Drive Tools | Drive capabilities & characterization |
 | 20 | Drive Tools | Drive offset detection |
 | 21 | Drive Tools | C2 validation test |
 | 22 | Drive Tools | Speed comparison test |
@@ -231,7 +235,9 @@ The recovery rip is a separate read engine from the secure rip. Where secure rip
 2. **Baseline sweep** — read every sector once. C2-clean reads are trusted; failed or C2-flagged audio sectors are queued for rescue.
 3. **Consensus rescue** — for each queued sector, read the overlapping window up to *N* times, align each pass to defeat jitter, then majority-vote every byte. A sector is **Recovered** when every byte reaches quorum, **Partial** when some bytes never do (the best-vote value is kept and flagged), or **Unrecovered** if it never read at all.
 
-**Output:** a `.bin`/`.cue`(/`.sub`) image (same format as Copy disc) plus a `_recovery.txt` report listing every problem sector's status, confirmed-byte count, the maximum jitter observed, and a **C2-disputed byte count** — bytes consensus accepted but the drive's C2 flagged bad on a majority of reads (when the C2 tie-break was active). Those are kept as consensus's best value but called out as a heads-up, since the drive considered the sample uncorrectable.
+**Output:** a `.bin`/`.cue`(/`.sub`) image (same format as Copy disc), a `_recovery.txt` report, and a multi-hash `.manifest.json`. During extraction, `.recovery.state` and `.recovery.partial.bin` sidecars make the job resumable. Re-running with the same output basename continues only after a stable content fingerprint confirms the matching disc, even on another drive; OptiScan translates the new drive's read offset into the checkpoint drive's sample coordinate before voting. Incompatible or corrupt checkpoints are retained with an `.invalid` suffix for diagnosis. Active sidecars are removed only when there are no partial, unrecovered, or requested-subchannel failures and the final image, verification, reports, and manifest all succeed.
+
+The recovery report lists every problem sector's status, confirmed-byte count, maximum jitter, and **C2-disputed byte count** — bytes consensus accepted but the drive's C2 flagged bad on a majority of reads (when the C2 tie-break was active). Those are kept as consensus's best value but called out as a heads-up, since the drive considered the sample uncorrectable.
 
 **The hard limit:** audio reads never expose the disc's CIRC parity, so a sample that *every* pass misread the same way is indistinguishable from a correct one and cannot be recovered. The recovery rip reports those bytes rather than silently faking them — it recovers the *unstable*, and is honest about the *stably wrong*.
 
@@ -1052,7 +1058,7 @@ Linked against `winmm.lib`.
 | `FindResourceW`, `LoadResource`, `SizeofResource`, `LockResource`, `GlobalAlloc`/`GlobalLock`/`GlobalFree`/`GlobalUnlock` | Loads the embedded PNG artwork from the executable's resources into a GDI+ image |
 | `OutputDebugStringA` | Diagnostic logging of drive speed negotiation (visible in a debugger) |
 
-The target Windows platform is taken from the installed SDK (`SDKDDKVer.h`), and the project builds as Unicode for both Win32 and x64.
+The target Windows platform is taken from the installed SDK (`SDKDDKVer.h`), and the project builds as a Unicode x64 application.
 
 ---
 

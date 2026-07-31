@@ -92,7 +92,7 @@ bool OpticalDrive::ReadDiscBurst(DiscInfo& disc, std::function<void(int, int)> p
 
 			// Single-sector fallback (also used for data tracks / subchannel)
 			DWORD lba = start + offset;
-			int sectorSize = (disc.includeSubchannel && t.isAudio) ? RAW_SECTOR_SIZE : AUDIO_SECTOR_SIZE;
+			int sectorSize = disc.includeSubchannel ? RAW_SECTOR_SIZE : AUDIO_SECTOR_SIZE;
 			std::vector<BYTE> sec(sectorSize, 0);
 			bool ok = false;
 
@@ -105,7 +105,10 @@ bool OpticalDrive::ReadDiscBurst(DiscInfo& disc, std::function<void(int, int)> p
 				}
 			}
 			else {
-				ok = m_drive.ReadDataSector(lba, sec.data());
+				ok = disc.includeSubchannel
+					? m_drive.ReadDataSectorWithSubchannel(
+						lba, sec.data(), sec.data() + AUDIO_SECTOR_SIZE)
+					: m_drive.ReadDataSector(lba, sec.data());
 			}
 
 			if (!ok) {

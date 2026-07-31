@@ -65,7 +65,7 @@ bool OpticalDrive::ReadDisc(DiscInfo& disc, int errorMode, std::function<void(in
 			start = t.pregapLBA;
 		}
 
-		int sectorSize = (disc.includeSubchannel && t.isAudio) ? RAW_SECTOR_SIZE : AUDIO_SECTOR_SIZE;
+		int sectorSize = disc.includeSubchannel ? RAW_SECTOR_SIZE : AUDIO_SECTOR_SIZE;
 
 		// Allocate once outside the sector loop
 		std::vector<BYTE> sec(sectorSize, 0);

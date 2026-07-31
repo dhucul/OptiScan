@@ -119,6 +119,7 @@ bool ScsiDrive::Open(wchar_t driveLetter) {
 		m_cddaSectorType = 0x04;        // Re-probe the expected sector type too
 		m_cddaReadFormProbed = false;
 		m_cddaFormDiscovered = false;
+		m_rawSectorLayout = RawSectorLayout::DataC2Sub;
 		m_lastReadSenseKey = 0;
 		m_lastReadASC = 0;
 		m_lastReadASCQ = 0;
@@ -127,6 +128,10 @@ bool ScsiDrive::Open(wchar_t driveLetter) {
 		m_lastSeekASCQ = 0;
 		m_lowestHonoredSpeed = -1;       // Re-probe the speed floor per drive/media
 		m_c2Functional = true;
+		// Apply the per-firmware C2/subchannel layout before any menu workflow
+		// can issue a combined raw read. This keeps rip and scan paths aligned
+		// even when Drive Capabilities is not the first operation this session.
+		LoadCachedCharacterization();
 	}
 
 	return m_handle != INVALID_HANDLE_VALUE;

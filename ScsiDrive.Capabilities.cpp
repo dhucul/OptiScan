@@ -724,6 +724,12 @@ bool ScsiDrive::DetectCapabilities(DriveCapabilities& caps) {
 	caps.supportsOverreadLeadIn = TestOverread(true);
 	caps.supportsOverreadLeadOut = TestOverread(false);
 
+	DriveCharacterization cachedProfile;
+	if (LoadDriveCharacterizationProfile(caps.vendor, caps.model,
+		caps.firmware, cachedProfile)) {
+		ApplyCharacterization(cachedProfile);
+	}
+
 	return true;
 }
 

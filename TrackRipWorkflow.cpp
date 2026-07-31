@@ -15,6 +15,7 @@
 #include "InterruptHandler.h"
 #include "MenuHelpers.h"
 #include "PioneerVendor.h"
+#include "Preservation.h"
 #include "Progress.h"
 #include <algorithm>
 #include <fstream>
@@ -453,14 +454,16 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 
 	// ── 6. Drive capabilities ───────────────────────────────────────────
 	SecureRipConfig secureConfig{};
+	DriveCapabilities driveCaps;
+	bool haveDriveCaps = false;
 	if (!isBurst) {
 		std::cout << "\nDetecting drive capabilities..." << std::flush;
-		DriveCapabilities caps;
-		if (copier.DetectDriveCapabilities(caps)) {
-			disc.enableC2Detection = caps.supportsC2ErrorReporting;
+		if (copier.DetectDriveCapabilities(driveCaps)) {
+			haveDriveCaps = true;
+			disc.enableC2Detection = driveCaps.supportsC2ErrorReporting;
 			secureConfig = copier.GetSecureRipConfig(SecureRipMode::Standard);
-			secureConfig.useC2 = caps.supportsC2ErrorReporting;
-			secureConfig.c2Guided = caps.supportsC2ErrorReporting;
+			secureConfig.useC2 = driveCaps.supportsC2ErrorReporting;
+			secureConfig.c2Guided = driveCaps.supportsC2ErrorReporting;
 
 			// Pioneer-only: prompt for PureRead mode (Master/Perfect) + Quiet + Fragile
 			// CD mode for this session.
@@ -481,7 +484,7 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 					}
 				}
 			}
-			if (caps.supportsAccurateStream) {
+			if (driveCaps.supportsAccurateStream) {
 				secureConfig.cacheDefeat = false;
 				Console::Info(" Accurate Stream detected.\n");
 			}
@@ -502,8 +505,8 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 		// mode for this session. Matches the Copy workflow (option 1), which detects
 		// capabilities and applies the preset for both burst and safe rips.
 		std::cout << "\nDetecting drive capabilities..." << std::flush;
-		DriveCapabilities caps;
-		if (copier.DetectDriveCapabilities(caps)) {
+		if (copier.DetectDriveCapabilities(driveCaps)) {
+			haveDriveCaps = true;
 			std::cout << " done.\n";
 			PioneerVendor pv(copier.GetDriveRef());
 			if (pv.IsPioneerDrive()) {
@@ -607,6 +610,7 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 	PioneerPureReadSession pureReadSession(copier.GetDriveRef());
 	const bool pureReadMonitoring = pureReadSession.Begin();
 	bool pureReadFinalized = false;
+	bool pureReadLogSaved = false;
 	auto finishPureReadMonitoring = [&](const char* readOutcome) {
 		if (!pureReadMonitoring || pureReadFinalized) return;
 		pureReadFinalized = true;
@@ -620,6 +624,7 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 		PrintPioneerPureReadSummary(summary);
 		std::wstring reportPath = outputDir + L"PioneerPureRead.log";
 		if (SavePioneerPureReadSummary(reportPath, summary, "Selected-track rip", readOutcome)) {
+			pureReadLogSaved = true;
 			Console::Success("PureRead diagnostic log saved to: ");
 			std::wcout << reportPath << L"\n";
 		}
@@ -710,6 +715,7 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 	Console::Info("\nSaving tracks...\n");
 	int savedCount = 0;
 	bool anyFlacFallback = false;
+	std::vector<std::wstring> preservationArtifacts;
 
 	for (size_t si = 0; si < selectedTracks.size(); si++) {
 		int ri = ripIndices[si];
@@ -758,6 +764,7 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 		if (flacFallback) anyFlacFallback = true;
 
 		if (ok) {
+			preservationArtifacts.push_back(actualPath);
 			Console::Success("  Saved: ");
 			std::wcout << baseName;
 			if (flacFallback)
@@ -973,6 +980,30 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 		: (physicalVerificationPassed
 			? "Read and physical verification completed"
 			: "Read completed; physical verification failed"));
+
+	PreservationOffsetResult preservationOffset =
+		AnalyzePreservationWriteOffset(ripDisc);
+	std::wstring pureReadPath = outputDir + L"PioneerPureRead.log";
+	if (pureReadLogSaved)
+		preservationArtifacts.push_back(pureReadPath);
+	PreservationManifestContext manifest;
+	manifest.workflow = "Selected-track rip";
+	manifest.artifacts = preservationArtifacts;
+	manifest.drive = haveDriveCaps ? &driveCaps : nullptr;
+	manifest.writeOffset = &preservationOffset;
+	std::wstring manifestPath = outputDir + L"OptiScan_tracks.manifest.json";
+	// Keep the original full-disc TOC/IDs in a selected-track manifest; the
+	// artifact list itself records which tracks were actually written.
+	if (!WritePreservationManifest(disc, manifest, manifestPath)) {
+		Console::Error("Could not create the track preservation manifest.\n");
+		ripDisc.rawSectors.clear();
+		ripDisc.rawSectors.shrink_to_fit();
+		return false;
+	}
+	else {
+		Console::Success("Preservation manifest saved to: ");
+		std::wcout << manifestPath << L"\n";
+	}
 
 	// ── 14. Cleanup ─────────────────────────────────────────────────────
 	ripDisc.rawSectors.clear();

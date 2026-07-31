@@ -4,6 +4,8 @@
 #include "GuiInput.h"
 #include "Progress.h"
 #include "MenuHelpers.h"
+#include "Preservation.h"
+#include "RecoveryCheckpoint.h"
 #include <windows.h>
 #include <iostream>
 
@@ -51,11 +53,13 @@ bool RunRecoveryRipWorkflow(OpticalDrive& copier, DiscInfo& disc,
 	disc.driveOffset = offset;
 
 	// The hybrid C2 tie-break can only engage if the drive reports C2 at all.
+	DriveCapabilities driveCaps;
+	bool haveDriveCaps = false;
 	{
 		std::cout << "\nDetecting drive capabilities..." << std::flush;
-		DriveCapabilities caps;
-		if (copier.DetectDriveCapabilities(caps)) {
-			disc.enableC2Detection = caps.supportsC2ErrorReporting;
+		if (copier.DetectDriveCapabilities(driveCaps)) {
+			haveDriveCaps = true;
+			disc.enableC2Detection = driveCaps.supportsC2ErrorReporting;
 			std::cout << " done.\n";
 		}
 		else {
@@ -128,12 +132,21 @@ bool RunRecoveryRipWorkflow(OpticalDrive& copier, DiscInfo& disc,
 	prog.Start();
 
 	RecoveryRipResult result;
-	bool ok = copier.ReadDiscRecovery(disc, config, result, MakeProgressCallback(&prog));
+	bool ok = copier.ReadDiscRecovery(disc, config, result,
+		MakeProgressCallback(&prog), path);
 	prog.Finish(ok);
-	if (!ok) return false;
+	if (!ok) {
+		Console::Warning("Recovery stopped. Resume sidecars were kept beside the planned output.\n");
+		return false;
+	}
 
 	if (disc.driveOffset != 0)
 		copier.ApplyOffsetCorrection(disc);
+
+	DataValidationSummary dataValidation;
+	const bool hasDataTracks = ValidateDataTracks(disc, dataValidation);
+	PreservationOffsetResult preservationOffset =
+		AnalyzePreservationWriteOffset(disc);
 
 	Console::Info("Saving files...\n");
 	if (!copier.SaveToFile(disc, path)) {
@@ -141,12 +154,10 @@ bool RunRecoveryRipWorkflow(OpticalDrive& copier, DiscInfo& disc,
 		return false;
 	}
 
-	if (disc.pregapMode != PregapMode::Separate) {
-		std::vector<DWORD> mismatched;
-		if (!copier.VerifyWrittenFile(path + L".bin", disc, mismatched)) {
-			Console::Error("Written .bin file did not match recovered in-memory data.\n");
-			return false;
-		}
+	std::vector<DWORD> mismatched;
+	if (!copier.VerifyWrittenArtifacts(path, disc, mismatched)) {
+		Console::Error("Written recovery artifacts did not match in-memory data.\n");
+		return false;
 	}
 
 	std::wstring reportPath = path + L"_recovery.txt";
@@ -159,13 +170,62 @@ bool RunRecoveryRipWorkflow(OpticalDrive& copier, DiscInfo& disc,
 		return false;
 	}
 
+	std::vector<std::wstring> artifacts =
+		CollectPreservationArtifacts(path, disc);
+	artifacts.push_back(reportPath);
+	if (hasDataTracks) {
+		std::wstring validationPath = path + L"_data_validation.txt";
+		if (!WriteDataValidationReport(dataValidation, validationPath)) {
+			Console::Error("Failed to save raw data-track validation report.\n");
+			return false;
+		}
+		artifacts.push_back(validationPath);
+	}
+
+	PreservationManifestContext manifest;
+	manifest.workflow = "Recovery rip";
+	manifest.artifacts = artifacts;
+	manifest.drive = haveDriveCaps ? &driveCaps : nullptr;
+	manifest.recovery = &result;
+	manifest.dataValidation = hasDataTracks ? &dataValidation : nullptr;
+	manifest.writeOffset = &preservationOffset;
+	std::wstring manifestPath = path + L".manifest.json";
+	if (!WritePreservationManifest(disc, manifest, manifestPath)) {
+		Console::Error("Failed to create preservation manifest.\n");
+		return false;
+	}
+	Console::Success("Preservation manifest saved to: ");
+	std::wcout << manifestPath << L"\n";
+	if (preservationOffset.detected) {
+		std::cout << "Preservation write-offset estimate: "
+			<< preservationOffset.sampleOffset << " sample(s), "
+			<< preservationOffset.confidencePercent << "% confidence (not applied).\n";
+	}
+
+	const bool recoveryComplete =
+		result.partial == 0 &&
+		result.unrecovered == 0 &&
+		result.subchannelFailures == 0;
+	if (recoveryComplete) {
+		if (!RemoveRecoveryCheckpointFiles(path))
+			Console::Warning("Output is complete, but recovery sidecars could not be removed.\n");
+	}
+	else {
+		Console::Warning("Recovery sidecars were retained so another pass or drive "
+			"can improve the incomplete sectors.\n");
+	}
+
 	if (result.unrecovered > 0) {
 		Console::Warning("Some sectors were never readable — see the recovery report.\n");
 	}
-	else if (result.partial > 0) {
+	if (result.partial > 0) {
 		Console::Warning("Some bytes could not reach consensus — see the recovery report.\n");
 	}
-	else {
+	if (result.subchannelFailures > 0) {
+		Console::Warning("Some requested subchannel sectors were unreadable — "
+			"see the recovery report.\n");
+	}
+	if (recoveryComplete) {
 		Console::Success("All problem sectors rebuilt by consensus.\n");
 	}
 

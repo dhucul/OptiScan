@@ -105,7 +105,7 @@ extern const LPCWSTR CommandLabels[COMMAND_BUTTON_COUNT] =
     L"16. Subchannel integrity check *",
     L"17. Verify subchannel burn status *",
     L"18. Copy-protection check *",
-    L"19. Drive capabilities",
+    L"19. Drive capabilities & characterization *",
     L"20. Drive offset detection *",
     L"21. C2 validation test *",
     L"22. Speed comparison test *",

@@ -21,6 +21,59 @@ bool OpticalDrive::DetectDriveCapabilities(DriveCapabilities& caps) {
 	return result;
 }
 
+bool OpticalDrive::CharacterizeDrive(const DiscInfo& disc,
+	const DriveCapabilities& caps, DriveCharacterization& result) {
+	DWORD audioLBA = 0;
+	bool foundAudio = false;
+	for (const auto& track : disc.tracks) {
+		if (track.isAudio) {
+			audioLBA = track.startLBA;
+			foundAudio = true;
+			break;
+		}
+	}
+	if (!foundAudio) {
+		Console::Warning("Drive characterization needs at least one audio track.\n");
+		return false;
+	}
+	DWORD leadOut = disc.audioLeadOutLBA != 0
+		? disc.audioLeadOutLBA : disc.leadOutLBA;
+	return m_drive.Characterize(audioLBA, leadOut, caps, result);
+}
+
+void OpticalDrive::PrintDriveCharacterization(const DriveCharacterization& result) {
+	auto yn = [](bool value) { return value ? "YES" : "NO"; };
+	auto method = [](DriveReadMethod value) {
+		switch (value) {
+		case DriveReadMethod::ReadCD: return "READ CD (BE)";
+		case DriveReadMethod::ReadCDDA: return "READ CD-DA (D8)";
+		default: return "Unknown";
+		}
+	};
+	auto layout = [](RawSectorLayout value) {
+		switch (value) {
+		case RawSectorLayout::DataC2Sub: return "data + C2 + subchannel";
+		case RawSectorLayout::DataSubC2: return "data + subchannel + C2";
+		default: return "unknown";
+		}
+	};
+
+	std::cout << "\n--- Active Drive Characterization ---\n";
+	std::cout << "  Preferred read method: " << method(result.preferredReadMethod) << "\n";
+	std::cout << "  READ CD audio:         " << yn(result.readCdAudio) << "\n";
+	std::cout << "  READ CD-DA (D8):       " << yn(result.readCdda) << "\n";
+	std::cout << "  Raw subchannel works:  " << yn(result.rawSubchannelFunctional) << "\n";
+	std::cout << "  C2 command works:      " << yn(result.c2Functional) << "\n";
+	std::cout << "  C2/sub layout:         " << layout(result.rawSectorLayout) << "\n";
+	std::cout << "  Repeat reads stable:   " << yn(result.stableRepeatedReads) << "\n";
+	std::cout << "  Seek-away reread:      " << yn(result.cacheDefeatVerified) << "\n";
+	std::cout << "  Lead-in readable:      " << result.leadInReadableSectors << " sector(s)\n";
+	std::cout << "  Lead-out readable:     " << result.leadOutReadableSectors << " sector(s)\n";
+	std::cout << "  Profile saved:         " << yn(result.profileSaved) << "\n";
+	std::cout << "  Profile cache:         ";
+	std::wcout << GetDriveCharacterizationProfilePath() << L"\n";
+}
+
 void OpticalDrive::PrintDriveCapabilities(const DriveCapabilities& caps) {
 	auto yn = [](bool v) -> const char* { return v ? "YES" : "NO"; };
 

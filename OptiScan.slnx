@@ -1,7 +1,7 @@
 <Solution>
   <Configurations>
     <Platform Name="x64" />
-    <Platform Name="x86" />
   </Configurations>
   <Project Path="OptiScan.vcxproj" Id="9c187de4-b07d-4185-9193-873092f2da16" />
+  <Project Path="tests/OptiScan.Tests.vcxproj" Id="6f5861a1-f9fd-4e07-a79b-7ce3f4f76c8b" />
 </Solution>

@@ -8,6 +8,7 @@
 #include "Progress.h"
 #include "MenuHelpers.h"
 #include "PioneerVendor.h"
+#include "Preservation.h"
 #include <windows.h>
 #include <iostream>
 
@@ -142,14 +143,16 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstring& /
 	disc.loggingOutput = LogOutput::File;
 
 	bool hasAccurateStream = false;
+	DriveCapabilities driveCaps;
+	bool haveDriveCaps = false;
 
 	// Detect capabilities for ALL modes (including burst)
 	{
 		std::cout << "\nDetecting drive capabilities..." << std::flush;
-		DriveCapabilities caps;
-		if (copier.DetectDriveCapabilities(caps)) {
-			disc.enableC2Detection = isBurstMode ? false : caps.supportsC2ErrorReporting;
-			hasAccurateStream = caps.supportsAccurateStream;
+		if (copier.DetectDriveCapabilities(driveCaps)) {
+			haveDriveCaps = true;
+			disc.enableC2Detection = isBurstMode ? false : driveCaps.supportsC2ErrorReporting;
+			hasAccurateStream = driveCaps.supportsAccurateStream;
 			std::cout << " done.\n";
 
 			TryApplyPioneerAudioPreset(copier);
@@ -525,6 +528,11 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstring& /
 		copier.ApplyOffsetCorrection(disc);
 	}
 
+	DataValidationSummary dataValidation;
+	const bool hasDataTracks = ValidateDataTracks(disc, dataValidation);
+	PreservationOffsetResult preservationOffset =
+		AnalyzePreservationWriteOffset(disc);
+
 	bool accurateRipVerificationPerformed = false;
 	bool accurateRipMatched = false;
 	if (!disc.accurateRipPressings.empty()) {
@@ -549,18 +557,19 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstring& /
 		return false;
 	}
 
-	if (disc.pregapMode != PregapMode::Separate) {
-		std::vector<DWORD> mismatched;
-		if (!copier.VerifyWrittenFile(path + L".bin", disc, mismatched)) {
-			Console::Error("Written .bin file did not match in-memory disc data.\n");
-			return false;
-		}
+	std::vector<DWORD> mismatched;
+	if (!copier.VerifyWrittenArtifacts(path, disc, mismatched)) {
+		Console::Error("Written image artifacts did not match in-memory disc data.\n");
+		return false;
 	}
 
+	std::vector<std::wstring> artifacts =
+		CollectPreservationArtifacts(path, disc);
 	std::wstring logPath = path + L".log";
 	if (copier.SaveReadLog(disc, logPath)) {
 		Console::Success("Log saved to: ");
 		std::wcout << logPath << L"\n";
+		artifacts.push_back(logPath);
 	}
 
 	if (secureConfig.mode != SecureRipMode::Disabled && secureConfig.mode != SecureRipMode::Burst) {
@@ -568,7 +577,36 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstring& /
 		if (copier.SaveSecureRipLog(secureResult, secureLogPath)) {
 			Console::Success("Secure rip log saved to: ");
 			std::wcout << secureLogPath << L"\n";
+			artifacts.push_back(secureLogPath);
 		}
+	}
+
+	if (hasDataTracks) {
+		std::wstring validationPath = path + L"_data_validation.txt";
+		if (!WriteDataValidationReport(dataValidation, validationPath)) {
+			Console::Error("Failed to save raw data-track validation report.\n");
+			return false;
+		}
+		artifacts.push_back(validationPath);
+	}
+
+	PreservationManifestContext manifest;
+	manifest.workflow = "Full-disc copy";
+	manifest.artifacts = artifacts;
+	manifest.drive = haveDriveCaps ? &driveCaps : nullptr;
+	manifest.dataValidation = hasDataTracks ? &dataValidation : nullptr;
+	manifest.writeOffset = &preservationOffset;
+	std::wstring manifestPath = path + L".manifest.json";
+	if (!WritePreservationManifest(disc, manifest, manifestPath)) {
+		Console::Error("Failed to create preservation manifest.\n");
+		return false;
+	}
+	Console::Success("Preservation manifest saved to: ");
+	std::wcout << manifestPath << L"\n";
+	if (preservationOffset.detected) {
+		std::cout << "Preservation write-offset estimate: "
+			<< preservationOffset.sampleOffset << " sample(s), "
+			<< preservationOffset.confidencePercent << "% confidence (not applied).\n";
 	}
 
 	copier.Eject();

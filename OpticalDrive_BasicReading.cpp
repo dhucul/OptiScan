@@ -31,7 +31,10 @@ bool OpticalDrive::ReadSectorWithRetry(DWORD lba, BYTE* data, int sectorSize,
 			}
 		}
 		else {
-			ok = m_drive.ReadDataSector(lba, data);
+			ok = includeSubchannel
+				? m_drive.ReadDataSectorWithSubchannel(
+					lba, data, data + AUDIO_SECTOR_SIZE)
+				: m_drive.ReadDataSector(lba, data);
 		}
 
 		if (ok) {
@@ -105,7 +108,10 @@ bool OpticalDrive::ReadSectorSecure(DWORD lba, BYTE* data, int sectorSize, bool 
 			}
 		}
 		else {
-			ok = m_drive.ReadDataSector(lba, buf.data());
+			ok = sectorSize > AUDIO_SECTOR_SIZE
+				? m_drive.ReadDataSectorWithSubchannel(
+					lba, buf.data(), buf.data() + AUDIO_SECTOR_SIZE)
+				: m_drive.ReadDataSector(lba, buf.data());
 		}
 
 		if (!ok) {

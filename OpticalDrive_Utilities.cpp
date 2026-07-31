@@ -51,32 +51,63 @@ void OpticalDrive::ApplyOffsetCorrection(DiscInfo& disc) {
 
 	int64_t byteOffset = static_cast<int64_t>(disc.driveOffset) * 4;
 
-	int64_t maxOffset = static_cast<int64_t>(disc.rawSectors.size()) * AUDIO_SECTOR_SIZE;
-	if (std::abs(byteOffset) >= maxOffset) {
-		std::cerr << "Warning: Offset too large, skipping correction\n";
+	// Build the track type for each cached sector. Data sectors have a
+	// firmware-aligned sync/header/EDC/ECC structure and must never be shifted
+	// as PCM. Apply the sample offset independently to each contiguous audio
+	// run, leaving data and all P-W subchannel bytes untouched.
+	std::vector<bool> isAudio;
+	isAudio.reserve(disc.rawSectors.size());
+	for (const auto& track : disc.tracks) {
+		if (disc.selectedSession > 0 && track.session != disc.selectedSession) continue;
+		DWORD start = disc.pregapMode == PregapMode::Skip
+			? track.startLBA : track.pregapLBA;
+		if (track.endLBA < start) continue;
+		for (DWORD lba = start;; ++lba) {
+			isAudio.push_back(track.isAudio);
+			if (lba == track.endLBA) break;
+		}
+	}
+	if (isAudio.size() != disc.rawSectors.size()) {
+		std::cerr << "Warning: Sector map mismatch, skipping offset correction\n";
 		return;
 	}
 
-	std::vector<BYTE> allAudio;
-	allAudio.reserve(disc.rawSectors.size() * AUDIO_SECTOR_SIZE);
+	for (size_t begin = 0; begin < isAudio.size();) {
+		while (begin < isAudio.size() && !isAudio[begin]) ++begin;
+		if (begin >= isAudio.size()) break;
+		size_t end = begin;
+		while (end < isAudio.size() && isAudio[end]) ++end;
 
-	for (auto& sec : disc.rawSectors)
-		allAudio.insert(allAudio.end(), sec.begin(), sec.begin() + AUDIO_SECTOR_SIZE);
+		const size_t runBytes = (end - begin) * AUDIO_SECTOR_SIZE;
+		if (static_cast<uint64_t>(std::abs(byteOffset)) >= runBytes) {
+			std::cerr << "Warning: Offset exceeds an audio run; that run was not shifted\n";
+			begin = end;
+			continue;
+		}
 
-	std::vector<BYTE> corrected;
-	if (byteOffset > 0) {
-		corrected.assign(allAudio.begin() + static_cast<size_t>(byteOffset), allAudio.end());
-		corrected.resize(allAudio.size(), 0);
-	}
-	else {
-		corrected.resize(static_cast<size_t>(-byteOffset), 0);
-		corrected.insert(corrected.end(), allAudio.begin(), allAudio.end() + byteOffset);
-	}
+		std::vector<BYTE> audio;
+		audio.reserve(runBytes);
+		for (size_t i = begin; i < end; ++i)
+			audio.insert(audio.end(), disc.rawSectors[i].begin(),
+				disc.rawSectors[i].begin() + AUDIO_SECTOR_SIZE);
 
-	size_t pos = 0;
-	for (auto& sec : disc.rawSectors) {
-		if (pos + AUDIO_SECTOR_SIZE <= corrected.size())
-			memcpy(sec.data(), &corrected[pos], AUDIO_SECTOR_SIZE);
-		pos += AUDIO_SECTOR_SIZE;
+		std::vector<BYTE> corrected;
+		if (byteOffset > 0) {
+			corrected.assign(audio.begin() + static_cast<size_t>(byteOffset), audio.end());
+			corrected.resize(audio.size(), 0);
+		}
+		else {
+			size_t padding = static_cast<size_t>(-byteOffset);
+			corrected.resize(padding, 0);
+			corrected.insert(corrected.end(), audio.begin(), audio.end() - padding);
+		}
+
+		size_t position = 0;
+		for (size_t i = begin; i < end; ++i) {
+			memcpy(disc.rawSectors[i].data(), corrected.data() + position,
+				AUDIO_SECTOR_SIZE);
+			position += AUDIO_SECTOR_SIZE;
+		}
+		begin = end;
 	}
 }
