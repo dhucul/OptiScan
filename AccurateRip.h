@@ -6,6 +6,12 @@
 #include "DiscTypes.h"
 #include <cstdint>
 
+enum class AccurateRipVerificationResult {
+    Inconclusive,
+    Verified,
+    Mismatch
+};
+
 class AccurateRip {
 public:
     // Calculate both checksum variants. Returns false for empty, malformed,
@@ -18,9 +24,12 @@ public:
     static uint32_t CalculateDiscID2(const DiscInfo& disc);
     static uint32_t CalculateCDDBID(const DiscInfo& disc);
 
-    // Database lookup — fetches per-track CRCs for ALL pressings
-    static bool Lookup(DiscInfo& disc, std::vector<std::vector<uint32_t>>& pressingCRCs);
+    // Database lookup — fetches per-track records for ALL pressings
+    static bool Lookup(DiscInfo& disc, std::vector<AccurateRipPressing>& pressings);
 
-    // Verify CRCs for all tracks against all pressings
-    static bool VerifyCRCs(const DiscInfo& disc, const std::vector<std::vector<uint32_t>>& pressingCRCs);
+    // Verify CRCs for all tracks against all pressings. Frame450 probes may
+    // locate a shared sample offset, but only a full-track checksum match is
+    // accepted as verification.
+    static AccurateRipVerificationResult VerifyCRCs(const DiscInfo& disc,
+        const std::vector<AccurateRipPressing>& pressings);
 };

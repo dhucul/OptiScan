@@ -5,6 +5,7 @@
 
 #include "Constants.h"
 #include <windows.h>
+#include <cstdint>
 #include <vector>
 #include <string>
 #include <tuple>
@@ -18,6 +19,20 @@ struct RawTocEntry {
 	DWORD originalStartLBA = 0;
 	DWORD originalEndLBA = 0;
 };
+
+// One per-track entry in an AccurateRip database pressing record. The second
+// checksum in the modern 9-byte wire format is the weighted checksum of
+// track-relative CD sector 450 (the "Frame450" probe), not an ARv2 checksum.
+// AccurateRip uses that probe to locate sample-offset candidates; a rip is
+// only verified after the full-track checksum also matches.
+struct AccurateRipTrackReference {
+	uint8_t confidence = 0;
+	uint32_t checksum = 0;
+	uint32_t frame450Checksum = 0;
+	bool hasFrame450Checksum = false;
+};
+
+using AccurateRipPressing = std::vector<AccurateRipTrackReference>;
 
 // ── Track descriptor ────────────────────────────────────────────────────────
 // Describes a single track from the disc's Table of Contents (TOC).
@@ -71,7 +86,7 @@ struct DiscInfo {
 	LogOutput loggingOutput = LogOutput::Console;       // Where to send log messages
 	std::vector<std::tuple<DWORD, int, double>> readLog;// Per-sector read log: (LBA, errors, timeMs)
 	uint32_t accurateRipCRC = 0;                        // AccurateRip CRC for verification
-	std::vector<std::vector<uint32_t>> accurateRipPressings; // Downloaded V1 CRCs, grouped by pressing
+	std::vector<AccurateRipPressing> accurateRipPressings;   // Downloaded records, grouped by pressing
 	bool accurateRipLookupAttempted = false;            // Distinguish not queried from no references
 	int driveOffset = 0;                                // Sample-level read offset correction
 	PregapMode pregapMode = PregapMode::Include;        // How to handle pre-gaps

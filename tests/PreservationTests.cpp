@@ -1,4 +1,5 @@
 #define NOMINMAX
+#include "../AccurateRip.h"
 #include "../Preservation.h"
 #include "../RecoveryCheckpoint.h"
 #include <windows.h>
@@ -7,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 
 namespace {
@@ -47,6 +49,55 @@ void PutLe32(BYTE* data, uint32_t value) {
 	data[1] = static_cast<BYTE>(value >> 8);
 	data[2] = static_cast<BYTE>(value >> 16);
 	data[3] = static_cast<BYTE>(value >> 24);
+}
+
+std::vector<std::vector<BYTE>> MakeAudioSectors(size_t sectorCount) {
+	return std::vector<std::vector<BYTE>>(
+		sectorCount, std::vector<BYTE>(AUDIO_SECTOR_SIZE, 0));
+}
+
+void PutAudioFrame(std::vector<std::vector<BYTE>>& sectors,
+	size_t frameIndex, uint32_t value) {
+	constexpr size_t framesPerSector = AUDIO_SECTOR_SIZE / 4;
+	const size_t sector = frameIndex / framesPerSector;
+	const size_t byteOffset = (frameIndex % framesPerSector) * 4;
+	PutLe32(sectors[sector].data() + byteOffset, value);
+}
+
+uint32_t GetAudioFrame(const std::vector<std::vector<BYTE>>& sectors,
+	size_t frameIndex) {
+	constexpr size_t framesPerSector = AUDIO_SECTOR_SIZE / 4;
+	const size_t sector = frameIndex / framesPerSector;
+	const size_t byteOffset = (frameIndex % framesPerSector) * 4;
+	const BYTE* data = sectors[sector].data() + byteOffset;
+	return static_cast<uint32_t>(data[0]) |
+		(static_cast<uint32_t>(data[1]) << 8) |
+		(static_cast<uint32_t>(data[2]) << 16) |
+		(static_cast<uint32_t>(data[3]) << 24);
+}
+
+void FillDeterministicAudio(std::vector<std::vector<BYTE>>& sectors,
+	uint32_t seed) {
+	constexpr size_t framesPerSector = AUDIO_SECTOR_SIZE / 4;
+	uint32_t state = seed;
+	for (size_t frame = 0; frame < sectors.size() * framesPerSector; ++frame) {
+		state ^= state << 13;
+		state ^= state >> 17;
+		state ^= state << 5;
+		PutAudioFrame(sectors, frame, state);
+	}
+}
+
+uint32_t CalculateFrame450Reference(
+	const std::vector<std::vector<BYTE>>& sectors) {
+	constexpr size_t framesPerSector = AUDIO_SECTOR_SIZE / 4;
+	constexpr size_t frame450Start = 450 * framesPerSector;
+	uint32_t checksum = 0;
+	for (size_t i = 0; i < framesPerSector; ++i) {
+		checksum += GetAudioFrame(sectors, frame450Start + i) *
+			static_cast<uint32_t>(i + 1);
+	}
+	return checksum;
 }
 
 void BuildEccTables(std::array<BYTE, 256>& forward,
@@ -179,6 +230,269 @@ int main() {
 	const BYTE crcInput[] = "123456789";
 	Check(PreservationCRC32(crcInput, 9) == 0xCBF43926u,
 		"CRC32 matches the canonical vector");
+
+	auto arV2Vector = MakeAudioSectors(1);
+	PutAudioFrame(arV2Vector, 1, 0xFFFFFFFFu);
+	uint32_t arV1 = 0, arV2 = 0;
+	Check(AccurateRip::CalculateCRCs(arV2Vector, 2, 3, arV1, arV2) &&
+		arV1 == 0xFFFFFFFEu && arV2 == 0xFFFFFFFFu,
+		"AccurateRip V2 folds the high product word into the V1 checksum");
+
+	auto arFirstBoundary = MakeAudioSectors(6);
+	PutAudioFrame(arFirstBoundary, 2938, 1); // Position 2,939: excluded.
+	PutAudioFrame(arFirstBoundary, 2939, 1); // Position 2,940: included.
+	Check(AccurateRip::CalculateCRCs(
+		arFirstBoundary, 1, 2, arV1, arV2) &&
+		arV1 == 2940u && arV2 == 2940u,
+		"AccurateRip excludes exactly the first 2,939 frames of track 1");
+
+	auto arLastBoundary = MakeAudioSectors(6);
+	PutAudioFrame(arLastBoundary, 587, 1); // Position 588: included.
+	PutAudioFrame(arLastBoundary, 588, 1); // Position 589: excluded.
+	Check(AccurateRip::CalculateCRCs(
+		arLastBoundary, 2, 2, arV1, arV2) &&
+		arV1 == 588u && arV2 == 588u,
+		"AccurateRip excludes exactly the final 2,940 frames of the last track");
+
+	// Build two contiguous canonical tracks, then model an uncorrected drive
+	// capture by moving the complete audio stream 667 stereo frames later. The
+	// first track is deliberately only 451 sectors long, so its shifted
+	// Frame450 probe has to cross into the next track's contiguous audio.
+	constexpr size_t arTrackSectors = 451;
+	constexpr size_t arFramesPerSector = AUDIO_SECTOR_SIZE / 4;
+	constexpr size_t arVerificationOffset = 667;
+	auto arReferenceTrack1 = MakeAudioSectors(arTrackSectors);
+	auto arReferenceTrack2 = MakeAudioSectors(arTrackSectors);
+	FillDeterministicAudio(arReferenceTrack1, 0x12345678u);
+	FillDeterministicAudio(arReferenceTrack2, 0x9ABCDEF0u);
+
+	uint32_t arTrack1V1 = 0, arTrack1V2 = 0;
+	uint32_t arTrack2V1 = 0, arTrack2V2 = 0;
+	const bool arReferencesCalculated =
+		AccurateRip::CalculateCRCs(
+			arReferenceTrack1, 1, 2, arTrack1V1, arTrack1V2) &&
+		AccurateRip::CalculateCRCs(
+			arReferenceTrack2, 2, 2, arTrack2V1, arTrack2V2);
+	Check(arReferencesCalculated,
+		"AccurateRip offset fixture full-track references are calculable");
+
+	std::vector<std::vector<BYTE>> arCanonicalDisc;
+	arCanonicalDisc.reserve(arTrackSectors * 2);
+	arCanonicalDisc.insert(arCanonicalDisc.end(),
+		arReferenceTrack1.begin(), arReferenceTrack1.end());
+	arCanonicalDisc.insert(arCanonicalDisc.end(),
+		arReferenceTrack2.begin(), arReferenceTrack2.end());
+	auto arCapturedDisc = MakeAudioSectors(arCanonicalDisc.size());
+	const size_t arDiscFrames = arCanonicalDisc.size() * arFramesPerSector;
+	for (size_t source = 0; source + arVerificationOffset < arDiscFrames;
+		++source) {
+		PutAudioFrame(arCapturedDisc, source + arVerificationOffset,
+			GetAudioFrame(arCanonicalDisc, source));
+	}
+
+	DiscInfo arOffsetDisc;
+	TrackInfo arTrack1;
+	arTrack1.trackNumber = 1;
+	arTrack1.startLBA = 0;
+	arTrack1.pregapLBA = 0;
+	arTrack1.endLBA = static_cast<DWORD>(arTrackSectors - 1);
+	arTrack1.isAudio = true;
+	TrackInfo arTrack2 = arTrack1;
+	arTrack2.trackNumber = 2;
+	arTrack2.startLBA = static_cast<DWORD>(arTrackSectors);
+	arTrack2.pregapLBA = arTrack2.startLBA;
+	arTrack2.endLBA = static_cast<DWORD>(arTrackSectors * 2 - 1);
+	arOffsetDisc.tracks = { arTrack1, arTrack2 };
+	arOffsetDisc.leadOutLBA = static_cast<DWORD>(arTrackSectors * 2);
+	arOffsetDisc.audioLeadOutLBA = arOffsetDisc.leadOutLBA;
+	arOffsetDisc.pregapMode = PregapMode::Include;
+	arOffsetDisc.rawSectors = std::move(arCapturedDisc);
+
+	AccurateRipPressing arPressing(2);
+	arPressing[0].confidence = 11;
+	arPressing[0].checksum = arTrack1V1;
+	arPressing[0].frame450Checksum =
+		CalculateFrame450Reference(arReferenceTrack1);
+	arPressing[0].hasFrame450Checksum = true;
+	arPressing[1].confidence = 13;
+	arPressing[1].checksum = arTrack2V1;
+	arPressing[1].frame450Checksum =
+		CalculateFrame450Reference(arReferenceTrack2);
+	arPressing[1].hasFrame450Checksum = true;
+	std::vector<AccurateRipPressing> arPressings{ arPressing };
+
+	DiscInfo arExactDisc = arOffsetDisc;
+	arExactDisc.rawSectors = arCanonicalDisc;
+	Check(AccurateRip::VerifyCRCs(arExactDisc, arPressings) ==
+		AccurateRipVerificationResult::Verified,
+		"AccurateRip matches structured full-track references at offset zero");
+
+	Check(AccurateRip::VerifyCRCs(arOffsetDisc, arPressings) ==
+		AccurateRipVerificationResult::Verified,
+		"AccurateRip uses Frame450 evidence across a track boundary to verify at +667 samples");
+
+	constexpr size_t arExtendedVerificationOffset = 2000;
+	auto arExtendedCapturedDisc = MakeAudioSectors(arCanonicalDisc.size());
+	for (size_t source = 0;
+		source + arExtendedVerificationOffset < arDiscFrames; ++source) {
+		PutAudioFrame(arExtendedCapturedDisc,
+			source + arExtendedVerificationOffset,
+			GetAudioFrame(arCanonicalDisc, source));
+	}
+	DiscInfo arExtendedOffsetDisc = arOffsetDisc;
+	arExtendedOffsetDisc.rawSectors = std::move(arExtendedCapturedDisc);
+	Check(AccurateRip::VerifyCRCs(arExtendedOffsetDisc, arPressings) ==
+		AccurateRipVerificationResult::Verified,
+		"AccurateRip searches the full five-sector offset window");
+
+	auto arLegacyPressings = arPressings;
+	for (auto& pressing : arLegacyPressings) {
+		for (auto& reference : pressing) {
+			reference.frame450Checksum = 0;
+			reference.hasFrame450Checksum = false;
+		}
+	}
+	Check(AccurateRip::VerifyCRCs(arExactDisc, arLegacyPressings) ==
+		AccurateRipVerificationResult::Verified,
+		"AccurateRip verifies legacy records directly at offset zero");
+	Check(AccurateRip::VerifyCRCs(arOffsetDisc, arLegacyPressings) ==
+		AccurateRipVerificationResult::Inconclusive,
+		"AccurateRip reports shifted legacy records without probes as inconclusive");
+
+	auto arZeroDisc = arExactDisc;
+	arZeroDisc.rawSectors = MakeAudioSectors(arCanonicalDisc.size());
+	auto arZeroChecksumPressings = arPressings;
+	for (auto& pressing : arZeroChecksumPressings) {
+		for (auto& reference : pressing) reference.checksum = 0;
+	}
+	Check(AccurateRip::VerifyCRCs(arZeroDisc, arZeroChecksumPressings) ==
+		AccurateRipVerificationResult::Inconclusive,
+		"AccurateRip rejects zero-checksum sentinel records instead of verifying silent audio");
+
+	auto arZeroConfidencePressings = arPressings;
+	for (auto& pressing : arZeroConfidencePressings) {
+		for (auto& reference : pressing) reference.confidence = 0;
+	}
+	Check(AccurateRip::VerifyCRCs(arExactDisc, arZeroConfidencePressings) ==
+		AccurateRipVerificationResult::Inconclusive,
+		"AccurateRip rejects checksum records with zero confidence");
+
+	auto arInvalidThenValid = arPressings;
+	auto arInvalidPressing = arPressing;
+	for (auto& reference : arInvalidPressing) reference.checksum = 0;
+	arInvalidThenValid.insert(arInvalidThenValid.begin(), arInvalidPressing);
+	Check(AccurateRip::VerifyCRCs(arOffsetDisc, arInvalidThenValid) ==
+		AccurateRipVerificationResult::Verified,
+		"AccurateRip ignores sentinel records when a usable pressing is also present");
+
+	auto arFrame450Only = arPressings;
+	uint32_t wrongFullTrackChecksum = arTrack2V1 ^ 0xA5A5A5A5u;
+	while (wrongFullTrackChecksum == arTrack2V1 ||
+		wrongFullTrackChecksum == arTrack2V2) {
+		++wrongFullTrackChecksum;
+	}
+	arFrame450Only[0][1].checksum = wrongFullTrackChecksum;
+	std::ostringstream arPartialLog;
+	std::streambuf* partialCoutBuffer = std::cout.rdbuf(arPartialLog.rdbuf());
+	const auto arPartialResult =
+		AccurateRip::VerifyCRCs(arOffsetDisc, arFrame450Only);
+	std::cout.rdbuf(partialCoutBuffer);
+	Check(arPartialResult ==
+		AccurateRipVerificationResult::Mismatch,
+		"AccurateRip does not verify from Frame450 evidence without every full-track checksum");
+	Check(arPartialLog.str().find(
+		"Full-track CRCs at offset +667 matched 1/2") != std::string::npos &&
+		arPartialLog.str().find(
+			"[OK - AR v1, record #1, confidence 11, offset +667]") !=
+			std::string::npos &&
+		arPartialLog.str().find("[MISMATCH at offset +667]") !=
+			std::string::npos,
+		"AccurateRip reports genuine per-track matches at the strongest candidate offset");
+
+	// Make every Frame450 candidate equally strong while preserving exactly one
+	// full-track match at +667. The work cap must report Inconclusive rather than
+	// declaring a mismatch before that offset is reached.
+	constexpr size_t arAmbiguousTrackSectors = 500;
+	constexpr size_t arSearchRadius = 3 * arFramesPerSector - 1;
+	constexpr size_t arFrame450Start = 450 * arFramesPerSector;
+	constexpr size_t arAmbiguousBandStart =
+		arFrame450Start - arSearchRadius - arVerificationOffset;
+	constexpr size_t arAmbiguousBandEnd =
+		arFrame450Start + arSearchRadius - arVerificationOffset +
+		arFramesPerSector;
+	auto arAmbiguousCanonical = MakeAudioSectors(arAmbiguousTrackSectors);
+	for (size_t frame = arAmbiguousBandStart;
+		frame < arAmbiguousBandEnd; ++frame) {
+		PutAudioFrame(arAmbiguousCanonical, frame, 1u);
+	}
+	uint32_t arAmbiguousV1 = 0, arAmbiguousV2 = 0;
+	Check(AccurateRip::CalculateCRCs(
+		arAmbiguousCanonical, 1, 1, arAmbiguousV1, arAmbiguousV2),
+		"AccurateRip tied-candidate fixture checksum is calculable");
+	Check(CalculateFrame450Reference(arAmbiguousCanonical) == 173166u,
+		"AccurateRip tied-candidate fixture has a non-sentinel Frame450 checksum");
+
+	auto arAmbiguousCaptured = MakeAudioSectors(arAmbiguousTrackSectors);
+	const size_t arAmbiguousFrames =
+		arAmbiguousTrackSectors * arFramesPerSector;
+	for (size_t source = 0;
+		source + arVerificationOffset < arAmbiguousFrames; ++source) {
+		PutAudioFrame(arAmbiguousCaptured, source + arVerificationOffset,
+			GetAudioFrame(arAmbiguousCanonical, source));
+	}
+	DiscInfo arAmbiguousDisc;
+	TrackInfo arAmbiguousTrack;
+	arAmbiguousTrack.trackNumber = 1;
+	arAmbiguousTrack.startLBA = 0;
+	arAmbiguousTrack.pregapLBA = 0;
+	arAmbiguousTrack.endLBA =
+		static_cast<DWORD>(arAmbiguousTrackSectors - 1);
+	arAmbiguousTrack.isAudio = true;
+	arAmbiguousDisc.tracks = { arAmbiguousTrack };
+	arAmbiguousDisc.leadOutLBA =
+		static_cast<DWORD>(arAmbiguousTrackSectors);
+	arAmbiguousDisc.audioLeadOutLBA = arAmbiguousDisc.leadOutLBA;
+	arAmbiguousDisc.pregapMode = PregapMode::Include;
+	arAmbiguousDisc.rawSectors = std::move(arAmbiguousCaptured);
+	AccurateRipPressing arAmbiguousPressing(1);
+	arAmbiguousPressing[0].confidence = 9;
+	arAmbiguousPressing[0].checksum = arAmbiguousV1;
+	arAmbiguousPressing[0].frame450Checksum =
+		CalculateFrame450Reference(arAmbiguousCanonical);
+	arAmbiguousPressing[0].hasFrame450Checksum = true;
+
+	std::ostringstream arAmbiguousLog;
+	std::streambuf* previousCoutBuffer = std::cout.rdbuf(arAmbiguousLog.rdbuf());
+	const auto arAmbiguousResult = AccurateRip::VerifyCRCs(
+		arAmbiguousDisc, { arAmbiguousPressing });
+	std::cout.rdbuf(previousCoutBuffer);
+	Check(arAmbiguousResult == AccurateRipVerificationResult::Inconclusive,
+		"AccurateRip reports a capped tied-candidate search as inconclusive");
+	Check(arAmbiguousLog.str().find(
+		"best shared offset 0 samples matched 1/1") != std::string::npos,
+		"AccurateRip diagnostic tie-breaking prefers the closest shared offset");
+
+	DiscInfo mixedModeIds;
+	TrackInfo mixedAudio;
+	mixedAudio.trackNumber = 1;
+	mixedAudio.startLBA = 0;
+	mixedAudio.pregapLBA = 0;
+	mixedAudio.endLBA = 999;
+	mixedAudio.isAudio = true;
+	TrackInfo mixedData;
+	mixedData.trackNumber = 2;
+	mixedData.startLBA = 1000;
+	mixedData.pregapLBA = 1000;
+	mixedData.endLBA = 1999;
+	mixedData.isAudio = false;
+	mixedData.session = 2;
+	mixedModeIds.tracks = { mixedAudio, mixedData };
+	mixedModeIds.audioLeadOutLBA = 1000;
+	mixedModeIds.leadOutLBA = 2000;
+	Check(AccurateRip::CalculateDiscID1(mixedModeIds) == 2000u &&
+		AccurateRip::CalculateDiscID2(mixedModeIds) == 4001u &&
+		AccurateRip::CalculateCDDBID(mixedModeIds) == 0x08001A02u,
+		"AccurateRip mixed-mode IDs use overall lead-out and physical CDDB track count");
 
 	auto mode1 = MakeMode1Sector(1234);
 	auto valid = ValidateRawDataSector(mode1.data(), 1234);

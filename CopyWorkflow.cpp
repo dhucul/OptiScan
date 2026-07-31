@@ -534,7 +534,8 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstring& /
 		AnalyzePreservationWriteOffset(disc);
 
 	bool accurateRipVerificationPerformed = false;
-	bool accurateRipMatched = false;
+	AccurateRipVerificationResult accurateRipResult =
+		AccurateRipVerificationResult::Inconclusive;
 	if (!disc.accurateRipPressings.empty()) {
 		if (disc.pregapMode == PregapMode::Skip) {
 			Console::Warning("\nAccurateRip verification unavailable: Skip mode omitted "
@@ -542,11 +543,16 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstring& /
 		}
 		else {
 			accurateRipVerificationPerformed = true;
-			accurateRipMatched =
+			accurateRipResult =
 				AccurateRip::VerifyCRCs(disc, disc.accurateRipPressings);
-			if (!accurateRipMatched) {
-				Console::Error("AccurateRip verification failed; the image will be "
+			if (accurateRipResult == AccurateRipVerificationResult::Mismatch) {
+				Console::Error("One or more AccurateRip checksums did not match; the image will be "
 					"saved for inspection but will not be reported as verified.\n");
+			}
+			else if (accurateRipResult ==
+				AccurateRipVerificationResult::Inconclusive) {
+				Console::Warning("AccurateRip verification was inconclusive; the image "
+					"will be saved but will not be reported as verified.\n");
 			}
 		}
 	}
@@ -611,16 +617,28 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstring& /
 
 	copier.Eject();
 
-	if (accurateRipVerificationPerformed && !accurateRipMatched) {
-		Console::Warning("\nCopy saved, but AccurateRip verification FAILED. Files written to: ");
+	if (accurateRipVerificationPerformed &&
+		accurateRipResult == AccurateRipVerificationResult::Mismatch) {
+		Console::Warning("\nCopy saved, but AccurateRip verification FAILED "
+			"(one or more track checksum mismatches). Files written to: ");
+	}
+	else if (accurateRipVerificationPerformed &&
+		accurateRipResult == AccurateRipVerificationResult::Inconclusive) {
+		Console::Warning("\nCopy saved, but AccurateRip verification was "
+			"INCONCLUSIVE. Files written to: ");
+	}
+	else if (!accurateRipVerificationPerformed) {
+		Console::Success("\nCopy complete. AccurateRip verification was not "
+			"performed. Files written to: ");
 	}
 	else {
-		Console::Success("\nCopy complete. Files written to: ");
+		Console::Success("\nCopy complete. AccurateRip VERIFIED. Files written to: ");
 	}
 	std::wcout << outputDir << L"\n";
 	Console::Info("Output basename: ");
 	std::wcout << path << L"\n";
-	return !accurateRipVerificationPerformed || accurateRipMatched;
+	return !accurateRipVerificationPerformed ||
+		accurateRipResult == AccurateRipVerificationResult::Verified;
 }
 
 void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,

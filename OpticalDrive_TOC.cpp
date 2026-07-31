@@ -758,8 +758,8 @@ bool OpticalDrive::ReadFullTOC(DiscInfo& disc) {
 	}
 
 	// For enhanced/multisession CDs, store the session-1 lead-out separately.
-	// AccurateRip disc IDs must use the audio session's lead-out, not the
-	// overall disc lead-out (which points past the data session).
+	// AccurateRip checksum slicing stops here; its disc IDs still use the
+	// overall TOC lead-out (which points past the data session).
 	auto it = sessionLeadOut.find(1);
 	if (it != sessionLeadOut.end() && disc.sessionCount > 1) {
 		disc.audioLeadOutLBA = it->second;
