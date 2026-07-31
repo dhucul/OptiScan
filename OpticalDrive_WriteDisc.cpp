@@ -6,8 +6,10 @@
 #include "InterruptHandler.h"
 #include "WriteDiscInternal.h"
 #include "PioneerVendor.h"
+#include <algorithm>
 #include <iostream>
 #include <fstream>
+#include <limits>
 #include <vector>
 #include <windows.h>
 
@@ -21,118 +23,8 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 
 	Console::BoxHeading("Write Disc from Files");
 
-	// ── Check disc is empty and writable ────────────────────────────
-	if (!discAlreadyBlanked) {
-		Console::Info("Checking disc media status...\n");
-
-		WriteDiscInternal::WaitForDriveReady(m_drive, 10);
-
-		BYTE discInfoCmd[10] = { 0x51, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFC, 0x00 };
-		BYTE discInfoResp[252] = { 0 };
-		BYTE sk = 0, asc = 0, ascq = 0;
-
-		if (m_drive.SendSCSIWithSense(discInfoCmd, sizeof(discInfoCmd),
-			discInfoResp, sizeof(discInfoResp), &sk, &asc, &ascq, true)) {
-
-			BYTE discStatus = discInfoResp[2] & 0x03;
-			bool isErasable = (discInfoResp[2] & 0x10) != 0;
-
-			// Surface the media type up front so the user can confirm CD-R vs
-			// CD-RW before the burn. The per-status messages below don't state
-			// it in the common "empty disc and ready" case, where a
-			// brand/dye-related write failure is most likely to surprise the user.
-			Console::Success("Disc type: ");
-			std::cout << (isErasable ? "CD-RW (rewritable)\n" : "CD-R (write-once)\n");
-
-			switch (discStatus) {
-			case 0x00:
-				Console::Success("Disc is empty and ready for writing\n");
-				break;
-
-			case 0x01: // Appendable -- has an open/incomplete session
-				if (isErasable) {
-					Console::Warning("CD-RW disc has an incomplete session\n");
-					Console::Info("The disc must be blanked before SAO writing\n");
-					if (!BlankRewritableDisk(speed, true)) {
-						Console::Error("Failed to blank disc -- write cancelled\n");
-						return false;
-					}
-				}
-				else {
-					Console::Error("CD-R already has data and cannot be erased\n");
-					Console::Info("Insert a blank CD-R disc and try again\n");
-					return false;
-				}
-				break;
-
-			case 0x02: // Complete -- fully written
-				if (isErasable) {
-					Console::Warning("CD-RW disc is not empty (fully written)\n");
-					if (!GuiInput::PromptYesNo("Blank disc?",
-						"The disc must be blanked before writing. Blank now?")) {
-						Console::Info("Write operation cancelled\n");
-						return false;
-					}
-					if (!BlankRewritableDisk(speed, true)) {
-						Console::Error("Failed to blank disc\n");
-						return false;
-					}
-				}
-				else {
-					Console::Error("CD-R is fully written and cannot be erased\n");
-					Console::Info("Insert a blank CD-R disc and try again\n");
-					return false;
-				}
-				break;
-
-			default:
-				Console::Warning("Unknown disc status (0x");
-				std::cout << std::hex << static_cast<int>(discStatus)
-					<< std::dec << ") -- attempting to write\n";
-				break;
-			}
-		}
-		else {
-			// READ DISC INFORMATION failed -- try GET CONFIGURATION profile fallback
-			BYTE profileCmd[10] = { 0x46, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00 };
-			BYTE profileResp[8] = { 0 };
-
-			if (m_drive.SendSCSI(profileCmd, sizeof(profileCmd),
-				profileResp, sizeof(profileResp), true)) {
-				WORD profile = (static_cast<WORD>(profileResp[6]) << 8) | profileResp[7];
-
-				switch (profile) {
-				case 0x08:
-					Console::Error("Drive reports CD-ROM media (read-only)\n");
-					return false;
-				case 0x09:
-					Console::Warning("CD-R detected but could not verify empty status\n");
-					Console::Info("Proceeding -- write will fail if disc is not blank\n");
-					break;
-				case 0x0A:
-					Console::Warning("CD-RW detected but could not verify empty status\n");
-					Console::Info("Proceeding -- write will fail if disc is not blank\n");
-					break;
-				default:
-					Console::Warning("Unknown media profile (0x");
-					std::cout << std::hex << profile << std::dec
-						<< ") -- attempting to write\n";
-					break;
-				}
-			}
-			else {
-				Console::Warning("Could not determine disc status (");
-				std::cout << m_drive.GetSenseDescription(sk, asc, ascq)
-					<< ") -- attempting to write\n";
-			}
-		}
-	}
-	else {
-		Console::Success("Disc was already blanked - skipping media check\n");
-		WriteDiscInternal::WaitForDriveReady(m_drive, 10);
-	}
-
-	// Verify input files exist
+	// Validate the complete source image before checking or erasing destination
+	// media. Invalid inputs must never cause an existing CD-RW to be destroyed.
 	std::ifstream binStream(binFile, std::ios::binary);
 	if (!binStream.is_open()) {
 		Console::Error("Cannot open .bin file: ");
@@ -143,7 +35,21 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 	long long fileSize = binStream.tellg();
 	binStream.close();
 
-	DWORD totalSectors = static_cast<DWORD>(fileSize / AUDIO_SECTOR_SIZE);
+	constexpr DWORD PREGAP_SECTORS = 150;
+	constexpr DWORD MAX_PROGRAM_SECTORS =
+		static_cast<DWORD>((std::numeric_limits<int32_t>::max)()) -
+		PREGAP_SECTORS;
+	if (fileSize <= 0 || fileSize % AUDIO_SECTOR_SIZE != 0) {
+		Console::Error("Invalid .bin file size; expected a non-empty whole number of sectors\n");
+		return false;
+	}
+	const unsigned long long sectorCount =
+		static_cast<unsigned long long>(fileSize / AUDIO_SECTOR_SIZE);
+	if (sectorCount > MAX_PROGRAM_SECTORS) {
+		Console::Error("Invalid .bin file size; sector count exceeds the write-address limit\n");
+		return false;
+	}
+	DWORD totalSectors = static_cast<DWORD>(sectorCount);
 
 	// Subchannel is always drive-generated via the SAO path (reliable, and
 	// pregaps are still reproduced exactly). Raw P-W subchannel writing from the
@@ -183,45 +89,189 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 		return false;
 	}
 
-	// Set last track endLBA now that we know totalSectors
-	if (!tracks.empty()) {
-		if (tracks.back().endLBA == 0) {
-			// Last track in CUE — endLBA not set by parser, use BIN file size
-			tracks.back().endLBA = totalSectors - 1;
+	// Set the final audio boundary now that the BIN size is known. A non-zero
+	// end on the last retained track means trailing data tracks were filtered.
+	if (tracks.back().endLBA == (std::numeric_limits<DWORD>::max)()) {
+		tracks.back().endLBA = totalSectors - 1;
+	}
+	else if (tracks.back().endLBA >= totalSectors) {
+		Console::Error("CUE sheet extends beyond the end of the .bin file\n");
+		return false;
+	}
+	else if (tracks.back().endLBA < totalSectors - 1) {
+		const DWORD audioSectors = tracks.back().endLBA + 1;
+		Console::Info("Trimming to audio content: ");
+		std::cout << audioSectors << " of " << totalSectors << " sectors\n";
+		totalSectors = audioSectors;
+	}
+
+	// Validate every range after any enhanced-CD trim. This also catches
+	// unsigned underflow produced by a malformed INDEX 00 before any writer can
+	// turn it into a huge stream or silently pad a short BIN read with zeroes.
+	for (size_t i = 0; i < tracks.size(); ++i) {
+		const auto& track = tracks[i];
+		if (track.trackNumber < 1 || track.trackNumber > 99 ||
+			(i > 0 && track.trackNumber <= tracks[i - 1].trackNumber)) {
+			Console::Error("CUE sheet contains an invalid or non-increasing track number\n");
+			return false;
 		}
-		else if (tracks.back().endLBA + 1 < totalSectors) {
-			// Data tracks were filtered — BIN is larger than audio portion
-			Console::Info("Trimming to audio content: ");
-			std::cout << (tracks.back().endLBA + 1) << " of " << totalSectors << " sectors\n";
-			totalSectors = tracks.back().endLBA + 1;
+		if (track.startLBA >= totalSectors ||
+			track.endLBA < track.startLBA ||
+			track.endLBA >= totalSectors) {
+			Console::Error("CUE track ");
+			std::cout << track.trackNumber
+				<< " has a sector range outside the .bin file\n";
+			return false;
+		}
+		if (track.hasPregap && track.pregapLBA > track.startLBA) {
+			Console::Error("CUE track ");
+			std::cout << track.trackNumber << " has an invalid pregap boundary\n";
+			return false;
 		}
 	}
 
-	// ── Verify disc has enough capacity for the image ───────────────
-	// (after CUE parse so totalSectors reflects any trim)
-	{
+	bool blankedForThisWrite = discAlreadyBlanked;
+
+	auto readDiscState = [&](BYTE& discStatus, bool& isErasable) -> bool {
+		if (!WriteDiscInternal::WaitForDriveReady(m_drive, 15)) {
+			Console::Error("Drive did not become ready for media validation\n");
+			return false;
+		}
+
+		BYTE discInfoCmd[10] = {
+			0x51, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFC, 0x00
+		};
+		BYTE discInfoResp[252] = { 0 };
+		BYTE sk = 0, asc = 0, ascq = 0;
+		if (!m_drive.SendSCSIWithSense(discInfoCmd, sizeof(discInfoCmd),
+			discInfoResp, sizeof(discInfoResp), &sk, &asc, &ascq, true)) {
+			Console::Error("Could not read disc status (");
+			std::cout << m_drive.GetSenseDescription(sk, asc, ascq) << ")\n";
+			return false;
+		}
+
+		const WORD responseLength =
+			(static_cast<WORD>(discInfoResp[0]) << 8) | discInfoResp[1];
+		if (responseLength < 1) {
+			Console::Error("Drive returned incomplete disc-status data\n");
+			return false;
+		}
+
+		discStatus = discInfoResp[2] & 0x03;
+		isErasable = (discInfoResp[2] & 0x10) != 0;
+		return true;
+	};
+
+	auto ensureBlankWritableMedia = [&](bool allowBlanking, bool announce) -> bool {
+		BYTE discStatus = 0;
+		bool isErasable = false;
+		if (!readDiscState(discStatus, isErasable)) return false;
+
+		if (announce) {
+			Console::Success("Disc type: ");
+			std::cout << (isErasable ? "CD-RW (rewritable)\n" : "CD-R (write-once)\n");
+		}
+
+		if (discStatus == 0x00) {
+			if (announce)
+				Console::Success("Disc is empty and ready for writing\n");
+			return true;
+		}
+
+		if (discStatus != 0x01 && discStatus != 0x02) {
+			Console::Error("Drive returned an unsupported disc status (0x");
+			std::cout << std::hex << static_cast<int>(discStatus)
+				<< std::dec << ")\n";
+			return false;
+		}
+
+		if (!isErasable) {
+			Console::Error("CD-R already contains data and cannot be erased\n");
+			Console::Info("Insert a blank CD-R disc and try again\n");
+			return false;
+		}
+
+		if (!allowBlanking) {
+			Console::Error("Expected a blank disc, but the loaded CD-RW contains data\n");
+			return false;
+		}
+
+		Console::Warning(discStatus == 0x01
+			? "CD-RW disc has an incomplete session\n"
+			: "CD-RW disc is fully written\n");
+		if (!GuiInput::PromptYesNo("Blank disc?",
+			"The disc must be blanked before writing. Erase all data now?")) {
+			Console::Info("Write operation cancelled\n");
+			return false;
+		}
+
+		// The caller just confirmed, so suppress BlankRewritableDisk's second
+		// confirmation prompt.
+		if (!BlankRewritableDisk(speed, true, true)) {
+			Console::Error("Failed to blank disc\n");
+			return false;
+		}
+		blankedForThisWrite = true;
+
+		if (!readDiscState(discStatus, isErasable) || discStatus != 0x00) {
+			Console::Error("Disc did not report a blank state after erasing\n");
+			return false;
+		}
+		Console::Success("Disc blanking verified\n");
+		return true;
+	};
+
+	auto verifyCapacity = [&]() -> bool {
+		if (!WriteDiscInternal::WaitForDriveReady(m_drive, 15)) {
+			Console::Error("Drive did not become ready for capacity validation\n");
+			return false;
+		}
+
 		// READ TRACK INFORMATION: type=1 (track number), track 0xFF (invisible/blank)
 		BYTE trackInfoCmd[10] = { 0x52, 0x01, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x24, 0x00 };
 		BYTE trackInfoResp[36] = { 0 };
-		if (m_drive.SendSCSI(trackInfoCmd, sizeof(trackInfoCmd),
-			trackInfoResp, sizeof(trackInfoResp), true)) {
-			DWORD freeBlocks = (static_cast<DWORD>(trackInfoResp[24]) << 24) |
-				(static_cast<DWORD>(trackInfoResp[25]) << 16) |
-				(static_cast<DWORD>(trackInfoResp[26]) << 8) |
-				static_cast<DWORD>(trackInfoResp[27]);
-
-			constexpr DWORD LEADOUT_OVERHEAD = 6750;
-			constexpr DWORD PREGAP_OVERHEAD = 150;
-			DWORD sectorsNeeded = totalSectors + PREGAP_OVERHEAD + LEADOUT_OVERHEAD;
-
-			if (freeBlocks > 0 && sectorsNeeded > freeBlocks) {
-				Console::Error("Image too large for disc (need ");
-				std::cout << sectorsNeeded << " sectors, disc has "
-					<< freeBlocks << " free)\n";
-				Console::Info("Use a higher-capacity disc (e.g., 80-min or 90-min CD-R)\n");
-				return false;
-			}
+		BYTE sk = 0, asc = 0, ascq = 0;
+		if (!m_drive.SendSCSIWithSense(trackInfoCmd, sizeof(trackInfoCmd),
+			trackInfoResp, sizeof(trackInfoResp), &sk, &asc, &ascq, true)) {
+			Console::Error("Could not determine writable disc capacity (");
+			std::cout << m_drive.GetSenseDescription(sk, asc, ascq) << ")\n";
+			return false;
 		}
+
+		const WORD responseLength =
+			(static_cast<WORD>(trackInfoResp[0]) << 8) | trackInfoResp[1];
+		if (responseLength < 26) {
+			Console::Error("Drive returned incomplete track-capacity data\n");
+			return false;
+		}
+
+		const DWORD freeBlocks =
+			(static_cast<DWORD>(trackInfoResp[24]) << 24) |
+			(static_cast<DWORD>(trackInfoResp[25]) << 16) |
+			(static_cast<DWORD>(trackInfoResp[26]) << 8) |
+			static_cast<DWORD>(trackInfoResp[27]);
+		if (freeBlocks == 0) {
+			Console::Error("Drive reports no writable program sectors on this disc\n");
+			return false;
+		}
+
+		// Free Blocks is the writable program-area capacity beginning at LBA 0.
+		// The pregap occupies negative LBAs and the recorder reserves/generates
+		// the lead-out, so neither is charged against this program-area count.
+		if (totalSectors > freeBlocks) {
+			Console::Error("Image too large for disc (need ");
+			std::cout << totalSectors << " program sectors, disc has "
+				<< freeBlocks << " free)\n";
+			Console::Info("Use a higher-capacity disc (e.g., 80-min or 90-min CD-R)\n");
+			return false;
+		}
+		return true;
+	};
+
+	Console::Info("Checking disc media status...\n");
+	if (!ensureBlankWritableMedia(!discAlreadyBlanked, true) ||
+		!verifyCapacity()) {
+		return false;
 	}
 
 	// ── Check CD-Text write capability early (before write mode setup) ──
@@ -270,13 +320,17 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 			// the burn runs on a clean handle, free of the per-handle driver state
 			// the prior read session left behind. Non-destructive: no eject, no
 			// erase, no marks. The media stays loaded across the re-Open.
-			if (!discAlreadyBlanked) {
+			if (!blankedForThisWrite) {
 				Console::Info("Resetting drive handle to clear read-session state before write...\n");
 				if (!m_drive.Reopen()) {
 					Console::Error("Failed to reopen drive after reset - aborting write\n");
 					return false;
 				}
-				WriteDiscInternal::WaitForDriveReady(m_drive, 15);
+				if (!ensureBlankWritableMedia(false, false) ||
+					!verifyCapacity()) {
+					Console::Error("Media validation failed after reopening the drive\n");
+					return false;
+				}
 			}
 		}
 	}
@@ -406,7 +460,26 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 	// fall back to the Windows IMAPI2 Disc-At-Once writer.
 	if (!layoutAccepted) {
 		Console::Warning("Drive rejected every raw-SCSI disc layout\n");
-		Console::Info("Switching to IMAPI2 Disc-At-Once fallback...\n");
+		std::string fallbackWarning =
+			"The drive rejected exact raw-SCSI writing.\n\n"
+			"The Windows IMAPI fallback is NOT a 1:1 copy: it normalizes "
+			"inter-track pregaps and may fall back to Track-At-Once.";
+		const bool hasMetadata =
+			WriteDiscInternal::HasCDTextContent(discTitle, discPerformer, tracks) ||
+			!discMCN.empty() ||
+			std::any_of(tracks.begin(), tracks.end(),
+				[](const TrackWriteInfo& track) { return !track.isrcCode.empty(); });
+		if (hasMetadata) {
+			fallbackWarning +=
+				"\nCD-Text, catalog number, and ISRC metadata will not be preserved.";
+		}
+		fallbackWarning += "\n\nWrite a non-exact fallback disc anyway?";
+		if (!GuiInput::PromptYesNo("Non-exact IMAPI fallback",
+			fallbackWarning.c_str())) {
+			Console::Info("Write cancelled; the destination disc was not written\n");
+			return false;
+		}
+		Console::Warning("User accepted a non-exact IMAPI2 fallback write\n");
 		return WriteDiscIMAPI(binFile, tracks, totalSectors, speed);
 	}
 
@@ -430,7 +503,11 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 				Console::Error("Failed to reopen drive after CD-Text fallback\n");
 				return false;
 			}
-			WriteDiscInternal::WaitForDriveReady(m_drive, 15);
+			if (!ensureBlankWritableMedia(false, false) ||
+				!verifyCapacity()) {
+				Console::Error("Media validation failed after CD-Text recovery\n");
+				return false;
+			}
 			m_drive.SetSpeed(speed, speed);  // re-apply speed dropped with the handle
 			if (!WriteDiscInternal::PrepareDriveForWrite(m_drive, 0) ||
 				!WriteDiscInternal::BuildAndSendCueSheet(m_drive, tracks, totalSectors, 0)) {

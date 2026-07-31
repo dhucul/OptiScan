@@ -7,6 +7,7 @@
 #include <imapi2error.h>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <vector>
 #include <windows.h>
 #include <wrl/client.h>
@@ -31,7 +32,9 @@ public:
 		// apartment-agile. Without it, a sink advised from an MTA thread can't
 		// be marshaled back (no type info), so IMAPI never delivers Update and
 		// the burn appears to hang silently.
-		CoCreateFreeThreadedMarshaler(static_cast<IDispatch*>(this), &m_ftm);
+		const HRESULT marshalHr =
+			CoCreateFreeThreadedMarshaler(static_cast<IDispatch*>(this), &m_ftm);
+		if (FAILED(marshalHr)) m_ftm = nullptr;
 	}
 	virtual ~RawCDProgressSink() { if (m_ftm) m_ftm->Release(); }
 
@@ -184,7 +187,7 @@ static bool FindRecorderForDrive(wchar_t driveLetter,
 				if (elemType == VT_BSTR) {
 					BSTR path = nullptr;
 					if (SUCCEEDED(SafeArrayGetElement(mountPoints, &j, &path)) && path) {
-						matched = (path[0] != L'\0' &&
+						matched = (SysStringLen(path) > 0 &&
 							towupper(path[0]) == towupper(driveLetter));
 						SysFreeString(path);
 					}
@@ -225,6 +228,7 @@ static HRESULT CreateStreamFromFileRange(const std::wstring& filePath,
 	if (!file.is_open()) return E_FAIL;
 
 	file.seekg(offset);
+	if (!file.good()) return E_INVALIDARG;
 
 	constexpr DWORD CHUNK = 256 * 1024;
 	std::vector<BYTE> buf(CHUNK);
@@ -237,9 +241,10 @@ static HRESULT CreateStreamFromFileRange(const std::wstring& filePath,
 
 		ULONG written = 0;
 		hr = (*ppStream)->Write(buf.data(), got, &written);
-		if (FAILED(hr)) return hr;
+		if (FAILED(hr) || written != got) return STG_E_WRITEFAULT;
 		remaining -= got;
 	}
+	if (remaining != 0) return HRESULT_FROM_WIN32(ERROR_HANDLE_EOF);
 
 	LARGE_INTEGER zero = {};
 	(*ppStream)->Seek(zero, STREAM_SEEK_SET, nullptr);
@@ -342,7 +347,14 @@ bool OpticalDrive::WriteDiscIMAPI(const std::wstring& binFile,
 
 				DWORD trackSectors = t.endLBA - t.startLBA + 1;
 				long long fileOffset = static_cast<long long>(t.startLBA) * AUDIO_SECTOR_SIZE;
-				DWORD trackBytes = trackSectors * AUDIO_SECTOR_SIZE;
+				const unsigned long long trackByteCount =
+					static_cast<unsigned long long>(trackSectors) * AUDIO_SECTOR_SIZE;
+				if (trackByteCount > (std::numeric_limits<DWORD>::max)()) {
+					Console::Warning("Track is too large for the IMAPI stream interface\n");
+					addOk = false;
+					break;
+				}
+				DWORD trackBytes = static_cast<DWORD>(trackByteCount);
 
 				ComPtr<IStream> trackStream;
 				hr = CreateStreamFromFileRange(binFile, fileOffset, trackBytes, &trackStream);
@@ -495,8 +507,22 @@ bool OpticalDrive::WriteDiscIMAPI(const std::wstring& binFile,
 
 	for (size_t i = 0; i < tracks.size(); i++) {
 		const auto& t = tracks[i];
+		if (t.endLBA < t.startLBA) {
+			Console::Error("Invalid track range supplied to IMAPI2\n");
+			tao->ReleaseMedia();
+			cleanup(true);
+			return false;
+		}
 		DWORD trackSectors = t.endLBA - t.startLBA + 1;
-		DWORD trackBytes = trackSectors * AUDIO_SECTOR_SIZE;
+		const unsigned long long trackByteCount =
+			static_cast<unsigned long long>(trackSectors) * AUDIO_SECTOR_SIZE;
+		if (trackByteCount > (std::numeric_limits<DWORD>::max)()) {
+			Console::Error("Track is too large for the IMAPI stream interface\n");
+			tao->ReleaseMedia();
+			cleanup(true);
+			return false;
+		}
+		DWORD trackBytes = static_cast<DWORD>(trackByteCount);
 		long long fileOffset = static_cast<long long>(t.startLBA) * AUDIO_SECTOR_SIZE;
 
 		Console::Info("  Track ");

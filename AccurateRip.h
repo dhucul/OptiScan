@@ -8,9 +8,10 @@
 
 class AccurateRip {
 public:
-    // CRC calculation
-    static uint32_t CalculateCRC(const std::vector<std::vector<BYTE>>& sectors,
-        int trackNum, int totalTracks, DWORD trackStart);
+    // Calculate both checksum variants. Returns false for empty, malformed,
+    // undersized, or otherwise invalid track data.
+    static bool CalculateCRCs(const std::vector<std::vector<BYTE>>& sectors,
+        int trackNum, int totalTracks, uint32_t& crcV1, uint32_t& crcV2);
 
     // Disc ID calculations
     static uint32_t CalculateDiscID1(const DiscInfo& disc);

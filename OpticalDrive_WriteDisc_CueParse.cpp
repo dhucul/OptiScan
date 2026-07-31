@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <windows.h>
 
@@ -249,6 +250,9 @@ bool OpticalDrive::ParseCueSheet(const std::wstring& cueFile,
 				: tracks[i + 1].startLBA - 1;
 		}
 	}
+	// Zero is a valid end for a one-sector track, so use an unambiguous sentinel
+	// for the original final track whose boundary depends on the BIN size.
+	tracks.back().endLBA = (std::numeric_limits<DWORD>::max)();
 
 	// Remove non-audio tracks (enhanced CDs have a data session that cannot
 	// be written back as part of an audio disc image).
@@ -283,7 +287,7 @@ bool OpticalDrive::ParseCueSheet(const std::wstring& cueFile,
 			<< std::setw(6) << t.startLBA << " - ";
 		// The last track's endLBA isn't known until the BIN size is read
 		// (set later in WriteDisc), so show a placeholder instead of 0.
-		if (t.endLBA == 0)
+		if (t.endLBA == (std::numeric_limits<DWORD>::max)())
 			std::cout << "   end";
 		else
 			std::cout << std::setw(6) << t.endLBA;

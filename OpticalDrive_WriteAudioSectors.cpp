@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <iostream>
 #include <fstream>
+#include <limits>
 #include <vector>
 #include <windows.h>
 
@@ -58,6 +59,13 @@ bool OpticalDrive::WriteAudioSectors(const std::wstring& binFile,
 	const DWORD sectorSize = hasSubchannel ? RAW_SECTOR_SIZE : AUDIO_SECTOR_SIZE;
 
 	constexpr DWORD PREGAP_SECTORS = 150;
+	constexpr DWORD MAX_PROGRAM_SECTORS =
+		static_cast<DWORD>((std::numeric_limits<int32_t>::max)()) -
+		PREGAP_SECTORS;
+	if (totalSectors > MAX_PROGRAM_SECTORS) {
+		Console::Error("Image sector count exceeds the write-address limit\n");
+		return false;
+	}
 	DWORD writeTotalSectors = PREGAP_SECTORS + totalSectors;
 
 	// Detect mixed-mode disc
@@ -198,8 +206,13 @@ bool OpticalDrive::WriteAudioSectors(const std::wstring& binFile,
 				// ── Data/audio sector (LBA 0+) ──────────────────────────
 				binInput.read(reinterpret_cast<char*>(dest), AUDIO_SECTOR_SIZE);
 				size_t audioRead = binInput.gcount();
-				if (audioRead < AUDIO_SECTOR_SIZE) {
-					std::fill(dest + audioRead, dest + AUDIO_SECTOR_SIZE, 0x00);
+				if (audioRead != AUDIO_SECTOR_SIZE) {
+					Console::Error("\nUnexpected end of .bin file while preparing sector ");
+					std::cout << (globalSector - PREGAP_SECTORS) << "\n";
+					progress.Finish(false);
+					binInput.close();
+					if (hasSubFile) subInput.close();
+					return false;
 				}
 
 				if (hasSubchannel) {
