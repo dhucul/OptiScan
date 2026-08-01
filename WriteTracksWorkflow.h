@@ -15,4 +15,5 @@
 // burner-drive picker; on a same-drive swap they're prompted to insert a
 // blank, on a cross-drive swap `audioDrive` is updated in place.
 void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
-    const std::wstring& workDir, wchar_t& audioDrive);
+	const std::wstring& workDir, wchar_t& audioDrive,
+	bool* outCompleted = nullptr);

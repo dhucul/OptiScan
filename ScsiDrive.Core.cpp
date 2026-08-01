@@ -2,6 +2,7 @@
 // ScsiDrive.Core.cpp - Core SCSI drive communication
 // ============================================================================
 #include "ScsiDrive.h"
+#include "DriveCapabilityParsing.h"
 #include <chrono>
 #include <thread>
 #include <vector>
@@ -103,11 +104,18 @@ namespace {
 
 bool ScsiDrive::Open(wchar_t driveLetter) {
 	std::wstring path = L"\\\\.\\" + std::wstring(1, driveLetter) + L":";
-	m_handle = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+	HANDLE newHandle = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
 		FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
 
-	if (m_handle != INVALID_HANDLE_VALUE) {
+	if (newHandle != INVALID_HANDLE_VALUE) {
+		// Commit only after the new open succeeds. This preserves an existing
+		// usable handle when a retarget attempt fails and prevents handle leaks
+		// when Open() is called twice without an intervening Close().
+		if (m_handle != INVALID_HANDLE_VALUE)
+			CloseHandle(m_handle);
+		m_handle = newHandle;
 		m_driveLetter = driveLetter;   // remember so Reopen() can re-target
+		m_doorLockCount = 0;
 		// Reset cached probe results — new handle may be a different drive
 		m_qcheckProbed = -1;
 		m_liteonScanProbed = -1;
@@ -134,7 +142,7 @@ bool ScsiDrive::Open(wchar_t driveLetter) {
 		LoadCachedCharacterization();
 	}
 
-	return m_handle != INVALID_HANDLE_VALUE;
+	return newHandle != INVALID_HANDLE_VALUE;
 }
 
 void ScsiDrive::Close() {
@@ -374,41 +382,20 @@ bool ScsiDrive::TrySetSpeedAndVerify(int multiplier, int writeMultiplier,
 }
 
 bool ScsiDrive::GetActualSpeed(WORD& readSpeed, WORD& writeSpeed) {
-	// Need the MODE SENSE header plus the fixed portion of page 2Ah. Modern
-	// drives can append write-speed descriptors, but the selected-speed fields
-	// themselves fit in this buffer.
-	static constexpr int BUF_SIZE = 64;
-	BYTE cdb[10] = { 0x5A, 0, 0x2A, 0, 0, 0, 0, 0, BUF_SIZE, 0 };
-	BYTE buffer[BUF_SIZE] = {};
-
-	if (!SendSCSI(cdb, 10, buffer, BUF_SIZE, true))
+	std::vector<BYTE> page;
+	if (!GetModePage2A(page) || page.size() < 16)
 		return false;
 
-	// MODE SENSE (10) header is 8 bytes; skip any block descriptors.
-	int bdLen = (buffer[6] << 8) | buffer[7];
-	int pageOff = 8 + bdLen;
-
-	// Sanity: verify page 2A was returned and includes Current Read Speed.
-	if (pageOff + 16 > BUF_SIZE || (buffer[pageOff] & 0x3F) != 0x2A)
-		return false;
-
-	BYTE* page = &buffer[pageOff];
-	const int pageBytes = (std::min)(
-		static_cast<int>(page[1]) + 2,
-		BUF_SIZE - pageOff);
-	if (pageBytes < 16)
-		return false;
-
-	readSpeed = (page[14] << 8) | page[15];   // Current read speed  (kB/s)
+	readSpeed = (page[14] << 8) | page[15];   // Legacy current read speed (kB/s)
 
 	// Page 2Ah has two layouts in the field:
 	//   legacy (20h-byte page): Current Write Speed at bytes 20-21
 	//   MMC-3+ extended page:   Current Write Speed at bytes 28-29
 	// Bytes 18-19 are Maximum Write Speed in the legacy layout and must never
 	// be presented as the speed the drive selected.
-	if (pageBytes >= 30)
+	if (page.size() >= 30)
 		writeSpeed = (page[28] << 8) | page[29];
-	else if (pageBytes >= 22)
+	else if (page.size() >= 22)
 		writeSpeed = (page[20] << 8) | page[21];
 	else
 		writeSpeed = 0;
@@ -597,23 +584,31 @@ bool ScsiDrive::TestUnitReady() {
 	BYTE cdb[6] = { 0x00 };
 	BYTE dummy[4] = {};
 	BYTE sk = 0, asc = 0, ascq = 0;
-	SendSCSIWithSense(cdb, 6, dummy, 0, &sk, &asc, &ascq, true);
+	const bool commandOk = SendSCSIWithSense(
+		cdb, 6, dummy, 0, &sk, &asc, &ascq, true);
 	// sense 0/0/0 = ready. sense 02/3A/xx = Medium Not Present (caller should
 	// prompt). 02/04/xx = becoming ready (not ready *yet*, but media is there).
-	return (sk == 0);
+	return commandOk;
 }
 
 bool ScsiDrive::WaitForDriveReady(int timeoutSeconds) {
-	auto start = std::chrono::steady_clock::now();
+	const auto deadline = std::chrono::steady_clock::now()
+		+ std::chrono::seconds((std::max)(0, timeoutSeconds));
 
 	while (true) {
 		BYTE cdb[6] = { 0x00 };
 		BYTE dummy[4] = {};
 		BYTE senseKey = 0, asc = 0, ascq = 0;
 
-		SendSCSIWithSense(cdb, 6, dummy, 0, &senseKey, &asc, &ascq, true);
+		const bool commandOk = SendSCSIWithSense(
+			cdb, 6, dummy, 0, &senseKey, &asc, &ascq, true);
 
-		if (senseKey == 0) return true;
+		if (commandOk) return true;
+
+		// Always make one readiness attempt, including for a zero-second
+		// non-blocking check, then enforce the deadline on every retry path.
+		if (std::chrono::steady_clock::now() >= deadline)
+			return false;
 
 		if (senseKey == 0x06) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -630,10 +625,6 @@ bool ScsiDrive::WaitForDriveReady(int timeoutSeconds) {
 			continue;
 		}
 
-		auto now = std::chrono::steady_clock::now();
-		auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
-		if (elapsed >= timeoutSeconds) return false;
-
 		std::this_thread::sleep_for(std::chrono::milliseconds(500));
 	}
 }
@@ -647,9 +638,14 @@ bool ScsiDrive::GetMediaStatus(DriveHealthCheck& status) {
 	BYTE dummy[4] = {};
 	BYTE senseKey = 0, asc = 0, ascq = 0;
 
-	SendSCSIWithSense(cdb, 6, dummy, 0, &senseKey, &asc, &ascq, true);
+	const bool commandOk = SendSCSIWithSense(
+		cdb, 6, dummy, 0, &senseKey, &asc, &ascq, true);
+	// A failed transport leaves the sense buffer at zero. Do not turn that
+	// shape into the same result as a successful TEST UNIT READY command.
+	if (!commandOk && senseKey == 0 && asc == 0 && ascq == 0)
+		return false;
 
-	status.mediaReady = (senseKey == 0);
+	status.mediaReady = commandOk;
 	status.mediaPresent = (senseKey != 0x02 || asc != 0x3A);
 	status.trayOpen = (senseKey == 0x02 && asc == 0x3A && ascq == 0x02);
 	status.spinningUp = (senseKey == 0x02 && asc == 0x04);
@@ -679,15 +675,7 @@ bool ScsiDrive::GetMediaProfile(WORD& profileCode, std::string& profileName) {
 	// Current profile is at bytes 6-7 of the feature header
 	profileCode = (static_cast<WORD>(buf[6]) << 8) | buf[7];
 
-	switch (profileCode) {
-	case 0x0008: profileName = "CD-ROM";  break;   // Factory-pressed CD
-	case 0x0009: profileName = "CD-R";    break;   // Recordable CD
-	case 0x000A: profileName = "CD-RW";   break;   // Rewritable CD
-	case 0x0010: profileName = "DVD-ROM"; break;
-	case 0x0011: profileName = "DVD-R";   break;
-	case 0x0012: profileName = "DVD-RAM"; break;
-	default:     profileName = "Unknown"; break;
-	}
+	profileName = DriveCapabilityParsing::MediaProfileName(profileCode);
 
 	return true;
 }

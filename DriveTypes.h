@@ -116,12 +116,14 @@ struct DriveCapabilities {
 	bool supportsOverreadLeadIn = false;          // Can read before LBA 0 (lead-in overread)
 	bool supportsOverreadLeadOut = false;         // Can read past the lead-out
 	bool supportsSubchannelRaw = false;           // Can return raw P–W subchannel data
-	bool supportsSubchannelQ = false;             // Can return deinterleaved Q subchannel
+	bool supportsSubchannelDeinterleaved = false; // Can return corrected/deinterleaved R–W data
+	bool supportsSubchannelQ = false;             // Formatted Q reads were verified with loaded CD media
 	bool supportsCDDA = false;                    // Digital audio extraction supported
 	bool supportsMultiSession = false;            // Can read multi-session discs
+	bool activeCDReadProbesPerformed = false;     // Media-dependent READ CD/Q/overread probes ran
 
 	// ── Audio playback features ──
-	bool supportsDigitalAudioPlay = false;        // Hardware DAP (digital audio playback)
+	bool supportsAudioPlay = false;               // Legacy hardware/analog CD audio playback
 	bool supportsCompositeOutput = false;         // Composite audio output jack
 	bool supportsSeparateVolume = false;          // Per-channel volume control
 	bool supportsSeparateMute = false;            // Per-channel mute
@@ -130,7 +132,7 @@ struct DriveCapabilities {
 	bool supportsEject = false;                   // Can eject the tray via software
 	bool supportsLockMedia = false;               // Can lock the tray closed
 	bool isChanger = false;                       // Multi-disc changer mechanism
-	int loadingMechanism = 0;                     // 0=caddy, 1=tray, 2=popup, 3=changer, 5=slot
+	int loadingMechanism = 0;                     // 0=caddy, 1=tray, 2=popup, 4/5=changer
 
 	// ── Performance info ──
 	int maxReadSpeedKB = 0;                       // Maximum read speed in KB/s
@@ -163,6 +165,7 @@ struct DriveCapabilities {
 
 	// ── Current media info ──
 	bool mediaPresent = false;                    // Whether a disc is currently loaded
+	WORD currentMediaProfile = 0;                 // MMC profile code (e.g. 0008h CD-ROM)
 	std::string currentMediaType;                 // Detected media type string
 };
 

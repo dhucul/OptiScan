@@ -7,6 +7,7 @@
 #include "OptiScanWorkflowHost.h"
 
 #include "AccessibleAnnounce.h"
+#include "Drive.h"
 #include "FileUtils.h"
 #include "FontLoader.h"
 #include "GuiInput.h"
@@ -744,7 +745,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                             // advertised "1 prescan" while landing on the drive
                                             // that actually holds the disc.
                                             if (needsAudio) {
-                                                ReselectSourceDriveIfMultiple();
+                                                if (!ReselectSourceDriveIfMultiple()) {
+                                                    Console::Info("Batch cancelled during drive selection.\n");
+                                                    return;
+                                                }
                                                 RefreshDisc();
                                             } else {
                                                 Prescan();
@@ -813,9 +817,25 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                         // the departed disc's track layout. Confirm the medium is
                                         // still there and stop the batch if it isn't.
                                         else if (ButtonNeedsPrescan(choice - 1)) {
+											// A prior write/erase step may have switched to a burner or
+											// replaced the medium and invalidated the shared source TOC.
+											// Re-acquire the audio source instead of applying stale track
+											// boundaries to the burner/blank.
+											if (!g_hasTOC) {
+												if (!ReselectSourceDriveIfMultiple()) {
+													batchEnd = BatchEnd::Cancelled;
+													break;
+												}
+												RefreshDisc();
+												if (!g_hasTOC) {
+													Console::Error("No valid source TOC is available for this batch step.\n");
+													batchEnd = BatchEnd::DiscGone;
+													break;
+												}
+											}
                                             DriveHealthCheck media;
-                                            if (g_copier.GetDriveRef().GetMediaStatus(media) &&
-                                                !media.mediaPresent) {
+											if (!g_copier.GetDriveRef().GetMediaStatus(media) ||
+												!media.mediaPresent) {
                                                 Console::Error(
                                                     "Disc is no longer in the drive this batch "
                                                     "started on.\n");
@@ -826,6 +846,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                                 break;
                                             }
                                         }
+                                        if (batchOpId != 25 && ButtonNeedsDrive(choice - 1))
+                                            PrintDriveIdentity(g_audioDrive);
                                         int stepStatus =
                                             DispatchMenuChoice(g_copier, g_disc, g_workDir,
                                                                g_audioDrive, g_hasTOC,
@@ -962,11 +984,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                                 // on it back-to-back so g_audioDrive and the open
                                                 // handle never diverge. RefreshDisc has its own
                                                 // interrupt checks during the TOC retry loop.
-                                                ReselectSourceDriveIfMultiple();
+                                                if (!ReselectSourceDriveIfMultiple()) return;
                                                 RefreshDisc();
                                             }
                                             if (g_interrupt.IsInterrupted()) return;
                                         }
+                                        // A fresh open announced the hardware before its TOC/
+                                        // pregap scan. Reused handles still need a per-item line.
+                                        if (!freshlyScanned)
+                                            PrintDriveIdentity(g_audioDrive);
                                         DispatchMenuChoice(g_copier, g_disc, g_workDir,
                                                            g_audioDrive, g_hasTOC, choice);
                                     }

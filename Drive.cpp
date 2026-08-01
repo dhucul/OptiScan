@@ -7,6 +7,7 @@
 #include <winioctl.h>
 #include <ntddcdrm.h>
 #include <chrono>
+#include <cstddef>
 
 HANDLE OpenDriveHandle(wchar_t letter) {
 	std::wstring devPath = L"\\\\.\\" + std::wstring(1, letter) + L":";
@@ -27,11 +28,16 @@ std::string GetDriveName(HANDLE h) {
 	}
 
 	auto* desc = reinterpret_cast<STORAGE_DEVICE_DESCRIPTOR*>(buffer);
+	if (ret < offsetof(STORAGE_DEVICE_DESCRIPTOR, RawDeviceProperties))
+		return "CD/DVD drive";
 	std::string name;
 
+	const size_t responseBytes = (std::min)(static_cast<size_t>(ret), sizeof(buffer));
 	auto appendTrimmed = [&](DWORD offset) {
-		if (offset && buffer[offset]) {
-			std::string part = reinterpret_cast<char*>(buffer + offset);
+		if (offset && offset < responseBytes && buffer[offset]) {
+			const char* text = reinterpret_cast<const char*>(buffer + offset);
+			const size_t maxLength = responseBytes - offset;
+			std::string part(text, strnlen_s(text, maxLength));
 			while (!part.empty() && part.back() == ' ')
 				part.pop_back();
 			if (!part.empty()) {
@@ -45,6 +51,29 @@ std::string GetDriveName(HANDLE h) {
 	appendTrimmed(desc->ProductIdOffset);
 
 	return name.empty() ? "CD/DVD drive" : name;
+}
+
+std::string GetDriveDisplayName(wchar_t letter) {
+	HANDLE h = OpenDriveHandle(letter);
+	if (h == INVALID_HANDLE_VALUE)
+		return "CD/DVD drive";
+	std::string name = GetDriveName(h);
+	CloseHandle(h);
+	return name;
+}
+
+void PrintDriveIdentity(wchar_t letter, const char* action) {
+	if (!letter) return;
+	// Submit the entire announcement as one GUI-sink write. Splitting the
+	// prefix, coloured letter, and model across several writes could leave only
+	// the final "[G:] model" fragment visible when the worker completed quickly.
+	std::string line = action ? action : "Using drive";
+	line += " [";
+	line += static_cast<char>(letter);
+	line += ":] ";
+	line += GetDriveDisplayName(letter);
+	line += "\n";
+	Console::Info(line.c_str());
 }
 
 // IOCTL_STORAGE_CHECK_VERIFY reports two transient conditions that are *not*
@@ -86,7 +115,18 @@ int GetAudioTrackCount(HANDLE h, int notReadyWaitMs) {
 	if (!DeviceIoControl(h, IOCTL_CDROM_READ_TOC, nullptr, 0, &toc, sizeof(toc), &ret, nullptr))
 		return -2;
 
+	constexpr size_t tocHeaderBytes = offsetof(CDROM_TOC, TrackData);
+	const size_t returnedBytes = (std::min)(static_cast<size_t>(ret), sizeof(toc));
+	if (returnedBytes < tocHeaderBytes || toc.FirstTrack < 1 ||
+		toc.LastTrack < toc.FirstTrack)
+		return -2;
 	int n = toc.LastTrack - toc.FirstTrack + 1;
+	const size_t availableTracks = (returnedBytes - tocHeaderBytes) /
+		sizeof(toc.TrackData[0]);
+	const size_t trackCapacity = sizeof(toc.TrackData) / sizeof(toc.TrackData[0]);
+	if (n <= 0 || static_cast<size_t>(n) > availableTracks ||
+		static_cast<size_t>(n) > trackCapacity)
+		return -2;
 	int audioTracks = 0;
 	for (int i = 0; i < n; i++) {
 		if ((toc.TrackData[i].Control & AUDIO_TRACK_MASK) == 0) audioTracks++;
@@ -269,9 +309,10 @@ std::vector<wchar_t> ScanDrives(std::vector<wchar_t>& audioDrives, bool verbose)
 }
 
 wchar_t WaitForDisc(const std::vector<wchar_t>& cdDrives, int timeoutSeconds) {
-	Console::Warning("\nNo audio CD detected. Insert disc or enter drive letter (ESC to cancel, Enter to wait): ");
+	Console::Warning("\nNo audio CD detected. Insert an audio CD; use Cancel or ESC to stop waiting.\n");
 
-	// Show available drive letters so the user knows what to type
+	// Show the drive letters being polled so the user knows where a disc can
+	// be inserted. Cancellation is handled by the modal Cancel action or ESC.
 	std::cout << "\n  Available drives: ";
 	for (size_t i = 0; i < cdDrives.size(); i++) {
 		if (i > 0) std::cout << ", ";
@@ -299,7 +340,7 @@ wchar_t WaitForDisc(const std::vector<wchar_t>& cdDrives, int timeoutSeconds) {
 			}
 		}
 
-		if (g_interrupt.IsInterrupted()) {
+		if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
 			Console::Warning("\nInterrupted.\n");
 			return 0;
 		}

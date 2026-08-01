@@ -275,8 +275,12 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstring& /
 		}
 		int len = MultiByteToWideChar(CP_UTF8, 0, title.c_str(), -1, nullptr, 0);
 		if (len > 1) {
-			std::wstring wideTitle(static_cast<size_t>(len - 1), L'\0');
-			MultiByteToWideChar(CP_UTF8, 0, title.c_str(), -1, &wideTitle[0], len);
+			std::wstring wideTitle(static_cast<size_t>(len), L'\0');
+			if (MultiByteToWideChar(CP_UTF8, 0, title.c_str(), -1,
+				wideTitle.data(), len) != len)
+				wideTitle.clear();
+			else
+				wideTitle.pop_back();
 			std::wstring sanitized = SanitizeFilename(wideTitle);
 			if (!sanitized.empty()) defaultName = sanitized;
 		}
@@ -642,7 +646,8 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstring& /
 }
 
 void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,
-	wchar_t& audioDrive) {
+	wchar_t& audioDrive, bool* outCompleted) {
+	if (outCompleted) *outCompleted = false;
 	// ── Burner drive selection ──────────────────────────────────────
 	// The drive opened at startup is the audio-source drive — likely not the
 	// burner. Let the user pick which CD/DVD drive to write with, defaulting
@@ -678,8 +683,7 @@ void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 				return;
 			}
 			audioDrive = pick;
-			Console::Info("Using drive ");
-			std::cout << static_cast<char>(audioDrive) << ":\n";
+			PrintDriveIdentity(audioDrive);
 		}
 
 		// Make sure media is loaded before going further — picking the burner
@@ -703,8 +707,8 @@ void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 	// ── FIX #4: Early check — verify drive supports writing ─────────
 	DriveCapabilities caps;
 	if (copier.DetectDriveCapabilities(caps)) {
-		if (caps.maxWriteSpeedKB == 0) {
-			Console::Error("Drive does not support disc writing\n");
+		if (!(caps.writesCDR || caps.writesCDRW)) {
+			Console::Error("Drive does not support CD-R/CD-RW writing\n");
 			return;
 		}
 	}
@@ -784,9 +788,10 @@ void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 				"2. Full erase (thorough)",
 				1, 2, 1, &eraseOk);
 			if (!eraseOk) { Console::Info("Cancelled\n"); return; }
-				int speed = copier.SelectWriteSpeed();
+			int speed = copier.SelectWriteSpeed();
 			if (speed == -1) return;
-			copier.BlankRewritableDisk(speed, eraseType == 1);
+			const bool erased = copier.BlankRewritableDisk(speed, eraseType == 1);
+			if (outCompleted) *outCompleted = erased;
 			return;
 		}
 
@@ -922,6 +927,7 @@ void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 	if (plxVariRecOn) copier.GetDriveRef().SetVariRecCD(false, 0);
 
 	if (writeOk) {
+		if (outCompleted) *outCompleted = true;
 		Console::Success(plxTestWrite
 			? "Test write completed successfully (no data burned)\n"
 			: "Disc write completed successfully\n");

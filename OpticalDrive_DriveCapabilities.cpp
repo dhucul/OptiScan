@@ -1,5 +1,6 @@
 ﻿#define NOMINMAX
 #include "OpticalDrive.h"
+#include "DriveCapabilityParsing.h"
 #include "PioneerVendor.h"
 #include <iostream>
 #include <iomanip>
@@ -76,6 +77,28 @@ void OpticalDrive::PrintDriveCharacterization(const DriveCharacterization& resul
 
 void OpticalDrive::PrintDriveCapabilities(const DriveCapabilities& caps) {
 	auto yn = [](bool v) -> const char* { return v ? "YES" : "NO"; };
+	auto activeResult = [&](bool value) -> const char* {
+		return caps.activeCDReadProbesPerformed ? yn(value) : "NOT TESTED (load audio CD)";
+	};
+	auto speedBase = [](WORD profile) {
+		if (DriveCapabilityParsing::IsWritableBDProfile(profile)) return 4495;
+		if (DriveCapabilityParsing::IsWritableDVDProfile(profile)) return 1385;
+		if (profile == 0x0009 || profile == 0x000A ||
+			profile == 0x0021 || profile == 0x0022)
+			return static_cast<int>(CD_SPEED_1X);
+		return 0;
+	};
+	auto speedFamily = [](WORD profile) -> const char* {
+		if (DriveCapabilityParsing::IsWritableBDProfile(profile)) return "BD";
+		if (DriveCapabilityParsing::IsWritableDVDProfile(profile)) return "DVD";
+		if (profile == 0x0009 || profile == 0x000A ||
+			profile == 0x0021 || profile == 0x0022)
+			return "CD";
+		return nullptr;
+	};
+	auto speedX = [](int kbps, int base) {
+		return base > 0 ? (kbps + base / 2) / base : 0;
+	};
 
 	std::cout << "\n" << std::string(60, '=') << "\n";
 	std::cout << "              DRIVE CAPABILITIES REPORT\n";
@@ -87,21 +110,35 @@ void OpticalDrive::PrintDriveCapabilities(const DriveCapabilities& caps) {
 	std::cout << "  Model:           " << caps.model << "\n";
 	std::cout << "  Firmware:        " << (caps.firmware.empty() ? "(unknown)" : caps.firmware) << "\n";
 	std::cout << "  Serial Number:   " << (caps.serialNumber.empty() ? "(not reported)" : caps.serialNumber) << "\n";
+	std::cout << "  Media Present:   " << yn(caps.mediaPresent) << "\n";
+	std::cout << "  Current Media:   " << (caps.currentMediaType.empty() ? "Unknown" : caps.currentMediaType);
+	if (caps.currentMediaProfile != 0)
+		std::cout << " (profile 0x" << std::hex << std::uppercase << std::setw(4)
+			<< std::setfill('0') << caps.currentMediaProfile << std::dec
+			<< std::nouppercase << std::setfill(' ') << ")";
+	std::cout << "\n";
 
 	// --- Core Ripping Capabilities ---
 	std::cout << "\n--- Core Ripping Capabilities ---\n";
 	std::cout << "  CD-DA Extraction:      " << yn(caps.supportsCDDA) << "\n";
 	std::cout << "  Accurate Stream:       " << yn(caps.supportsAccurateStream) << "\n";
-	std::cout << "  C2 Error Reporting:    " << yn(caps.supportsC2ErrorReporting) << "\n";
-	std::cout << "  Raw Read:              " << yn(caps.supportsRawRead) << "\n";
+	std::cout << "  C2 Error Reporting:    " << yn(caps.supportsC2ErrorReporting);
+	if (!caps.activeCDReadProbesPerformed && caps.supportsC2ErrorReporting)
+		std::cout << " (advertised; not media-tested)";
+	std::cout << "\n";
+	std::cout << "  READ CD / Raw Read:    " << yn(caps.supportsRawRead);
+	if (!caps.activeCDReadProbesPerformed && caps.supportsRawRead)
+		std::cout << " (advertised; not media-tested)";
+	std::cout << "\n";
 	std::cout << "  CD-TEXT Reading:       " << yn(caps.supportsCDText) << "\n";
 
 	// --- Subchannel & Overread ---
 	std::cout << "\n--- Subchannel & Overread ---\n";
 	std::cout << "  Raw Subchannel:        " << yn(caps.supportsSubchannelRaw) << "\n";
-	std::cout << "  Q-Channel:             " << yn(caps.supportsSubchannelQ) << "\n";
-	std::cout << "  Overread Lead-In:      " << yn(caps.supportsOverreadLeadIn) << "\n";
-	std::cout << "  Overread Lead-Out:     " << yn(caps.supportsOverreadLeadOut) << "\n";
+	std::cout << "  Corrected R-W Subch:   " << yn(caps.supportsSubchannelDeinterleaved) << "\n";
+	std::cout << "  Formatted Q-Channel:   " << activeResult(caps.supportsSubchannelQ) << "\n";
+	std::cout << "  Overread Lead-In:      " << activeResult(caps.supportsOverreadLeadIn) << "\n";
+	std::cout << "  Overread Lead-Out:     " << activeResult(caps.supportsOverreadLeadOut) << "\n";
 
 	// --- Media Type Support ---
 	std::cout << "\n--- Media Type Support ---\n";
@@ -111,19 +148,22 @@ void OpticalDrive::PrintDriveCapabilities(const DriveCapabilities& caps) {
 		<< "  BD=" << yn(caps.readsBD) << "\n";
 	std::cout << "  Writes: CD-R=" << yn(caps.writesCDR)
 		<< "  CD-RW=" << yn(caps.writesCDRW)
-		<< "  DVD=" << yn(caps.writesDVD) << "\n";
+		<< "  DVD=" << yn(caps.writesDVD)
+		<< "  DVD-RAM=" << yn(caps.writesDVDRAM)
+		<< "  BD=" << yn(caps.writesBD) << "\n";
 
 	// --- Audio Playback ---
 	std::cout << "\n--- Audio Playback ---\n";
-	std::cout << "  Digital Audio Play:    " << yn(caps.supportsDigitalAudioPlay) << "\n";
+	std::cout << "  Hardware Audio Play:   " << yn(caps.supportsAudioPlay) << "\n";
 	std::cout << "  Separate Volume:       " << yn(caps.supportsSeparateVolume) << "\n";
 	std::cout << "  Separate Mute:         " << yn(caps.supportsSeparateMute) << "\n";
 	std::cout << "  Composite Output:      " << yn(caps.supportsCompositeOutput) << "\n";
 
 	// --- Mechanical Features ---
 	std::cout << "\n--- Mechanical Features ---\n";
-	const char* mechNames[] = { "Caddy", "Tray", "Pop-up", "Changer", "Reserved", "Slot" };
-	const char* mechName = (caps.loadingMechanism >= 0 && caps.loadingMechanism <= 5)
+	const char* mechNames[] = { "Caddy", "Tray", "Pop-up", "Reserved",
+		"Changer (individual)", "Changer (magazine)", "Reserved", "Reserved" };
+	const char* mechName = (caps.loadingMechanism >= 0 && caps.loadingMechanism <= 7)
 		? mechNames[caps.loadingMechanism] : "Unknown";
 	std::cout << "  Loading Mechanism:     " << mechName << "\n";
 	std::cout << "  Eject:                 " << yn(caps.supportsEject) << "\n";
@@ -148,6 +188,8 @@ void OpticalDrive::PrintDriveCapabilities(const DriveCapabilities& caps) {
 		std::cout << "  Buffer Underrun Prot:  " << yn(caps.supportsBufferUnderrunProtection) << "\n";
 		std::cout << "  Write TAO:             " << yn(caps.supportsWriteTAO) << "\n";
 		std::cout << "  Write SAO/DAO:         " << yn(caps.supportsWriteSAO) << "\n";
+		std::cout << "  Write RAW:             " << yn(caps.supportsWriteRAW) << "\n";
+		std::cout << "  Write CD-TEXT:         " << yn(caps.supportsWriteCDText) << "\n";
 	}
 
 	// CD-Text write-path probe -- only meaningful for CD-R writers. Reveals
@@ -162,37 +204,60 @@ void OpticalDrive::PrintDriveCapabilities(const DriveCapabilities& caps) {
 	std::cout << "\n--- Performance ---\n";
 	if (caps.maxReadSpeedKB > 0)
 		std::cout << "  Max Read Speed:        " << caps.maxReadSpeedKB << " KB/s ("
-		<< caps.maxReadSpeedKB / 176 << "x)\n";
+		<< speedX(caps.maxReadSpeedKB, CD_SPEED_1X) << "x CD)\n";
 	if (caps.currentReadSpeedKB > 0)
 		std::cout << "  Current Read Speed:    " << caps.currentReadSpeedKB << " KB/s ("
-		<< caps.currentReadSpeedKB / 176 << "x)\n";
-	if (caps.maxWriteSpeedKB > 0)
-		std::cout << "  Max Write Speed:       " << caps.maxWriteSpeedKB << " KB/s ("
-		<< caps.maxWriteSpeedKB / 176 << "x)\n";
+		<< speedX(caps.currentReadSpeedKB, CD_SPEED_1X) << "x CD)\n";
+	const int writeBase = speedBase(caps.currentMediaProfile);
+	const char* writeFamily = speedFamily(caps.currentMediaProfile);
+	if (caps.maxWriteSpeedKB > 0) {
+		std::cout << "  Max Write Speed:       " << caps.maxWriteSpeedKB << " KB/s";
+		if (writeBase > 0 && writeFamily)
+			std::cout << " (" << speedX(caps.maxWriteSpeedKB, writeBase)
+				<< "x " << writeFamily << ")";
+		else
+			std::cout << " (x-rate unavailable; load writable media)";
+		std::cout << "\n";
+	}
 	else if (canWrite)
 		std::cout << "  Max Write Speed:       (not reported)\n";
 	else
 		std::cout << "  Max Write Speed:       (read-only drive)\n";
-	if (caps.currentWriteSpeedKB > 0)
-		std::cout << "  Current Write Speed:   " << caps.currentWriteSpeedKB << " KB/s ("
-		<< caps.currentWriteSpeedKB / 176 << "x)\n";
+	if (caps.currentWriteSpeedKB > 0) {
+		std::cout << "  Current Write Speed:   " << caps.currentWriteSpeedKB << " KB/s";
+		if (writeBase > 0 && writeFamily)
+			std::cout << " (" << speedX(caps.currentWriteSpeedKB, writeBase)
+				<< "x " << writeFamily << ")";
+		else
+			std::cout << " (x-rate unavailable; load writable media)";
+		std::cout << "\n";
+	}
 	if (caps.bufferSizeKB > 0)
 		std::cout << "  Buffer Size:           " << caps.bufferSizeKB << " KB\n";
 
 	if (!caps.supportedReadSpeeds.empty()) {
-		std::cout << "  Supported Read Speeds: ";
+		std::cout << "  Supported Read Speeds (CD): ";
 		for (size_t i = 0; i < caps.supportedReadSpeeds.size(); i++) {
 			if (i > 0) std::cout << ", ";
-			std::cout << caps.supportedReadSpeeds[i] / 176 << "x";
+			std::cout << speedX(caps.supportedReadSpeeds[i], CD_SPEED_1X) << "x";
 		}
 		std::cout << "\n";
 	}
 
 	if (!caps.supportedWriteSpeeds.empty()) {
-		std::cout << "  Supported Write Speeds:";
+		// Type 03h reports the list appropriate to the mounted medium (or a
+		// drive-selected representative list when no recordable medium exists).
+		// It is not a catalog of every rate for every supported media family.
+		std::cout << "  Reported Write Speeds";
+		if (writeFamily) std::cout << " (" << writeFamily << ")";
+		else std::cout << " (media family unavailable)";
+		std::cout << ": ";
 		for (size_t i = 0; i < caps.supportedWriteSpeeds.size(); i++) {
 			if (i > 0) std::cout << ", ";
-			std::cout << caps.supportedWriteSpeeds[i] / 176 << "x";
+			if (writeBase > 0)
+				std::cout << speedX(caps.supportedWriteSpeeds[i], writeBase) << "x";
+			else
+				std::cout << caps.supportedWriteSpeeds[i] << " KB/s";
 		}
 		std::cout << "\n";
 	}
@@ -221,29 +286,39 @@ void OpticalDrive::PrintDriveCapabilities(const DriveCapabilities& caps) {
 		std::cout << "  [  0] Accurate Stream NOT reported (will need verification reads)\n";
 	}
 
-	// C2 error reporting enables reliable error detection (20 pts)
+	// C2 error reporting enables reliable error detection (20 pts). Feature
+	// 001Eh can advertise this without suitable CD-DA media for an active test.
 	if (caps.supportsC2ErrorReporting) {
 		ratingScore += 20;
-		std::cout << "  [+20] C2 error reporting supported\n";
+		std::cout << "  [+20] C2 error reporting "
+			<< (caps.activeCDReadProbesPerformed ? "verified" : "advertised (media test pending)")
+			<< "\n";
 	}
 	else {
 		std::cout << "  [  0] C2 error reporting NOT supported\n";
 	}
 
-	// Overread lead-in/lead-out allows offset correction at disc edges (5+5 pts)
-	if (caps.supportsOverreadLeadIn) {
-		ratingScore += 5;
-		std::cout << "  [+ 5] Overread into lead-in supported\n";
+	// Overread lead-in/lead-out allows offset correction at disc edges (5+5 pts).
+	// Do not turn an absent/incompatible test disc into a false negative.
+	if (!caps.activeCDReadProbesPerformed) {
+		std::cout << "  [ --] Overread into lead-in NOT TESTED (load audio CD)\n";
+		std::cout << "  [ --] Overread into lead-out NOT TESTED (load audio CD)\n";
 	}
 	else {
-		std::cout << "  [  0] Overread into lead-in NOT supported\n";
-	}
-	if (caps.supportsOverreadLeadOut) {
-		ratingScore += 5;
-		std::cout << "  [+ 5] Overread into lead-out supported\n";
-	}
-	else {
-		std::cout << "  [  0] Overread into lead-out NOT supported\n";
+		if (caps.supportsOverreadLeadIn) {
+			ratingScore += 5;
+			std::cout << "  [+ 5] Overread into lead-in supported\n";
+		}
+		else {
+			std::cout << "  [  0] Overread into lead-in NOT supported\n";
+		}
+		if (caps.supportsOverreadLeadOut) {
+			ratingScore += 5;
+			std::cout << "  [+ 5] Overread into lead-out supported\n";
+		}
+		else {
+			std::cout << "  [  0] Overread into lead-out NOT supported\n";
+		}
 	}
 
 	// Raw read support for sector-level access (5 pts)
@@ -262,7 +337,10 @@ void OpticalDrive::PrintDriveCapabilities(const DriveCapabilities& caps) {
 	}
 	if (caps.supportsSubchannelQ) {
 		ratingScore += 3;
-		std::cout << "  [+ 3] Q-channel de-interleaved read supported\n";
+		std::cout << "  [+ 3] Formatted Q-channel read verified\n";
+	}
+	else if (!caps.activeCDReadProbesPerformed) {
+		std::cout << "  [ --] Formatted Q-channel read NOT TESTED (load audio CD)\n";
 	}
 
 	// Buffer size bonus: larger cache reduces re-read overhead (up to 4 pts)
@@ -300,8 +378,11 @@ void OpticalDrive::PrintDriveCapabilities(const DriveCapabilities& caps) {
 		summary = "Poor -- not recommended for accurate audio extraction.";
 	}
 
-	std::cout << "\n  Score: " << ratingScore << "/" << kMaxScore
+	std::cout << "\n  " << (caps.activeCDReadProbesPerformed ? "Score: " : "Provisional score: ")
+		<< ratingScore << "/" << kMaxScore
 		<< "  Grade: " << grade << "\n";
+	if (!caps.activeCDReadProbesPerformed)
+		std::cout << "  Load an audio CD to test Q-channel and lead-area access.\n";
 	std::cout << "  " << summary << "\n";
 
 	// --- Pioneer vendor features (only on Pioneer drives) ---
@@ -387,18 +468,37 @@ namespace {
 	// drive returns no block descriptor and the page is always at offset 8.
 	// Returns false if the page couldn't be read or the returned page code isn't
 	// 0x05 (i.e. we can't trust the bytes).
-	bool ReadWriteParamsPage(ScsiDrive& drive, BYTE& writeType, BYTE& blockType) {
+	bool ReadWriteParamsPage(ScsiDrive& drive, BYTE& writeType, BYTE& blockType,
+		std::vector<BYTE>* pageSnapshot = nullptr) {
 		BYTE senseCdb[10] = { 0x5A, 0x08, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3C, 0x00 };
 		BYTE buf[60] = { 0 };
 		if (!drive.SendSCSI(senseCdb, sizeof(senseCdb), buf, sizeof(buf), true))
 			return false;
 		WORD bdLen = (static_cast<WORD>(buf[6]) << 8) | buf[7];
 		size_t pageOff = static_cast<size_t>(8) + bdLen;
-		if (pageOff + 4 >= sizeof(buf)) return false;
+		if (pageOff + 5 > sizeof(buf)) return false;
 		if ((buf[pageOff] & 0x3F) != 0x05) return false;   // not the page we asked for
+		const size_t pageBytes = static_cast<size_t>(buf[pageOff + 1]) + 2;
+		if (pageBytes < 5 || pageOff + pageBytes > sizeof(buf)) return false;
 		writeType = buf[pageOff + 2] & 0x0F;
 		blockType = buf[pageOff + 4];
+		if (pageSnapshot)
+			pageSnapshot->assign(buf + pageOff, buf + pageOff + pageBytes);
 		return true;
+	}
+
+	bool RestoreWriteParamsPage(ScsiDrive& drive,
+		const std::vector<BYTE>& pageSnapshot) {
+		if (pageSnapshot.size() < 5 || pageSnapshot.size() > 0xFFFF - 8)
+			return false;
+		std::vector<BYTE> modeData(8 + pageSnapshot.size(), 0);
+		std::copy(pageSnapshot.begin(), pageSnapshot.end(), modeData.begin() + 8);
+		modeData[8] &= 0x7F; // clear PS; saved pages are not requested here
+		const WORD totalLen = static_cast<WORD>(modeData.size());
+		BYTE selectCdb[10] = { 0x55, 0x10, 0, 0, 0, 0, 0,
+			static_cast<BYTE>(totalLen >> 8), static_cast<BYTE>(totalLen), 0 };
+		return drive.SendSCSI(selectCdb, sizeof(selectCdb), modeData.data(),
+			totalLen, false);
 	}
 
 	// MODE SELECT one Write Parameters combination. Returns false (sense in
@@ -449,7 +549,8 @@ void OpticalDrive::ProbeCDTextWritePaths() {
 	drive.WaitForDriveReady(15);
 
 	BYTE defWrite = 0, defBlock = 0;
-	if (!ReadWriteParamsPage(drive, defWrite, defBlock)) {
+	std::vector<BYTE> originalPage;
+	if (!ReadWriteParamsPage(drive, defWrite, defBlock, &originalPage)) {
 		Console::Warning("  Could not read back the Write Parameters page (0x05)\n");
 		std::cout << "    The drive returned no valid page, so write-mode support can't be probed.\n"
 			<< "    Load a blank CD-R and retry; some drives only expose write parameters when\n"
@@ -506,8 +607,11 @@ void OpticalDrive::ProbeCDTextWritePaths() {
 		}
 	}
 
-	// Restore the drive's default audio-only SAO write parameters.
-	{ BYTE sk = 0, asc = 0, ascq = 0; SelectWriteParams(drive, modes[0], sk, asc, ascq); }
+	// Restore the exact page that was active before probing, including flags
+	// unrelated to write/block type. A capability report must not reconfigure
+	// the following burn.
+	if (!RestoreWriteParamsPage(drive, originalPage))
+		Console::Warning("  Could not restore the original Write Parameters page.\n");
 
 	std::cout << "\n  CD-Text verdict: ";
 	if (saoR96r || rawR96r) {

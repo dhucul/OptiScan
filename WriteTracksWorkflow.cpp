@@ -116,13 +116,22 @@ bool ProbeWavFile(const std::wstring& path, TrackSource& ts, std::string& err) {
         if (f.gcount() != 4) break;
 
         if (memcmp(chunkId, "fmt ", 4) == 0) {
+			if (chunkSize < 16 || chunkSize > 1024 * 1024) {
+				err = chunkSize < 16 ? "fmt chunk too small" : "fmt chunk is unreasonably large";
+				return false;
+			}
             std::vector<char> fmtData(chunkSize);
             f.read(fmtData.data(), chunkSize);
-            if (chunkSize < 16) { err = "fmt chunk too small"; return false; }
-            uint16_t audioFmt   = *reinterpret_cast<uint16_t*>(fmtData.data() + 0);
-            uint16_t channels   = *reinterpret_cast<uint16_t*>(fmtData.data() + 2);
-            uint32_t sampleRate = *reinterpret_cast<uint32_t*>(fmtData.data() + 4);
-            uint16_t bps        = *reinterpret_cast<uint16_t*>(fmtData.data() + 14);
+			if (f.gcount() != static_cast<std::streamsize>(chunkSize)) {
+				err = "truncated fmt chunk";
+				return false;
+			}
+			uint16_t audioFmt = 0, channels = 0, bps = 0;
+			uint32_t sampleRate = 0;
+			memcpy(&audioFmt, fmtData.data() + 0, sizeof(audioFmt));
+			memcpy(&channels, fmtData.data() + 2, sizeof(channels));
+			memcpy(&sampleRate, fmtData.data() + 4, sizeof(sampleRate));
+			memcpy(&bps, fmtData.data() + 14, sizeof(bps));
 
             if (audioFmt != 1) { err = "not PCM (compressed WAV unsupported)"; return false; }
             if (channels != 2) { err = "not stereo"; return false; }
@@ -135,7 +144,12 @@ bool ProbeWavFile(const std::wstring& path, TrackSource& ts, std::string& err) {
         }
         else if (memcmp(chunkId, "data", 4) == 0) {
             if (!fmtSeen) { err = "data chunk before fmt chunk"; return false; }
-            ts.dataOffset = static_cast<DWORD>(f.tellg());
+			const std::streamoff dataOffset = f.tellg();
+			if (dataOffset < 0 || static_cast<unsigned long long>(dataOffset) > MAXDWORD) {
+				err = "data chunk offset is out of range";
+				return false;
+			}
+			ts.dataOffset = static_cast<DWORD>(dataOffset);
             ts.dataBytes = chunkSize;
             return true;
         }
@@ -230,8 +244,10 @@ void AppendSilenceSectors(std::vector<std::vector<BYTE>>& sectors, DWORD count) 
 DWORD ComputeMarginSectors(int driveReadOffset) {
     DWORD marginSectors = 2;
     if (driveReadOffset != 0) {
+		const int64_t signedOffset = static_cast<int64_t>(driveReadOffset);
+		const int64_t absoluteOffset = signedOffset < 0 ? -signedOffset : signedOffset;
         DWORD needed = static_cast<DWORD>(
-            (static_cast<int64_t>(std::abs(driveReadOffset)) * 4 + AUDIO_SECTOR_SIZE - 1)
+			(absoluteOffset * 4 + AUDIO_SECTOR_SIZE - 1)
             / AUDIO_SECTOR_SIZE) + 1;
         if (needed > marginSectors) marginSectors = needed;
     }
@@ -446,8 +462,11 @@ bool WriteTempCue(const std::wstring& cuePath, const std::wstring& binFileName,
     {
         int len = WideCharToMultiByte(CP_UTF8, 0, binFileName.c_str(), -1, nullptr, 0, nullptr, nullptr);
         if (len > 0) {
-            narrowBin.resize(len - 1);
-            WideCharToMultiByte(CP_UTF8, 0, binFileName.c_str(), -1, narrowBin.data(), len, nullptr, nullptr);
+			narrowBin.resize(len);
+			if (WideCharToMultiByte(CP_UTF8, 0, binFileName.c_str(), -1,
+				narrowBin.data(), len, nullptr, nullptr) != len)
+				return false;
+			narrowBin.pop_back();
         }
     }
     cue << "FILE \"" << narrowBin << "\" BINARY\n";
@@ -520,7 +539,8 @@ void CleanupSources(std::vector<TrackSource>& sources) {
 }  // namespace
 
 void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
-    const std::wstring& workDir, wchar_t& audioDrive) {
+	const std::wstring& workDir, wchar_t& audioDrive, bool* outCompleted) {
+	if (outCompleted) *outCompleted = false;
 
     Console::Info("\n(Enter 0 at any prompt to go back to menu)\n");
     Console::BoxHeading("How this workflow uses discs");
@@ -602,14 +622,16 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
                 Console::Info(m2);
             }
         }
+        PrintDriveIdentity(burnerDrive, "Selected burner drive");
         if (burnerDrive == audioDrive) {
             // Same drive — confirm it actually supports writing before we
             // commit to all the source-disc reads. (Cross-drive: write-
             // capability is checked after the swap, when we're open on the
             // burner.)
             DriveCapabilities caps;
-            if (copier.DetectDriveCapabilities(caps) && caps.maxWriteSpeedKB == 0) {
-                Console::Error("Drive does not support disc writing.\n");
+            if (copier.DetectDriveCapabilities(caps) &&
+				!(caps.writesCDR || caps.writesCDRW)) {
+				Console::Error("Drive does not support CD-R/CD-RW writing.\n");
                 return;
             }
         }
@@ -709,7 +731,15 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
             return;
         }
 
-        ts.sectorCount = (ts.dataBytes + AUDIO_SECTOR_SIZE - 1) / AUDIO_SECTOR_SIZE;
+		const uint64_t sectorCount =
+			(static_cast<uint64_t>(ts.dataBytes) + AUDIO_SECTOR_SIZE - 1)
+			/ AUDIO_SECTOR_SIZE;
+		if (sectorCount > MAXDWORD) {
+			Console::Error("Track is too large to represent as CD sectors.\n");
+			CleanupSources(sources);
+			return;
+		}
+		ts.sectorCount = static_cast<DWORD>(sectorCount);
 
         const auto& tr = disc.tracks[audioTrackIdx[i]];
         DWORD expectedSectors = (tr.endLBA >= tr.startLBA) ? (tr.endLBA - tr.startLBA + 1) : 0;
@@ -973,6 +1003,7 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
             removeTemps();
             return;
         }
+        PrintDriveIdentity(audioDrive, "Using burner drive");
     }
     else {
         // Different drive — close source drive, open burner, prompt for blank
@@ -996,6 +1027,7 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
             return;
         }
         audioDrive = burnerDrive;
+        PrintDriveIdentity(audioDrive, "Using burner drive");
 
         if (!copier.GetDriveRef().TestUnitReady()) {
             char prompt[200];
@@ -1018,8 +1050,9 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
 
         // Now that we're open on the burner, verify it actually supports writing.
         DriveCapabilities caps;
-        if (copier.DetectDriveCapabilities(caps) && caps.maxWriteSpeedKB == 0) {
-            Console::Error("Selected burner drive does not support disc writing.\n");
+        if (copier.DetectDriveCapabilities(caps) &&
+			!(caps.writesCDR || caps.writesCDRW)) {
+			Console::Error("Selected burner drive does not support CD-R/CD-RW writing.\n");
             removeTemps();
             return;
         }
@@ -1096,8 +1129,9 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
     bool useCal = (calibChoice == 1);
 
     // ── 12. Burn ───────────────────────────────────────────────────────
-    bool ok = copier.WriteDisc(binPath, cuePath, L"", speed, useCal, wasBlanked);
-    if (ok) {
+	bool ok = copier.WriteDisc(binPath, cuePath, L"", speed, useCal, wasBlanked);
+	if (ok) {
+		if (outCompleted) *outCompleted = true;
         Console::Success("Disc write completed successfully.\n");
         Console::Info("Pregap durations from the source disc were preserved (silence).\n");
     }

@@ -41,6 +41,7 @@
     <ClInclude Include="DriveOffsetRecord.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="DriveOffsets.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="DriveSelection.h"><Filter>Header Files</Filter></ClInclude>
+	<ClInclude Include="DriveCapabilityParsing.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="DriveTypes.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Preservation.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="RecoveryCheckpoint.h"><Filter>Header Files</Filter></ClInclude>

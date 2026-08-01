@@ -107,6 +107,7 @@
     <ClInclude Include="DriveOffsetRecord.h" />
     <ClInclude Include="DriveOffsets.h" />
     <ClInclude Include="DriveSelection.h" />
+	<ClInclude Include="DriveCapabilityParsing.h" />
     <ClInclude Include="DriveTypes.h" />
     <ClInclude Include="Preservation.h" />
     <ClInclude Include="RecoveryCheckpoint.h" />

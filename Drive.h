@@ -10,6 +10,14 @@ constexpr DWORD AUDIO_TRACK_MASK = 0x04;
 // Drive information and operations
 HANDLE OpenDriveHandle(wchar_t letter);
 std::string GetDriveName(HANDLE h);
+// Returns the storage-reported vendor/model for a drive letter. The fallback
+// remains explicit so every workflow can still identify the selected letter
+// when Windows refuses a second diagnostic handle.
+std::string GetDriveDisplayName(wchar_t letter);
+// Prints, for example, "Using drive [G:] PIONEER BD-RW BDR-S13U". All
+// drive-dependent menu workflows use this shared form so rescans and internal
+// writer switches cannot fall back to a bare drive letter.
+void PrintDriveIdentity(wchar_t letter, const char* action = "Using drive");
 // Returns the number of audio tracks, -1 for "no disc" and -2 for empty/blank.
 // A freshly seated disc reports neither state cleanly: the storage stack raises
 // a one-shot media-change event and then ERROR_NOT_READY while the disc spins

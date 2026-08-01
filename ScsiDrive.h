@@ -117,6 +117,7 @@ public:
 	// if the re-Open fails.
 	bool Reopen();
 	bool IsOpen() const { return m_handle != INVALID_HANDLE_VALUE; }
+	wchar_t GetDriveLetter() const { return m_driveLetter; }
 
 	// ── Speed control ────────────────────────────────────────
 	void SetSpeed(int multiplier, int writeMultiplier = -1);

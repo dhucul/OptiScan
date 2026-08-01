@@ -1,6 +1,7 @@
 ﻿#define NOMINMAX
 #include "OpticalDrive.h"
 #include "ConsoleColors.h"
+#include "Drive.h"
 #include "WriteDiscInternal.h"
 #include <comdef.h>
 #include <imapi2.h>
@@ -264,31 +265,23 @@ bool OpticalDrive::WriteDiscIMAPI(const std::wstring& binFile,
 	// Per-track LBAs from the parsed cue drive the layout; the overall sector
 	// count is no longer needed here.
 	(void)totalSectors;
+	if (tracks.empty()) {
+		Console::Error("IMAPI2 write has no tracks to write.\n");
+		return false;
+	}
 
 	// ── Resolve drive letter from m_drive before closing it ─────────
-	wchar_t driveLetter = L'\0';
-	for (wchar_t c = L'A'; c <= L'Z'; c++) {
-		ScsiDrive probe;
-		if (!probe.Open(c)) continue;
-
-		std::string vendor, model, ourVendor, ourModel;
-		bool probeOk = probe.GetDriveInfo(vendor, model);
-		bool oursOk = m_drive.GetDriveInfo(ourVendor, ourModel);
-		probe.Close();
-
-		if (probeOk && oursOk && vendor == ourVendor && model == ourModel) {
-			driveLetter = c;
-			break;
-		}
-	}
+	// The selected letter is remembered by ScsiDrive::Open. Re-discovering it
+	// by vendor/model can target the first of two identical drives and burn the
+	// wrong recorder.
+	wchar_t driveLetter = m_drive.GetDriveLetter();
 
 	if (driveLetter == L'\0') {
 		Console::Error("Cannot identify drive letter for IMAPI2\n");
 		return false;
 	}
 
-	Console::Info("Using drive ");
-	std::wcout << driveLetter << L":\n";
+	PrintDriveIdentity(driveLetter);
 
 	// Close SCSI handle so IMAPI2 can get exclusive access
 	m_drive.Close();
@@ -305,9 +298,14 @@ bool OpticalDrive::WriteDiscIMAPI(const std::wstring& binFile,
 		return false;
 	}
 
-	auto cleanup = [&](bool reopenDrive) {
+	auto cleanup = [&](bool reopenDrive) -> bool {
 		if (comOwner) CoUninitialize();
-		if (reopenDrive) m_drive.Open(driveLetter);
+		if (!reopenDrive) return true;
+		if (!m_drive.Open(driveLetter)) {
+			Console::Error("Could not reopen the selected drive after IMAPI2 released it.\n");
+			return false;
+		}
+		return true;
 	};
 
 	ComPtr<IDiscRecorder2> recorder;
@@ -442,8 +440,7 @@ bool OpticalDrive::WriteDiscIMAPI(const std::wstring& binFile,
 								if (kGaplessAudio == VARIANT_FALSE) {
 									Console::Warning("Inter-track pregaps normalized to 2 seconds (drive limitation)\n");
 								}
-								cleanup(true);
-								return true;
+								return cleanup(true);
 							}
 							Console::Warning("IMAPI2 DAO WriteMedia failed (HRESULT: ");
 							std::cout << std::hex << hr << std::dec << ")\n";
@@ -561,6 +558,5 @@ bool OpticalDrive::WriteDiscIMAPI(const std::wstring& binFile,
 
 	Console::Success("IMAPI2 TAO write completed successfully\n");
 	Console::Warning("Note: inter-track gaps are 2 seconds (not original layout)\n");
-	cleanup(true);
-	return true;
+	return cleanup(true);
 }

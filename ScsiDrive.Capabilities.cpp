@@ -2,6 +2,7 @@
 // ScsiDrive.Capabilities.cpp - Capability and feature detection
 // ============================================================================
 #include "ScsiDrive.h"
+#include "DriveCapabilityParsing.h"
 #include <vector>
 #include <algorithm>
 #include <cctype>
@@ -150,26 +151,52 @@ bool ScsiDrive::GetDriveInfo(std::string& vendor, std::string& model) {
 }
 
 bool ScsiDrive::GetModePage2A(std::vector<BYTE>& pageData) {
-	BYTE cdb[10] = {};
-	cdb[0] = 0x5A;
-	cdb[1] = 0x08;  // DBD = 1 — disable block descriptors
-	cdb[2] = 0x2A;
-	cdb[7] = 0x00;
-	cdb[8] = 0xFF;
+	pageData.clear();
 
-	pageData.resize(255, 0);
-	if (!SendSCSI(cdb, 10, pageData.data(), 255)) {
-		BYTE cdb6[6] = {};
-		cdb6[0] = 0x1A;
-		cdb6[1] = 0x08;  // DBD = 1 — disable block descriptors
-		cdb6[2] = 0x2A;
-		cdb6[4] = 0xFF;
-
-		if (!SendSCSI(cdb6, 6, pageData.data(), 255)) {
-			return false;
+	// Return a normalized vector that starts at page byte 0. Remembering which
+	// MODE SENSE form succeeded is essential: guessing from response byte 0
+	// fails when a valid MODE SENSE(10) response is longer than 255 bytes.
+	{
+		static constexpr size_t BUFFER_SIZE = 512;
+		std::vector<BYTE> response(BUFFER_SIZE, 0);
+		BYTE cdb[10] = { 0x5A, 0x08, 0x2A, 0, 0, 0, 0,
+			static_cast<BYTE>(BUFFER_SIZE >> 8), static_cast<BYTE>(BUFFER_SIZE), 0 };
+		if (SendSCSI(cdb, 10, response.data(), static_cast<DWORD>(response.size()))) {
+			const size_t declared = static_cast<size_t>(
+				DriveCapabilityParsing::ReadBE16(response.data())) + 2;
+			const size_t available = (std::min)(response.size(), declared);
+			const size_t pageOffset = 8 + DriveCapabilityParsing::ReadBE16(response.data() + 6);
+			if (pageOffset + 2 <= available
+				&& (response[pageOffset] & 0x3F) == 0x2A) {
+				const size_t pageBytes = static_cast<size_t>(response[pageOffset + 1]) + 2;
+				if (pageOffset + pageBytes <= available) {
+					pageData.assign(response.begin() + pageOffset,
+						response.begin() + pageOffset + pageBytes);
+					return true;
+				}
+			}
 		}
 	}
-	return true;
+
+	// Legacy fallback for drives that implement MODE SENSE(6) only.
+	{
+		static constexpr size_t BUFFER_SIZE = 255;
+		std::vector<BYTE> response(BUFFER_SIZE, 0);
+		BYTE cdb[6] = { 0x1A, 0x08, 0x2A, 0, static_cast<BYTE>(BUFFER_SIZE), 0 };
+		if (!SendSCSI(cdb, 6, response.data(), static_cast<DWORD>(response.size())))
+			return false;
+		const size_t declared = static_cast<size_t>(response[0]) + 1;
+		const size_t available = (std::min)(response.size(), declared);
+		const size_t pageOffset = 4 + response[3];
+		if (pageOffset + 2 > available || (response[pageOffset] & 0x3F) != 0x2A)
+			return false;
+		const size_t pageBytes = static_cast<size_t>(response[pageOffset + 1]) + 2;
+		if (pageOffset + pageBytes > available)
+			return false;
+		pageData.assign(response.begin() + pageOffset,
+			response.begin() + pageOffset + pageBytes);
+		return true;
+	}
 }
 
 bool ScsiDrive::TestOverread(bool leadIn) {
@@ -188,7 +215,10 @@ bool ScsiDrive::TestOverread(bool leadIn) {
 	cdb[9] = 0x10;
 
 	if (leadIn) {
-		DWORD negLBA = static_cast<DWORD>(-150);
+		// The sector immediately before LBA 0 is enough to prove lead-in
+		// overread. Testing -150 instead wrongly rejects drives that expose the
+		// boundary needed for offset correction but not two full lead-in seconds.
+		DWORD negLBA = static_cast<DWORD>(-1);
 		cdb[2] = (negLBA >> 24) & 0xFF;
 		cdb[3] = (negLBA >> 16) & 0xFF;
 		cdb[4] = (negLBA >> 8) & 0xFF;
@@ -196,15 +226,15 @@ bool ScsiDrive::TestOverread(bool leadIn) {
 	}
 	else {
 		// Read actual lead-out LBA from TOC (format 0, track 0xAA)
-		BYTE tocCdb[10] = { 0x43, 0x02, 0, 0, 0, 0, 0xAA, 0, 12, 0 };
+		// Request LBA format. With MSF=1 (the old 0x02 value in byte 1), bytes
+		// 8..11 are 00/MM/SS/FF and cannot be parsed as a 32-bit LBA.
+		BYTE tocCdb[10] = { 0x43, 0x00, 0, 0, 0, 0, 0xAA, 0, 12, 0 };
 		BYTE tocBuf[12] = {};
-		DWORD leadOutLBA = 400000; // fallback
-		if (SendSCSI(tocCdb, 10, tocBuf, 12)) {
-			leadOutLBA = (tocBuf[8] << 24) | (tocBuf[9] << 16) |
-				(tocBuf[10] << 8) | tocBuf[11];
-		}
-		// Test one sector past the lead-out
-		leadOutLBA += 1;
+		if (!SendSCSI(tocCdb, 10, tocBuf, 12))
+			return false;
+		DWORD leadOutLBA = DriveCapabilityParsing::ReadBE32(tocBuf + 8);
+		// The TOC lead-out address is already the first sector beyond program
+		// area; do not skip another sector before testing the boundary.
 		cdb[2] = (leadOutLBA >> 24) & 0xFF;
 		cdb[3] = (leadOutLBA >> 16) & 0xFF;
 		cdb[4] = (leadOutLBA >> 8) & 0xFF;
@@ -234,17 +264,71 @@ bool ScsiDrive::DetectCapabilities(DriveCapabilities& caps) {
 	trimBack(caps.model);
 	trimBack(caps.firmware);
 
+	// GET CONFIGURATION RT=2 returns the requested feature descriptor at byte
+	// 8 and always carries the current profile in header bytes 6-7.
+	auto queryConfiguration = [&](WORD feature, std::vector<BYTE>& response) {
+		static constexpr WORD ALLOCATION_LENGTH = 512;
+		BYTE cdb[10] = { 0x46, 0x02,
+			static_cast<BYTE>(feature >> 8), static_cast<BYTE>(feature),
+			0, 0, 0,
+			static_cast<BYTE>(ALLOCATION_LENGTH >> 8),
+			static_cast<BYTE>(ALLOCATION_LENGTH), 0 };
+		response.assign(ALLOCATION_LENGTH, 0);
+		if (!SendSCSI(cdb, 10, response.data(), ALLOCATION_LENGTH))
+			return false;
+		const uint64_t declared = static_cast<uint64_t>(
+			DriveCapabilityParsing::ReadBE32(response.data())) + 4;
+		response.resize(static_cast<size_t>((std::min<uint64_t>)(
+			declared, response.size())));
+		return response.size() >= 8;
+	};
+
+	auto queryFeature = [&](WORD feature, std::vector<BYTE>& descriptor) {
+		std::vector<BYTE> response;
+		if (!queryConfiguration(feature, response) || response.size() < 12
+			|| DriveCapabilityParsing::ReadBE16(response.data() + 8) != feature)
+			return false;
+		const size_t descriptorBytes = 4 + response[11];
+		if (8 + descriptorBytes > response.size())
+			return false;
+		descriptor.assign(response.begin() + 8,
+			response.begin() + 8 + descriptorBytes);
+		return true;
+	};
+
+	// Feature 0000h is the authoritative, media-independent list of every
+	// profile supported by the drive. It fixes false negatives for DVD+R/RW
+	// and avoids inferring whole-drive capability from only the loaded medium.
+	{
+		std::vector<BYTE> profiles;
+		if (queryConfiguration(0x0000, profiles))
+			DriveCapabilityParsing::ParseProfileListResponse(
+				profiles.data(), profiles.size(), caps);
+	}
+
 	// VPD page 0x80: Unit Serial Number
 	BYTE vpd80Cdb[6] = { 0x12, 0x01, 0x80, 0, 64, 0 };
 	std::vector<BYTE> vpd80Buffer(64, 0);
 	if (SendSCSI(vpd80Cdb, 6, vpd80Buffer.data(), 64)) {
 		// Validate VPD page code to confirm drive actually supports this page
 		if (vpd80Buffer[1] == 0x80) {
-			int len = vpd80Buffer[3];
-			if (len > 0 && len < 60) {
+			const size_t len = DriveCapabilityParsing::ReadBE16(vpd80Buffer.data() + 2);
+			if (len > 0 && len <= vpd80Buffer.size() - 4) {
 				caps.serialNumber = std::string(reinterpret_cast<char*>(&vpd80Buffer[4]), len);
 				trimBack(caps.serialNumber);
 			}
+		}
+	}
+
+	// MMC Feature 0108h is a standard serial-number source on drives that omit
+	// VPD page 80h. Prefer it over transport-specific Windows/ATA fallbacks.
+	if (caps.serialNumber.empty()) {
+		std::vector<BYTE> serialFeature;
+		if (queryFeature(0x0108, serialFeature) && serialFeature.size() > 4) {
+			caps.serialNumber.assign(
+				reinterpret_cast<const char*>(serialFeature.data() + 4),
+				serialFeature.size() - 4);
+			trimBack(caps.serialNumber);
 		}
 	}
 
@@ -260,10 +344,16 @@ bool ScsiDrive::DetectCapabilities(DriveCapabilities& caps) {
 		DWORD ret = 0;
 		if (DeviceIoControl(m_handle, IOCTL_STORAGE_QUERY_PROPERTY,
 			&query, sizeof(query), descBuf, sizeof(descBuf), &ret, nullptr)) {
+			if (ret < offsetof(STORAGE_DEVICE_DESCRIPTOR, RawDeviceProperties))
+				ret = 0;
 			auto* desc = reinterpret_cast<STORAGE_DEVICE_DESCRIPTOR*>(descBuf);
-			if (desc->SerialNumberOffset && desc->SerialNumberOffset < ret
+			if (ret != 0 && desc->SerialNumberOffset && desc->SerialNumberOffset < ret
 				&& descBuf[desc->SerialNumberOffset]) {
-				caps.serialNumber = reinterpret_cast<char*>(descBuf + desc->SerialNumberOffset);
+				const char* serial = reinterpret_cast<const char*>(
+					descBuf + desc->SerialNumberOffset);
+				const size_t maxLength = ret - desc->SerialNumberOffset;
+				const size_t length = strnlen_s(serial, maxLength);
+				caps.serialNumber.assign(serial, length);
 				trimBack(caps.serialNumber);
 			}
 		}
@@ -303,262 +393,52 @@ bool ScsiDrive::DetectCapabilities(DriveCapabilities& caps) {
 
 	// Parse Mode Page 2A (CD/DVD Capabilities and Mechanical Status)
 	std::vector<BYTE> pageData;
-	if (GetModePage2A(pageData)) {
-		if (pageData.size() >= 2) {
-			size_t offset = (pageData[0] == 0) ? 8 : 4;
+	if (GetModePage2A(pageData))
+		DriveCapabilityParsing::ParseModePage2A(
+			pageData.data(), pageData.size(), caps);
 
-			while (offset + 2 < pageData.size()) {
-				if ((pageData[offset] & 0x3F) == 0x2A) {
-					int pageLen = pageData[offset + 1];
-					size_t pageEnd = offset + 2 + pageLen;
-
-					if (pageEnd > pageData.size())
-						break;
-
-					BYTE* page = &pageData[offset];
-
-					if (pageLen >= 4) {
-						// Byte 2: Read capabilities
-						caps.readsCDR = (page[2] & 0x01) != 0;
-						caps.readsCDRW = (page[2] & 0x02) != 0;
-						caps.readsDVD = (page[2] & 0x08) != 0;
-
-						// Byte 3: Write capabilities
-						caps.writesCDR = (page[3] & 0x01) != 0;
-						caps.writesCDRW = (page[3] & 0x02) != 0;
-						caps.supportsTestWrite = (page[3] & 0x04) != 0;
-						caps.writesDVD = (page[3] & 0x10) != 0;
-						caps.writesDVDRAM = (page[3] & 0x20) != 0;
-					}
-
-					if (pageLen >= 5) {
-						// Byte 4: General device capabilities
-						caps.supportsDigitalAudioPlay = (page[4] & 0x01) != 0;
-						caps.supportsCompositeOutput = (page[4] & 0x02) != 0;
-						caps.supportsMultiSession = (page[4] & 0x40) != 0;
-						caps.supportsBufferUnderrunProtection = (page[4] & 0x80) != 0;
-					}
-
-					if (pageLen >= 6) {
-						// Byte 5: CD-DA / subchannel capabilities
-						caps.supportsCDDA = (page[5] & 0x01) != 0;
-						caps.supportsAccurateStream = (page[5] & 0x02) != 0;
-						caps.supportsSubchannelRaw = (page[5] & 0x04) != 0;
-						caps.supportsSubchannelQ = (page[5] & 0x08) != 0;
-					}
-
-					if (pageLen >= 7) {
-						// Byte 6: Mechanical capabilities
-						caps.supportsLockMedia = (page[6] & 0x01) != 0;
-						caps.supportsEject = (page[6] & 0x08) != 0;
-						caps.isChanger = (page[6] & 0x10) != 0;
-						caps.loadingMechanism = (page[6] >> 5) & 0x07;
-					}
-
-					if (pageLen >= 8) {
-						// Byte 7: Volume / changer capabilities
-						caps.supportsSeparateVolume = (page[7] & 0x01) != 0;
-						caps.supportsSeparateMute = (page[7] & 0x02) != 0;
-					}
-
-					if (pageLen >= 15) {
-						// Bytes 8-9: Max read speed (kB/s)
-						caps.maxReadSpeedKB = (page[8] << 8) | page[9];
-						// Bytes 12-13: Buffer Size Supported (KB). This is the
-						// drive's DRAM cache size; it feeds the Buffer Size display
-						// and the large-buffer scoring bonus in the accuracy rating
-						// (both of which were dead until this field was populated).
-						caps.bufferSizeKB = (page[12] << 8) | page[13];
-						// Bytes 14-15: Current read speed (kB/s)
-						caps.currentReadSpeedKB = (page[14] << 8) | page[15];
-
-						char dbgStr[256];
-						snprintf(dbgStr, sizeof(dbgStr), "Mode Page 2A: maxReadSpeedKB=%d, currentReadSpeedKB=%d, bufferSizeKB=%d\n",
-							caps.maxReadSpeedKB, caps.currentReadSpeedKB, caps.bufferSizeKB);
-						OutputDebugStringA(dbgStr);
-					}
-
-					if (pageLen >= 28) {
-						// MMC-3+ extended layout: bytes 28-29 contain the
-						// currently selected write speed.
-						caps.currentWriteSpeedKB = (page[28] << 8) | page[29];
-						char dbgStr[256];
-						snprintf(dbgStr, sizeof(dbgStr), "Mode Page 2A: currentWriteSpeedKB=%d\n", caps.currentWriteSpeedKB);
-						OutputDebugStringA(dbgStr);
-					}
-					else if (pageLen >= 20) {
-						// Legacy 20h-byte layout: bytes 20-21 contain the
-						// currently selected write speed.
-						caps.currentWriteSpeedKB = (page[20] << 8) | page[21];
-					}
-
-					// MMC-3+ write-speed descriptors start at byte 32. Bytes
-					// 30-31 contain the descriptor count (not a byte length).
-					if (pageLen >= 30) {
-						int numWsd = (page[30] << 8) | page[31];
-						char dbgStr[256];
-						snprintf(dbgStr, sizeof(dbgStr), "Mode Page 2A: numWsd=%d\n", numWsd);
-						OutputDebugStringA(dbgStr);
-						
-						caps.maxWriteSpeedKB = 0;
-						for (int w = 0; w < numWsd && (32 + w * 4 + 3) < pageLen + 2; w++) {
-							int woff = 32 + w * 4;
-							int wspeed = (page[woff + 2] << 8) | page[woff + 3];
-							if (wspeed > 0) {
-								snprintf(dbgStr, sizeof(dbgStr), "  Mode Page 2A WSD[%d]: speed=%d\n", w, wspeed);
-								OutputDebugStringA(dbgStr);
-								caps.supportedWriteSpeeds.push_back(wspeed);
-								if (wspeed > caps.maxWriteSpeedKB)
-									caps.maxWriteSpeedKB = wspeed;
-							}
-						}
-					}
-
-					break;
-				}
-				offset += 2 + pageData[offset + 1];
-			}
-		}
-	}
-
-	// ----------------------------------------------------------------
-	// GET CONFIGURATION - query write mode features (TAO, SAO, RAW)
-	// ----------------------------------------------------------------
-	// Feature 0x002D: CD Track at Once
-	{
-		std::vector<BYTE> feat;
-		BYTE cdb[10] = { 0x46, 0x02, 0x00, 0x2D, 0, 0, 0, 0x00, 64, 0 };
-		feat.resize(64, 0);
-		if (SendSCSI(cdb, 10, feat.data(), 64)) {
-			int dataLen = (feat[0] << 24) | (feat[1] << 16) | (feat[2] << 8) | feat[3];
-			if (dataLen >= 12) {
-				WORD code = (feat[8] << 8) | feat[9];
-				if (code == 0x002D)
-					caps.supportsWriteTAO = true;
-			}
-		}
-	}
-
-	// Feature 0x002E: CD Mastering (SAO/DAO)
-	{
-		std::vector<BYTE> feat;
-		BYTE cdb[10] = { 0x46, 0x02, 0x00, 0x2E, 0, 0, 0, 0x00, 64, 0 };
-		feat.resize(64, 0);
-		if (SendSCSI(cdb, 10, feat.data(), 64)) {
-			int dataLen = (feat[0] << 24) | (feat[1] << 16) | (feat[2] << 8) | feat[3];
-			if (dataLen >= 12) {
-				WORD code = (feat[8] << 8) | feat[9];
-				if (code == 0x002E) {
-					caps.supportsWriteSAO = true;
-					// Bit 0: R-W sub-code in lead-in (CD-Text write support)
-					caps.supportsWriteCDText = (feat[12] & 0x01) != 0;
-				}
-			}
-		}
-	}
-
-	// Feature 0x0001: Core Feature — check current profile for BD
-	{
-		std::vector<BYTE> feat;
-		BYTE cdb[10] = { 0x46, 0x02, 0x00, 0x01, 0, 0, 0, 0x00, 64, 0 };
-		feat.resize(64, 0);
-		if (SendSCSI(cdb, 10, feat.data(), 64)) {
-			WORD currentProfile = (feat[6] << 8) | feat[7];
-			if (currentProfile >= 0x0040 && currentProfile <= 0x004F) {
-				caps.readsBD = true;
-				// BD-R (0x0041/0x0042) or BD-RE (0x0043) = writable profiles
-				if (currentProfile >= 0x0041)
-					caps.writesBD = true;
-			}
-		}
-	}
-
-	// Feature 0x0040: BD Read — detect BD read capability even without BD media
-	if (!caps.readsBD) {
-		std::vector<BYTE> feat;
-		BYTE cdb[10] = { 0x46, 0x02, 0x00, 0x40, 0, 0, 0, 0x00, 64, 0 };
-		feat.resize(64, 0);
-		if (SendSCSI(cdb, 10, feat.data(), 64)) {
-			int dataLen = (feat[0] << 24) | (feat[1] << 16) | (feat[2] << 8) | feat[3];
-			if (dataLen >= 12) {
-				WORD code = (feat[8] << 8) | feat[9];
-				if (code == 0x0040)
-					caps.readsBD = true;
-			}
-		}
-	}
-
-	// Feature 0x0041: BD Write — detect BD write capability even without BD media
-	if (!caps.writesBD) {
-		std::vector<BYTE> feat;
-		BYTE cdb[10] = { 0x46, 0x02, 0x00, 0x41, 0, 0, 0, 0x00, 64, 0 };
-		feat.resize(64, 0);
-		if (SendSCSI(cdb, 10, feat.data(), 64)) {
-			int dataLen = (feat[0] << 24) | (feat[1] << 16) | (feat[2] << 8) | feat[3];
-			if (dataLen >= 12) {
-				WORD code = (feat[8] << 8) | feat[9];
-				if (code == 0x0041)
-					caps.writesBD = true;
-			}
-		}
-	}
-
-	// Feature 0x0107: CD-RW Media Write (Real-Time Streaming / BUP fallback)
-	// Some drives report BUP here rather than in Mode Page 2A
-	if (!caps.supportsBufferUnderrunProtection) {
-		std::vector<BYTE> feat;
-		BYTE cdb[10] = { 0x46, 0x02, 0x01, 0x07, 0, 0, 0, 0x00, 64, 0 };
-		feat.resize(64, 0);
-		if (SendSCSI(cdb, 10, feat.data(), 64)) {
-			int dataLen = (feat[0] << 24) | (feat[1] << 16) | (feat[2] << 8) | feat[3];
-			if (dataLen >= 12) {
-				WORD code = (feat[8] << 8) | feat[9];
-				if (code == 0x0107)
-					caps.supportsBufferUnderrunProtection = true;
-			}
-		}
+	// GET CONFIGURATION feature descriptors refine the legacy mode page and
+	// expose fields it cannot represent (RAW mastering, CD-Text and BD).
+	// Feature 0107h deliberately is not used as a BUP signal: it means Real
+	// Time Streaming, not buffer-underrun protection.
+	for (WORD feature : { static_cast<WORD>(0x001E), static_cast<WORD>(0x001F),
+		static_cast<WORD>(0x002D), static_cast<WORD>(0x002E),
+		static_cast<WORD>(0x0040), static_cast<WORD>(0x0041) }) {
+		std::vector<BYTE> descriptor;
+		if (queryFeature(feature, descriptor))
+			DriveCapabilityParsing::ApplyFeatureDescriptor(
+				descriptor.data(), descriptor.size(), feature, caps);
 	}
 
 	// ────────────────────────────────────────────────────────────────
 	// GET PERFORMANCE - query supported speeds (Type 0x03)
 	// ────────────────────────────────────────────────────────────────
-	// Type 0x03 returns Write Speed Descriptors (4 bytes each) regardless
-	// of the Write bit in byte 1.  For read speeds we probe with SET CD SPEED.
-	static constexpr int MAX_PERF_DESCRIPTORS = 128;
-	static constexpr int PERF_HEADER_SIZE = 8;
-	static constexpr int SPEED_DESC_SIZE = 4;
-	static constexpr int SPEED_BUFFER_SIZE = PERF_HEADER_SIZE + MAX_PERF_DESCRIPTORS * SPEED_DESC_SIZE;
-
-	auto parseSpeedDescriptors = [&](BYTE* buf, int bufSize, std::vector<int>& out) {
-		if (bufSize < PERF_HEADER_SIZE)
-			return;
-		int dataLen = (buf[0] << 24) | (buf[1] << 16) | (buf[2] << 8) | buf[3];
-		int numDesc = (dataLen - 4) / SPEED_DESC_SIZE;
-		if (numDesc > MAX_PERF_DESCRIPTORS)
-			numDesc = MAX_PERF_DESCRIPTORS;
-		
-		for (int i = 0; i < numDesc; i++) {
-			int off = PERF_HEADER_SIZE + i * SPEED_DESC_SIZE;
-			if (off + SPEED_DESC_SIZE > bufSize)
-				break;
-			BYTE flags = buf[off];
-			int speed = (buf[off + 2] << 8) | buf[off + 3];
-			
-			char dbgStr[128];
-			snprintf(dbgStr, sizeof(dbgStr), "  Descriptor[%d]: flags=0x%02X, speed=%d kB/s\n", i, flags, speed);
-			OutputDebugStringA(dbgStr);
-			
-			if (speed > 0)
-				out.push_back(speed);
-		}
-		};
+	// Type 03h returns 16-byte Write Speed Descriptors; bytes 12..15 carry
+	// the 32-bit kB/s value. For read speeds, probe standard CD requests and
+	// record the actual values the drive reports back.
+	static constexpr WORD MAX_PERF_DESCRIPTORS = 128;
+	static constexpr int SPEED_BUFFER_SIZE = static_cast<int>(
+		DriveCapabilityParsing::GET_PERFORMANCE_HEADER_SIZE
+		+ MAX_PERF_DESCRIPTORS * DriveCapabilityParsing::WRITE_SPEED_DESCRIPTOR_SIZE);
 
 	// ── Read speeds: probe by setting speed and reading back actual ─
 	// Type 0x03 only returns write speed descriptors, so we probe the
 	// drive at standard CD multipliers and record what it actually sets.
-	{
+	if (caps.supportsCDDA) {
 		static const int probeMultipliers[] = { 1, 2, 4, 8, 10, 12, 16, 20, 24, 32, 40, 48, 52 };
-		WORD savedSpeed = m_currentSpeed;
+		WORD savedRead = m_currentSpeed;
+		WORD savedWrite = CD_SPEED_MAX;
+		WORD reportedRead = 0, reportedWrite = 0;
+		if (GetActualSpeed(reportedRead, reportedWrite)) {
+			if (reportedRead > 0 && reportedRead != CD_SPEED_MAX) {
+				savedRead = reportedRead;
+				caps.currentReadSpeedKB = reportedRead;
+			}
+			if (reportedWrite > 0 && reportedWrite != CD_SPEED_MAX) {
+				savedWrite = reportedWrite;
+				caps.currentWriteSpeedKB = reportedWrite;
+			}
+		}
 
 		for (int mult : probeMultipliers) {
 			WORD target = static_cast<WORD>(mult * CD_SPEED_1X);
@@ -568,11 +448,12 @@ bool ScsiDrive::DetectCapabilities(DriveCapabilities& caps) {
 			setCdb[3] = target & 0xFF;
 			setCdb[4] = 0xFF;
 			setCdb[5] = 0xFF;
-			BYTE dummy[4] = {};
-			SendSCSI(setCdb, 12, dummy, 0, false);
+			if (!SendSCSI(setCdb, 12, nullptr, 0, false))
+				continue;
 
 			WORD actualRead = 0, actualWrite = 0;
-			if (GetActualSpeed(actualRead, actualWrite) && actualRead > 0) {
+			if (GetActualSpeed(actualRead, actualWrite)
+				&& actualRead > 0 && actualRead != CD_SPEED_MAX) {
 				char dbgStr[128];
 				snprintf(dbgStr, sizeof(dbgStr), "  Probe %dx: requested=%d, actual=%d kB/s\n",
 					mult, target, actualRead);
@@ -584,27 +465,27 @@ bool ScsiDrive::DetectCapabilities(DriveCapabilities& caps) {
 		// Restore the original speed setting
 		BYTE restoreCdb[12] = {};
 		restoreCdb[0] = SCSI_SET_CD_SPEED;
-		restoreCdb[2] = (savedSpeed >> 8) & 0xFF;
-		restoreCdb[3] = savedSpeed & 0xFF;
-		restoreCdb[4] = 0xFF;
-		restoreCdb[5] = 0xFF;
-		BYTE dummy[4] = {};
-		SendSCSI(restoreCdb, 12, dummy, 0, false);
+		restoreCdb[2] = (savedRead >> 8) & 0xFF;
+		restoreCdb[3] = savedRead & 0xFF;
+		restoreCdb[4] = (savedWrite >> 8) & 0xFF;
+		restoreCdb[5] = savedWrite & 0xFF;
+		SendSCSI(restoreCdb, 12, nullptr, 0, false);
 	}
 
-	// ── Write speeds: Type 0x03, Write=1 ──────────────────────────
-	BYTE wperfCdb[12] = { 0xAC, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0x03, 0 };
-	int allocLen = SPEED_BUFFER_SIZE;
-	wperfCdb[6] = (allocLen >> 24) & 0xFF;
-	wperfCdb[7] = (allocLen >> 16) & 0xFF;
-	wperfCdb[8] = (allocLen >> 8) & 0xFF;
-	wperfCdb[9] = allocLen & 0xFF;
-	std::vector<BYTE> wperfBuffer(SPEED_BUFFER_SIZE, 0);
-	if (SendSCSI(wperfCdb, 12, wperfBuffer.data(), SPEED_BUFFER_SIZE)) {
-		int dataLen = (wperfBuffer[0] << 24) | (wperfBuffer[1] << 16) | (wperfBuffer[2] << 8) | wperfBuffer[3];
-		int numDesc = (dataLen - 4) / SPEED_DESC_SIZE;
-		OutputDebugStringA((std::string("Write speeds: dataLen=") + std::to_string(dataLen) + " numDesc=" + std::to_string(numDesc) + "\n").c_str());
-		parseSpeedDescriptors(wperfBuffer.data(), SPEED_BUFFER_SIZE, caps.supportedWriteSpeeds);
+	// ── Write speeds: GET PERFORMANCE Type 03h ────────────────────
+	// Data Type (byte 1) is reserved for Type 03h, and bytes 8-9 contain a
+	// maximum descriptor count rather than an allocation length.
+	const bool canWrite = caps.writesCDR || caps.writesCDRW || caps.writesDVD
+		|| caps.writesDVDRAM || caps.writesBD;
+	if (canWrite) {
+		BYTE wperfCdb[12] = { 0xAC, 0x00, 0, 0, 0, 0, 0, 0,
+			static_cast<BYTE>(MAX_PERF_DESCRIPTORS >> 8),
+			static_cast<BYTE>(MAX_PERF_DESCRIPTORS), 0x03, 0 };
+		std::vector<BYTE> wperfBuffer(SPEED_BUFFER_SIZE, 0);
+		if (SendSCSI(wperfCdb, 12, wperfBuffer.data(), SPEED_BUFFER_SIZE)) {
+			DriveCapabilityParsing::ParseWriteSpeedDescriptors(
+				wperfBuffer.data(), wperfBuffer.size(), caps.supportedWriteSpeeds);
+		}
 	}
 
 	// Deduplicate and sort (GET PERFORMANCE is the authoritative source)
@@ -615,10 +496,12 @@ bool ScsiDrive::DetectCapabilities(DriveCapabilities& caps) {
 	dedup(caps.supportedReadSpeeds);
 	dedup(caps.supportedWriteSpeeds);
 
-	// Derive max write speed from descriptors if Mode Page 2A didn't report it
-	if (caps.maxWriteSpeedKB == 0 && !caps.supportedWriteSpeeds.empty()) {
-		caps.maxWriteSpeedKB = caps.supportedWriteSpeeds.back();
-	}
+	if (!caps.supportedReadSpeeds.empty())
+		caps.maxReadSpeedKB = (std::max)(caps.maxReadSpeedKB,
+			caps.supportedReadSpeeds.back());
+	if (!caps.supportedWriteSpeeds.empty())
+		caps.maxWriteSpeedKB = (std::max)(caps.maxWriteSpeedKB,
+			caps.supportedWriteSpeeds.back());
 
 	// ── Buffer size fallback: READ BUFFER CAPACITY (0x5C) ────────────
 	// Mode Page 2A byte 12-13 is the usual source, but some drives (and some
@@ -642,87 +525,46 @@ bool ScsiDrive::DetectCapabilities(DriveCapabilities& caps) {
 		}
 	}
 
-	DWORD ret;
-	caps.mediaPresent = DeviceIoControl(m_handle, IOCTL_STORAGE_CHECK_VERIFY,
-		nullptr, 0, nullptr, 0, &ret, nullptr) != 0;
+	DWORD ret = 0;
+	const bool storageReady = m_handle != INVALID_HANDLE_VALUE
+		&& DeviceIoControl(m_handle, IOCTL_STORAGE_CHECK_VERIFY,
+			nullptr, 0, nullptr, 0, &ret, nullptr) != 0;
+	caps.mediaPresent = caps.currentMediaProfile != 0 || storageReady;
+	if (!caps.mediaPresent)
+		caps.currentMediaType = "None";
+	else if (caps.currentMediaType.empty() || caps.currentMediaType == "None")
+		caps.currentMediaType = "Unknown";
 
-	caps.supportsC2ErrorReporting = CheckC2Support();
+	// Media-dependent probes are meaningful only after a CD-DA sector can be
+	// read. Without suitable media, retain standards-advertised capability
+	// flags instead of turning an empty tray into a false "NO" result.
+	const bool mayContainCD = caps.currentMediaProfile == 0
+		|| DriveCapabilityParsing::IsCDProfile(caps.currentMediaProfile);
+	if (caps.mediaPresent && mayContainCD) {
+		BYTE rawBuffer[AUDIO_SECTOR_SIZE] = {};
+		if (ReadCdAudio(0, 1, 0x00, rawBuffer, AUDIO_SECTOR_SIZE)) {
+			caps.activeCDReadProbesPerformed = true;
+			caps.supportsRawRead = true;
+			caps.supportsC2ErrorReporting = CheckC2Support();
 
-	// Probe raw CD-DA read at LBA 0 through the shared helper so the result
-	// agrees with the actual rip path — including the 0xF8->0x10 fallback for
-	// drives (e.g. Hitachi-LG HL-DT-ST) that reject the richer read form. This
-	// also caches the accepted form before the first real read.
-	BYTE rawBuffer[AUDIO_SECTOR_SIZE];
-	caps.supportsRawRead = ReadCdAudio(0, 1, 0x00, rawBuffer, AUDIO_SECTOR_SIZE);
-
-	// Feature 0x001E: CD Read (includes CD-Text read capability)
-	{
-		std::vector<BYTE> feat;
-		BYTE cdb[10] = { 0x46, 0x02, 0x00, 0x1E, 0, 0, 0, 0x00, 64, 0 };
-		feat.resize(64, 0);
-		if (SendSCSI(cdb, 10, feat.data(), 64)) {
-			int dataLen = (feat[0] << 24) | (feat[1] << 16) | (feat[2] << 8) | feat[3];
-			if (dataLen >= 12) {
-				WORD code = (feat[8] << 8) | feat[9];
-				if (code == 0x001E)
-					caps.supportsCDText = (feat[12] & 0x04) != 0;
-			}
+			int qTrack = 0, qIndex = 0;
+			caps.supportsSubchannelQ = ReadSectorQAnyType(0, qTrack, qIndex);
+			caps.supportsOverreadLeadIn = TestOverread(true);
+			caps.supportsOverreadLeadOut = TestOverread(false);
 		}
 
-		// Fallback: probe with READ TOC format 5 (CD-Text)
-		if (!caps.supportsCDText && caps.mediaPresent) {
-			BYTE tocCdb[10] = {};
-			tocCdb[0] = 0x43;
-			tocCdb[2] = 0x05;
-			tocCdb[7] = 0x00;
-			tocCdb[8] = 4;
-			std::vector<BYTE> tocBuf(4, 0);
-			BYTE sk = 0, a = 0, aq = 0;
-			if (SendSCSIWithSense(tocCdb, 10, tocBuf.data(), 4, &sk, &a, &aq)) {
-				caps.supportsCDText = true;
-			}
-			else if (sk != 0x05) {
-				caps.supportsCDText = true;
-			}
-		}
-
-		// Plextor vendor override — these drives always support CD-Text
-		if (!caps.supportsCDText && caps.vendor.find("PLEXTOR") != std::string::npos) {
-			caps.supportsCDText = true;
-		}
-
-		// LiteOn vendor override — most LiteOn drives support CD-Text
-		// The iHAS series and many LiteOn CD/DVD drives support CD-Text reading
-		if (!caps.supportsCDText && 
-			(caps.vendor.find("LITE-ON") != std::string::npos || 
-			 caps.vendor.find("LITEON") != std::string::npos)) {
-			caps.supportsCDText = true;
-		}
-
-		// Optiarc vendor override — Sony NEC Optiarc drives support CD-Text
-		// reading via READ TOC format 5 but often don't advertise it in
-		// Feature 0x001E.
+		// READ TOC format 5 is the command-level fallback when Feature 001Eh
+		// does not advertise CD-Text. Only GOOD/recovered status proves support;
+		// unrelated medium errors must not be converted into a positive result.
 		if (!caps.supportsCDText) {
-			std::string vendorUpper = caps.vendor;
-			std::transform(vendorUpper.begin(), vendorUpper.end(), vendorUpper.begin(), ::toupper);
-			if (vendorUpper.find("OPTIARC") != std::string::npos) {
+			BYTE tocCdb[10] = { 0x43, 0, 0x05, 0, 0, 0, 0, 0, 4, 0 };
+			BYTE tocBuf[4] = {};
+			BYTE sk = 0, asc = 0, ascq = 0;
+			if (SendSCSIWithSense(tocCdb, 10, tocBuf, sizeof(tocBuf),
+				&sk, &asc, &ascq))
 				caps.supportsCDText = true;
-			}
 		}
 	}
-
-	// CD-Text write capability was already extracted from Feature 0x002E
-	// bit 0 (R-W sub-code in lead-in).  Only vendor overrides below.
-
-	// Plextor writers always support CD-Text writing
-	if (!caps.supportsWriteCDText
-		&& caps.vendor.find("PLEXTOR") != std::string::npos
-		&& caps.writesCDR) {
-		caps.supportsWriteCDText = true;
-	}
-
-	caps.supportsOverreadLeadIn = TestOverread(true);
-	caps.supportsOverreadLeadOut = TestOverread(false);
 
 	DriveCharacterization cachedProfile;
 	if (LoadDriveCharacterizationProfile(caps.vendor, caps.model,
@@ -764,7 +606,7 @@ bool ScsiDrive::ProbeC1BlockErrors() {
 
 	// Get actual disc length from TOC to avoid reading past end
 	DWORD discLength = 0;
-	BYTE tocCdb[10] = { 0x43, 0x02, 0, 0, 0, 0, 0xAA, 0, 12, 0 };
+	BYTE tocCdb[10] = { 0x43, 0x00, 0, 0, 0, 0, 0xAA, 0, 12, 0 };
 	BYTE tocBuf[12] = {};
 	if (SendSCSI(tocCdb, 10, tocBuf, 12)) {
 		discLength = (static_cast<DWORD>(tocBuf[8]) << 24) |

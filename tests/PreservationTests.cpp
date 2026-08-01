@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "../AccurateRip.h"
+#include "../DriveCapabilityParsing.h"
 #include "../Preservation.h"
 #include "../RecoveryCheckpoint.h"
 #include <windows.h>
@@ -49,6 +50,18 @@ void PutLe32(BYTE* data, uint32_t value) {
 	data[1] = static_cast<BYTE>(value >> 8);
 	data[2] = static_cast<BYTE>(value >> 16);
 	data[3] = static_cast<BYTE>(value >> 24);
+}
+
+void PutBe16(BYTE* data, uint16_t value) {
+	data[0] = static_cast<BYTE>(value >> 8);
+	data[1] = static_cast<BYTE>(value);
+}
+
+void PutBe32(BYTE* data, uint32_t value) {
+	data[0] = static_cast<BYTE>(value >> 24);
+	data[1] = static_cast<BYTE>(value >> 16);
+	data[2] = static_cast<BYTE>(value >> 8);
+	data[3] = static_cast<BYTE>(value);
 }
 
 std::vector<std::vector<BYTE>> MakeAudioSectors(size_t sectorCount) {
@@ -227,6 +240,132 @@ DiscInfo MakeDisc() {
 int main() {
 	std::cout << std::unitbuf;
 	std::cerr << std::unitbuf;
+
+	// MMC Mode Page 2Ah: exercise the corrected DVD masks, C2/R-W/Q
+	// distinction, changer mechanism values, and speed descriptor offsets.
+	std::vector<BYTE> mode2A(40, 0);
+	mode2A[0] = 0x2A;
+	mode2A[1] = 38;
+	mode2A[2] = 0x20; // DVD-RAM read alone still means the drive reads DVD.
+	mode2A[3] = 0x24; // DVD-RAM write + test write.
+	mode2A[4] = 0xC1; // BUF + multisession + hardware audio play.
+	mode2A[5] = 0x1F; // C2 + corrected R-W + raw R-W + accurate + CD-DA.
+	mode2A[6] = static_cast<BYTE>((4 << 5) | 0x09); // individual changer, eject, lock.
+	mode2A[7] = 0x03;
+	PutBe16(mode2A.data() + 8, 8467);
+	PutBe16(mode2A.data() + 12, 4096);
+	PutBe16(mode2A.data() + 14, 2822);
+	PutBe16(mode2A.data() + 18, 8467);
+	PutBe16(mode2A.data() + 20, 1764);
+	PutBe16(mode2A.data() + 28, 706);
+	PutBe16(mode2A.data() + 30, 2);
+	PutBe16(mode2A.data() + 34, 706);
+	PutBe16(mode2A.data() + 38, 8467);
+	DriveCapabilities modeCaps;
+	Check(DriveCapabilityParsing::ParseModePage2A(
+		mode2A.data(), mode2A.size(), modeCaps),
+		"Mode Page 2Ah parses a normalized complete response");
+	Check(modeCaps.readsDVD && modeCaps.writesDVDRAM,
+		"DVD capability includes the distinct DVD-RAM bits");
+	Check(modeCaps.supportsC2ErrorReporting
+		&& modeCaps.supportsSubchannelRaw
+		&& modeCaps.supportsSubchannelDeinterleaved
+		&& !modeCaps.supportsSubchannelQ,
+		"Mode Page 2Ah does not mislabel corrected R-W as formatted Q");
+	Check(modeCaps.loadingMechanism == 4 && modeCaps.isChanger,
+		"MMC loading mechanism 4 is an individual-disc changer");
+	Check(modeCaps.supportedWriteSpeeds == std::vector<int>({ 706, 8467 }),
+		"Mode Page 2Ah uses its 4-byte write-speed descriptors");
+	Check(modeCaps.maxWriteSpeedKB == 8467 && modeCaps.currentWriteSpeedKB == 706,
+		"Mode Page 2Ah keeps maximum and selected write-speed fields distinct");
+
+	// GET CONFIGURATION Feature 0000h: profile list is the authoritative
+	// whole-drive media capability source, independent of current media.
+	const std::vector<WORD> profileCodes = {
+		0x0008, 0x0009, 0x000A, 0x0010, 0x0011, 0x0012,
+		0x001A, 0x0040, 0x0041, 0x0043
+	};
+	std::vector<BYTE> profileResponse(12 + profileCodes.size() * 4, 0);
+	PutBe32(profileResponse.data(), static_cast<uint32_t>(profileResponse.size() - 4));
+	PutBe16(profileResponse.data() + 6, 0x0008);
+	profileResponse[11] = static_cast<BYTE>(profileCodes.size() * 4);
+	for (size_t i = 0; i < profileCodes.size(); ++i)
+		PutBe16(profileResponse.data() + 12 + i * 4, profileCodes[i]);
+	DriveCapabilities profileCaps;
+	Check(DriveCapabilityParsing::ParseProfileListResponse(
+		profileResponse.data(), profileResponse.size(), profileCaps),
+		"GET CONFIGURATION Profile List parses successfully");
+	Check(profileCaps.currentMediaProfile == 0x0008
+		&& profileCaps.currentMediaType == "CD-ROM",
+		"Current MMC profile identifies loaded media");
+	Check(profileCaps.writesCDR && profileCaps.writesCDRW
+		&& profileCaps.writesDVD && profileCaps.writesDVDRAM
+		&& profileCaps.writesBD && profileCaps.readsBD,
+		"Profile List supplies complete CD, DVD, DVD-RAM, and BD capabilities");
+
+	DriveCapabilities retainedProfileCaps;
+	retainedProfileCaps.currentMediaProfile = 0x0040;
+	retainedProfileCaps.currentMediaType = "BD-ROM";
+	std::vector<BYTE> truncatedProfileResponse = profileResponse;
+	truncatedProfileResponse.resize(13);
+	Check(!DriveCapabilityParsing::ParseProfileListResponse(
+		truncatedProfileResponse.data(), truncatedProfileResponse.size(),
+		retainedProfileCaps),
+		"Truncated Profile List response is rejected");
+	Check(retainedProfileCaps.currentMediaProfile == 0x0040
+		&& retainedProfileCaps.currentMediaType == "BD-ROM",
+		"Rejected Profile List response does not partially replace current media");
+	Check(DriveCapabilityParsing::MediaProfileName(0x001A) == "DVD+RW"
+		&& DriveCapabilityParsing::MediaProfileName(0x0043) == "BD-RE",
+		"MMC profile names preserve plus-format and Blu-ray distinctions");
+
+	// Feature-specific bits: presence of CD Mastering alone does not imply SAO,
+	// and Real-Time Streaming is not a buffer-underrun flag.
+	BYTE cdReadFeature[8] = { 0x00, 0x1E, 0, 4, 0x03, 0, 0, 0 };
+	BYTE taoFeature[8] = { 0x00, 0x2D, 0, 4, 0x44, 0, 0, 0 };
+	BYTE masteringFeature[8] = { 0x00, 0x2E, 0, 4, 0x7D, 0, 0, 0 };
+	DriveCapabilities featureCaps;
+	Check(DriveCapabilityParsing::ApplyFeatureDescriptor(
+		cdReadFeature, sizeof(cdReadFeature), 0x001E, featureCaps)
+		&& featureCaps.supportsRawRead && featureCaps.supportsC2ErrorReporting
+		&& featureCaps.supportsCDText,
+		"CD Read feature uses CD-Text bit 0 and C2 bit 1");
+	Check(DriveCapabilityParsing::ApplyFeatureDescriptor(
+		taoFeature, sizeof(taoFeature), 0x002D, featureCaps)
+		&& featureCaps.supportsWriteTAO && featureCaps.supportsTestWrite
+		&& featureCaps.supportsBufferUnderrunProtection,
+		"TAO feature parses test-write and BUF flags");
+	Check(DriveCapabilityParsing::ApplyFeatureDescriptor(
+		masteringFeature, sizeof(masteringFeature), 0x002E, featureCaps)
+		&& featureCaps.supportsWriteSAO && featureCaps.supportsWriteRAW
+		&& featureCaps.supportsWriteCDText,
+		"CD Mastering feature parses SAO, RAW, and R-W flags");
+
+	// GET PERFORMANCE Type 03h: each descriptor is 16 bytes and the write
+	// speed is the final 32-bit field. 0x7300 in End LBA would display as 167x
+	// if the old 4-byte parser walked into the descriptor interior.
+	const std::vector<int> expectedSpeeds = { 706, 1764, 2822, 4234, 5645, 7056, 8467 };
+	std::vector<BYTE> performance(
+		DriveCapabilityParsing::GET_PERFORMANCE_HEADER_SIZE
+		+ expectedSpeeds.size() * DriveCapabilityParsing::WRITE_SPEED_DESCRIPTOR_SIZE, 0);
+	PutBe32(performance.data(), static_cast<uint32_t>(performance.size() - 4));
+	for (size_t i = 0; i < expectedSpeeds.size(); ++i) {
+		const size_t offset = DriveCapabilityParsing::GET_PERFORMANCE_HEADER_SIZE
+			+ i * DriveCapabilityParsing::WRITE_SPEED_DESCRIPTOR_SIZE;
+		PutBe32(performance.data() + offset + 4, 0x00007300); // not a speed
+		PutBe32(performance.data() + offset + 8, 8467);      // read speed
+		PutBe32(performance.data() + offset + 12,
+			static_cast<uint32_t>(expectedSpeeds[i]));
+	}
+	std::vector<int> parsedSpeeds;
+	Check(DriveCapabilityParsing::ParseWriteSpeedDescriptors(
+		performance.data(), performance.size(), parsedSpeeds)
+		&& parsedSpeeds == expectedSpeeds,
+		"GET PERFORMANCE returns only its 32-bit write-speed fields");
+	Check(std::find(parsedSpeeds.begin(), parsedSpeeds.end(), 0x7300)
+		== parsedSpeeds.end(),
+		"GET PERFORMANCE does not turn End LBA into bogus 167x speed");
+
 	const BYTE crcInput[] = "123456789";
 	Check(PreservationCRC32(crcInput, 9) == 0xCBF43926u,
 		"CRC32 matches the canonical vector");

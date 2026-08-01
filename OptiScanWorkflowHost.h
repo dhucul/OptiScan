@@ -21,6 +21,6 @@ bool ButtonDisablesMenu(int btnIndex);
 bool ButtonNeedsPrescan(int btnIndex);
 void Prescan();
 void RefreshDisc();
-void ReselectSourceDriveIfMultiple();
+bool ReselectSourceDriveIfMultiple();
 int ButtonToMenuChoice(int btnIndex);
 std::vector<int> ParseBatchChoices(const std::string& input);

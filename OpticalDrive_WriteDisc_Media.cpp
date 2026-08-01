@@ -31,6 +31,17 @@ static bool WaitForDriveReady(ScsiDrive& drive, int timeoutSeconds) {
 	return false;
 }
 
+// A successful TUR is not sufficient to prove that an asynchronous BLANK has
+// finished: some drives remain command-ready while blanking in the background.
+// READ DISC INFORMATION status 0 is the completion condition we need.
+static bool DiscInformationReportsBlank(ScsiDrive& drive) {
+	BYTE cmd[10] = { 0x51, 0, 0, 0, 0, 0, 0, 0, 0x22, 0 };
+	BYTE response[34] = {};
+	if (!drive.SendSCSI(cmd, sizeof(cmd), response, sizeof(response), true))
+		return false;
+	return (response[2] & 0x03) == 0x00;
+}
+
 // ============================================================================
 // CheckRewritableDisk - Detect rewritable disc and capacity
 // ============================================================================
@@ -67,21 +78,26 @@ bool OpticalDrive::CheckRewritableDisk(bool& isFull, bool& isRewritable, bool qu
 		if (m_drive.SendSCSI(profileCmd, sizeof(profileCmd), profileResponse, sizeof(profileResponse), true)) {
 			WORD profile = (static_cast<WORD>(profileResponse[6]) << 8) | profileResponse[7];
 			isRewritable = (profile == 0x0A);
-			if (isRewritable)
-				isFull = true;  // always assumes full — even if disc is empty
 
 			// Profile decode also sets the result flags, so run the switch even
 			// when quiet; only the printed line is gated.
 			if (!quiet) Console::Success("Media type detected: ");
 			switch (profile) {
-			case 0x08: if (!quiet) std::cout << "CD-ROM\n"; break;
+			case 0x08:
+				if (!quiet) std::cout << "CD-ROM\n";
+				isFull = true;
+				return true;
 			case 0x09: if (!quiet) std::cout << "CD-R (write-once)\n"; isRewritable = false; break;
 			case 0x0A: if (!quiet) std::cout << "CD-RW (rewritable)\n"; isRewritable = true; break;
 			default:
 				if (!quiet) std::cout << "Unknown (0x" << std::hex << profile << std::dec << ")\n";
-				break;
+				return false;
 			}
-			return true;
+			// GET CONFIGURATION identifies the medium family, not whether a
+			// writable disc is blank, appendable, or complete. Do not invent a
+			// fullness result when READ DISC INFORMATION failed.
+			Console::Warning("Writable media detected, but its blank/full status is unknown.\n");
+			return false;
 		}
 
 		Console::Warning("Could not determine disc type\n");
@@ -172,7 +188,6 @@ bool OpticalDrive::BlankRewritableDisk(int speed, bool quickBlank, bool skipConf
 	auto startTime = std::chrono::steady_clock::now();
 
 	bool blankCompleted = false;
-	bool driveReportsProgress = false;
 	for (int i = 0; i < maxWait; i++) {
 		Sleep(1000);
 
@@ -186,19 +201,14 @@ bool OpticalDrive::BlankRewritableDisk(int speed, bool quickBlank, bool skipConf
 		int drivePct = -1;
 		m_drive.RequestSenseProgress(sk, asc, ascq, drivePct);
 
-		if (drivePct >= 0)
-			driveReportsProgress = true;
-
-		// Only use TUR to detect completion once the drive has reported
-		// progress at least once, or after a few seconds have elapsed.
-		// Some drives return TUR success during background BLANK.
+		// TUR alone cannot prove completion: some drives remain ready during a
+		// background BLANK. Confirm the medium itself reports blank.
 		BYTE testCmd[6] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 		BYTE tsk = 0, tasc = 0, tascq = 0;
-		if ((driveReportsProgress || i >= 3) &&
-			m_drive.SendSCSIWithSense(testCmd, sizeof(testCmd), nullptr, 0,
-				&tsk, &tasc, &tascq, true)) {
+		const bool turReady = m_drive.SendSCSIWithSense(
+			testCmd, sizeof(testCmd), nullptr, 0, &tsk, &tasc, &tascq, true);
+		if (turReady && DiscInformationReportsBlank(m_drive))
 			drivePct = 100;
-		}
 
 		int pct;
 		if (drivePct >= 0) {
@@ -297,15 +307,24 @@ bool OpticalDrive::PerformPowerCalibration() {
 	}
 
 	Console::Info("Waiting for power calibration to complete");
-	for (int i = 0; i < 5; i++) {
-		std::cout << ".";
-		Sleep(1000);
+	bool ready = false;
+	for (int i = 0; i < 60; i++) {
 		if (InterruptHandler::Instance().IsInterrupted()) {
 			Console::Error("\nPower calibration cancelled\n");
 			return false;
 		}
+		if (m_drive.TestUnitReady()) {
+			ready = true;
+			break;
+		}
+		std::cout << "." << std::flush;
+		Sleep(1000);
 	}
 	std::cout << "\n";
+	if (!ready) {
+		Console::Error("Power calibration did not complete within 60 seconds.\n");
+		return false;
+	}
 
 	Console::Success("Power calibration complete\n");
 	return true;
@@ -348,6 +367,7 @@ void BlankDiscStandalone(int speed, int eraseType) {
 		Console::Error("Failed to open drive\n");
 		return;
 	}
+	PrintDriveIdentity(driveLetter);
 
 	if (eraseType == 0) {
 		Console::Error("Invalid erase type specified\n");

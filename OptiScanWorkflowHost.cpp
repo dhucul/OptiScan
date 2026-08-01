@@ -40,7 +40,15 @@ static HWND ModalOwnerForCurrentThread(HWND hOwner) {
 bool EnsureDriveOpen(HWND hOwner, bool* outFreshlyScanned,
                      bool needAudioDisc, bool readToc) {
     if (outFreshlyScanned) *outFreshlyScanned = false;
-    if (g_driveOpen) return true;
+    if (g_driveOpen && g_copier.GetDriveRef().IsOpen()) return true;
+    if (g_driveOpen) {
+        // A lower-level fallback (notably IMAPI) may have released the handle
+        // without being able to reopen it. Do not let the GUI's cached flag
+        // turn that closed handle into a successful EnsureDriveOpen call.
+        g_driveOpen = false;
+        g_hasTOC = false;
+        g_disc = DiscInfo{};
+    }
 
     std::vector<wchar_t> audioDrives;
     // Quiet scan — per-workflow drive pickers will show the list when needed.
@@ -81,11 +89,10 @@ bool EnsureDriveOpen(HWND hOwner, bool* outFreshlyScanned,
     g_driveOpen = true;
     g_workDir = GetWorkingDirectory();
 
-    // Single-line confirmation so the user knows which drive is in use without
-    // a full per-drive scan dump.
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "Using drive %c:\n", static_cast<char>(drive));
-    Console::Info(buf);
+    // Identify the hardware before any open-time TOC or pregap work emits
+    // progress. Otherwise a fresh option (notably Drive capabilities) appears
+    // to start scanning without ever saying which physical drive it selected.
+    PrintDriveIdentity(g_audioDrive);
 
     // Read TOC; failure is non-fatal (some operations don't need it). Skipped
     // entirely when readToc is false (e.g. Erase CD-RW), so the drive opens
@@ -203,14 +210,17 @@ void RefreshDisc() {
     // No known drive letter to reopen — fall back to a same-handle TOC re-read.
     if (!g_audioDrive) { Prescan(); return; }
 
-    Console::Info("Refreshing disc...\n");
+    PrintDriveIdentity(g_audioDrive, "Refreshing disc on drive");
+    // Invalidate before changing the handle. Every failure/cancellation path
+    // then remains safe without relying on each caller to inspect g_hasTOC.
+    g_disc = DiscInfo{};
+    g_hasTOC = false;
     g_copier.Close();
     Sleep(1500);  // let the drive settle / spin up a freshly seated disc
 
     if (!g_copier.Open(g_audioDrive)) {
         Console::Error("Failed to reopen the drive for a disc refresh.\n");
         g_driveOpen = false;
-        g_hasTOC = false;
         return;
     }
 
@@ -223,8 +233,6 @@ void RefreshDisc() {
             // Abandoning the refresh must not leave the *previous* disc's TOC
             // looking current — the drive was just closed and reopened, so the
             // cached DiscInfo describes a disc we can no longer vouch for.
-            g_disc = DiscInfo{};
-            g_hasTOC = false;
             return;
         }
         if (g_copier.ReadTOC(fresh)) { ok = true; break; }
@@ -239,6 +247,7 @@ void RefreshDisc() {
         g_copier.ReadISRC(g_disc);
         g_copier.ReadMCN(g_disc);
     } else {
+        g_disc = DiscInfo{};
         Console::Warning("No TOC found after refresh.\n");
     }
 }
@@ -260,7 +269,7 @@ void RefreshDisc() {
 // holds — so we deliberately don't open the handle here (that would just be an
 // extra open/close that RefreshDisc immediately redoes). ScanDrives can probe
 // the in-use drive because g_copier opens it with FILE_SHARE_READ|WRITE.
-void ReselectSourceDriveIfMultiple() {
+bool ReselectSourceDriveIfMultiple() {
     std::vector<wchar_t> audioDrives;
     // Quiet scan — SelectAudioDrive prints its own numbered list.
     ScanDrives(audioDrives, /*verbose=*/false);
@@ -271,22 +280,21 @@ void ReselectSourceDriveIfMultiple() {
         // detected looked like "the disc didn't refresh" while the workflow
         // quietly re-ran against the drive it was moved out of.
         if (g_audioDrive) {
-            char buf[96];
-            std::snprintf(buf, sizeof(buf),
-                          "No audio disc detected in any drive; staying on %c:.\n",
-                          static_cast<char>(g_audioDrive));
-            Console::Warning(buf);
+            Console::Warning("No audio disc detected in any drive.\n");
+            PrintDriveIdentity(g_audioDrive, "Staying on drive");
         }
-        return;
+        return true;
     }
 
     if (audioDrives.size() == 1) {
         g_audioDrive = audioDrives[0];          // switch if different; same = no-op
-        return;
+        return true;
     }
 
     wchar_t pick = SelectAudioDrive(audioDrives);
-    if (pick) g_audioDrive = pick;              // 0 = cancelled -> keep current
+    if (!pick) return false;
+    g_audioDrive = pick;
+    return true;
 }
 
 // Translate a GUI button index (0-based) to the DispatchMenuChoice case.

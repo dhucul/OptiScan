@@ -117,6 +117,18 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
                        const std::wstring& workDir, wchar_t& audioDrive,
                        bool& hasTOC, int choice) {
 	int dispatchStatus = 0;
+	auto requiresTOC = [](int operation) {
+		switch (operation) {
+		case 3: case 18: case 23: case 25: case 26: case 27: case 31:
+			return false;
+		default:
+			return true;
+		}
+	};
+	if (requiresTOC(choice) && !hasTOC) {
+		Console::Error("This operation requires a disc with a valid TOC.\n");
+		return 1;
+	}
 	{
 		switch (choice) {
 
@@ -146,14 +158,28 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			// ── 3. Write disc ───────────────────────────────────────────
 		case 3:
-			RunWriteDiscWorkflow(copier, workDir, audioDrive);
+		{
+			bool completed = false;
+			RunWriteDiscWorkflow(copier, workDir, audioDrive, &completed);
+			if (!completed) dispatchStatus = 1;
+			// The workflow may switch drives or replace/erase the mounted medium.
+			// Never leave a source TOC associated with the resulting burner handle.
+			disc = DiscInfo{};
+			hasTOC = false;
 			break;
+		}
 
 			// ── 4. Write tracks to disc using current disc's pregaps ────
 		case 4:
 			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
-			RunWriteTracksWorkflow(copier, disc, workDir, audioDrive);
+		{
+			bool completed = false;
+			RunWriteTracksWorkflow(copier, disc, workDir, audioDrive, &completed);
+			if (!completed) dispatchStatus = 1;
+			disc = DiscInfo{};
+			hasTOC = false;
 			break;
+		}
 
 			// ════════════════════════════════════════════════════════════
 			//  Disc Quality
@@ -171,6 +197,10 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					Console::Success("Q-Check scan log saved to: ");
 					std::wcout << logPath << L"\n";
 				}
+				else {
+					Console::Error("Failed to save Q-Check scan log.\n");
+					dispatchStatus = 1;
+				}
 			}
 			else {
 				if (!qcheckResult.supported) {
@@ -184,6 +214,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 				else {
 					Console::Error("Q-Check scan failed.\n");
 				}
+				dispatchStatus = 1;
 			}
 			break;
 		}
@@ -200,9 +231,14 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					Console::Success("C2 scan log saved to: ");
 					std::wcout << logPath << L"\n";
 				}
+				else {
+					Console::Error("Failed to save C2 scan log.\n");
+					dispatchStatus = 1;
+				}
 			}
 			else {
 				Console::Error("C2 scan failed.\n");
+				dispatchStatus = 1;
 			}
 			break;
 		}
@@ -219,9 +255,14 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					Console::Success("BLER log saved to: ");
 					std::wcout << logPath << L"\n";
 				}
+				else {
+					Console::Error("Failed to save BLER log.\n");
+					dispatchStatus = 1;
+				}
 			}
 			else {
 				Console::Error("BLER scan failed.\n");
+				dispatchStatus = 1;
 			}
 			break;
 		}
@@ -238,9 +279,14 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					Console::Success("Disc rot report saved to: ");
 					std::wcout << logPath << L"\n";
 				}
+				else {
+					Console::Error("Failed to save disc rot report.\n");
+					dispatchStatus = 1;
+				}
 			}
 			else {
 				Console::Error("Disc rot scan failed.\n");
+				dispatchStatus = 1;
 			}
 			break;
 		}
@@ -267,7 +313,8 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 				"Enter a value from 2 to 10 (recommended: 3).",
 				2, 10, 3);
 			std::vector<MultiPassResult> results;
-			copier.RunMultiPassVerification(disc, results, passes, speed);
+			if (!copier.RunMultiPassVerification(disc, results, passes, speed))
+				dispatchStatus = 1;
 			break;
 		}
 
@@ -279,6 +326,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			for (const auto& t : disc.tracks) { if (t.isAudio) { hasAudio = true; break; } }
 			if (!hasAudio) {
 				Console::Warning("No audio tracks found on this disc.\n");
+				dispatchStatus = 1;
 				break;
 			}
 
@@ -317,6 +365,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			if (!origOk) {
 				Console::Error("Failed to read original disc.\n");
+				dispatchStatus = 1;
 				break;
 			}
 
@@ -349,11 +398,16 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			copier.Eject();
 			GuiInput::WaitForKey("Please insert the COPIED disc, then click OK.");
 
+			// The mounted medium may now be different. Invalidate the source TOC
+			// before any close/reopen failure can return control to the menu.
+			disc = DiscInfo{};
+			hasTOC = false;
 			copier.Close();
 			Sleep(3000);
 
 			if (!copier.Open(audioDrive)) {
 				Console::Error("Failed to reopen drive.\n");
+				dispatchStatus = 1;
 				break;
 			}
 
@@ -374,6 +428,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			if (!copyTOC) {
 				Console::Error("Failed to read TOC of copied disc.\n");
+				dispatchStatus = 1;
 				break;
 			}
 
@@ -407,6 +462,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			if (!copyOk) {
 				Console::Error("Failed to read copied disc.\n");
+				dispatchStatus = 1;
 				break;
 			}
 
@@ -468,7 +524,8 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			int speed = copier.SelectScanSpeed();
 			if (speed == -1) break;
 			AudioAnalysisResult result;
-			copier.AnalyzeAudioContent(disc, result, speed);
+			if (!copier.AnalyzeAudioContent(disc, result, speed))
+				dispatchStatus = 1;
 			break;
 		}
 
@@ -485,9 +542,11 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					Console::Success("Fingerprint saved to: ");
 					std::wcout << fpPath << L"\n";
 				}
+				else dispatchStatus = 1;
 			}
 			else {
 				Console::Error("Failed to generate disc fingerprint.\n");
+				dispatchStatus = 1;
 			}
 			break;
 		}
@@ -497,7 +556,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
 			int speed = copier.SelectScanSpeed();
 			if (speed == -1) break;
-			copier.CheckLeadAreas(disc, speed);
+			if (!copier.CheckLeadAreas(disc, speed)) dispatchStatus = 1;
 			break;
 		}
 
@@ -519,6 +578,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			}
 			else {
 				Console::Error("Failed to verify subchannel integrity.\n");
+				dispatchStatus = 1;
 			}
 			break;
 		}
@@ -532,6 +592,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			Console::Info("\nVerifying subchannel burn status...\n");
 			if (!copier.VerifySubchannelBurnStatus(disc, burnResult, speed)) {
 				Console::Error("Failed to verify subchannel burn status.\n");
+				dispatchStatus = 1;
 			}
 			break;
 		}
@@ -579,6 +640,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			}
 			else {
 				Console::Error("Failed to query drive capabilities.\n");
+				dispatchStatus = 1;
 			}
 			break;
 		}
@@ -597,6 +659,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			else {
 				Console::Warning("Could not auto-detect offset.\n");
 				Console::Info("Recommendation: Use a test disc or lookup at accuraterip.com/driveoffsets.htm\n");
+				dispatchStatus = 1;
 			}
 			break;
 		}
@@ -616,6 +679,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			}
 			if (testLBAs.empty()) {
 				Console::Warning("No audio tracks found.\n");
+				dispatchStatus = 1;
 				break;
 			}
 
@@ -654,15 +718,17 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					Console::Warning(failMsg.c_str());
 					Console::Warning("Your drive's C2 error reporting may be unreliable.\n");
 					Console::Warning("Consider using BLER scan instead for quality checks.\n");
+					dispatchStatus = 1;
 				}
 			}
+			else dispatchStatus = 1;
 			break;
 		}
 
 			   // ── 21. Speed comparison test ─────────────────────────────
 		case 21: {
 			std::vector<SpeedComparisonResult> results;
-			copier.RunSpeedComparisonTest(disc, results);
+			if (!copier.RunSpeedComparisonTest(disc, results)) dispatchStatus = 1;
 			break;
 		}
 
@@ -675,6 +741,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			}
 			else {
 				Console::Error("Seek time analysis failed.\n");
+				dispatchStatus = 1;
 			}
 			break;
 		}
@@ -688,6 +755,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			}
 			else {
 				Console::Error("Failed to identify drive chipset.\n");
+				dispatchStatus = 1;
 			}
 			break;
 		}
@@ -702,6 +770,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			}
 			else {
 				Console::Error("Disc balance check failed.\n");
+				dispatchStatus = 1;
 			}
 			break;
 		}
@@ -719,6 +788,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			if (newCdDrives.empty()) {
 				Console::Error("No CD/DVD drives found!\n");
+				dispatchStatus = 1;
 				break;
 			}
 
@@ -727,34 +797,43 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			}
 			else if (newAudioDrives.size() > 1) {
 				newAudioDrive = SelectAudioDrive(newAudioDrives);
+				if (!newAudioDrive) {
+					Console::Info("Disc rescan cancelled.\n");
+					dispatchStatus = 1;
+					break;
+				}
 			}
 
 			if (!newAudioDrive) {
 				newAudioDrive = WaitForDisc(newCdDrives, 0);
 				if (!newAudioDrive) {
 					Console::Error("No disc selected.\n");
+					dispatchStatus = 1;
 					break;
 				}
 			}
 
-			if (newAudioDrive != audioDrive) {
-				copier.Close();
-				if (!copier.Open(newAudioDrive)) {
-					Console::Error("Failed to open drive\n");
-					if (!copier.Open(audioDrive)) {
-						Console::Error("Failed to reopen original drive\n");
-						return 1;
-					}
-					break;
+			const bool driveChanged = newAudioDrive != audioDrive;
+			const wchar_t originalDrive = audioDrive;
+			// Always cycle the handle. A same-drive disc replacement can leave the
+			// device/driver cache serving the previous TOC on the existing handle.
+			copier.Close();
+			if (!copier.Open(newAudioDrive)) {
+				Console::Error("Failed to open selected drive\n");
+				if (!originalDrive || !copier.Open(originalDrive)) {
+					Console::Error("Failed to reopen original drive\n");
+					return 1;
 				}
-				audioDrive = newAudioDrive;
-				std::cout << "\nSwitched to drive ";
-				Console::SetColor(Console::Color::Yellow);
-				std::cout << static_cast<char>(audioDrive) << ":";
-				Console::Reset();
-				std::cout << "\n";
+				audioDrive = originalDrive;
+				disc = DiscInfo{};
+				hasTOC = false;
+				dispatchStatus = 1;
+				break;
 			}
+			audioDrive = newAudioDrive;
 
+			PrintDriveIdentity(audioDrive,
+				driveChanged ? "Switched to drive" : "Using drive");
 			Console::Info("Rescanning disc...\n");
 			disc = DiscInfo{};
 			hasTOC = copier.ReadTOC(disc);
@@ -767,6 +846,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 				didTOCScan = hasTOC;
 				if (!hasTOC) {
 					Console::Warning("Disc scan failed. Disc-dependent features will be unavailable.\n");
+					dispatchStatus = 1;
 					break;
 				}
 			}
@@ -825,12 +905,18 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					Console::Success("Jitter log saved to: ");
 					std::wcout << logPath << L"\n";
 				}
+				else {
+					Console::Error("Failed to save jitter scan log.\n");
+					dispatchStatus = 1;
+				}
 			}
 			else if (!jr.supported) {
 				Console::Warning("Jitter scan requires legacy LiteOn 0xDF/0x1B jitter support.\n");
+				dispatchStatus = 1;
 			}
 			else {
 				Console::Error("Jitter scan failed.\n");
+				dispatchStatus = 1;
 			}
 			break;
 		}
@@ -847,12 +933,18 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					Console::Success("FE/TE log saved to: ");
 					std::wcout << logPath << L"\n";
 				}
+				else {
+					Console::Error("Failed to save FE/TE scan log.\n");
+					dispatchStatus = 1;
+				}
 			}
 			else if (!fr.supported) {
 				Console::Warning("FE/TE scan requires LiteOn/MediaTek 0xDF/0x08 servo support.\n");
+				dispatchStatus = 1;
 			}
 			else {
 				Console::Error("FE/TE scan failed.\n");
+				dispatchStatus = 1;
 			}
 			break;
 		}
@@ -893,6 +985,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					ScanDrives(eraseAudioDrives, /*verbose=*/false);
 				if (eraseCdDrives.empty()) {
 					Console::Error("No CD/DVD drives detected.\n");
+					dispatchStatus = 1;
 					break;
 				}
 
@@ -907,7 +1000,9 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					copier.Close();
 					if (!copier.Open(pick)) {
 						Console::Error("Failed to open the selected drive.\n");
-						copier.Open(audioDrive);   // leave the session usable
+						if (!copier.Open(audioDrive))
+							Console::Error("Failed to reopen the original drive.\n");
+						dispatchStatus = 1;
 						break;
 					}
 					audioDrive = pick;
@@ -916,10 +1011,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					hasTOC = false;
 				}
 
-				std::string target = "Erasing in drive ";
-				target += static_cast<char>(audioDrive);
-				target += ":\n";
-				Console::Info(target.c_str());
+				PrintDriveIdentity(audioDrive, "Erasing in drive");
 			}
 
 			bool isFull = false, isRewritable = false, isBlank = false;
@@ -942,6 +1034,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			else if (!isRewritable) {
 				Console::Error("The inserted disc is not rewritable - it cannot be erased.\n");
 				Console::Info("Only CD-RW media can be blanked. CD-R is write-once.\n");
+				dispatchStatus = 1;
 				break;
 			}
 			else if (isBlank) {
@@ -968,11 +1061,15 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			// skipConfirm=true: the Quick/Full choice above (and the force prompt for
 			// an unreadable disc) already confirm this destructive action.
-			copier.BlankRewritableDisk(speed, quickBlank, /*skipConfirm=*/true);
+			const bool erased = copier.BlankRewritableDisk(
+				speed, quickBlank, /*skipConfirm=*/true);
+			if (!erased) dispatchStatus = 1;
 
 			// The disc's contents are gone, so any cached TOC for it is now a
 			// lie. Drop it rather than let a later operation act on a layout
 			// that no longer exists on the medium.
+			// Once BLANK has been submitted, a reported failure can still mean the
+			// medium was partially modified. Its previous TOC is no longer safe.
 			disc = DiscInfo{};
 			hasTOC = false;
 			break;
