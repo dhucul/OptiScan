@@ -318,6 +318,9 @@ int main() {
 	Check(DriveCapabilityParsing::MediaProfileName(0x001A) == "DVD+RW"
 		&& DriveCapabilityParsing::MediaProfileName(0x0043) == "BD-RE",
 		"MMC profile names preserve plus-format and Blu-ray distinctions");
+	Check(DriveCapabilityParsing::WriteSpeedBaseKB(0x0008) == 176
+		&& std::string(DriveCapabilityParsing::WriteSpeedFamilyName(0x0008)) == "CD",
+		"A mounted CD-ROM supplies the CD x-rate base for reported write speeds");
 
 	// Feature-specific bits: presence of CD Mastering alone does not imply SAO,
 	// and Real-Time Streaming is not a buffer-underrun flag.

@@ -80,22 +80,6 @@ void OpticalDrive::PrintDriveCapabilities(const DriveCapabilities& caps) {
 	auto activeResult = [&](bool value) -> const char* {
 		return caps.activeCDReadProbesPerformed ? yn(value) : "NOT TESTED (load audio CD)";
 	};
-	auto speedBase = [](WORD profile) {
-		if (DriveCapabilityParsing::IsWritableBDProfile(profile)) return 4495;
-		if (DriveCapabilityParsing::IsWritableDVDProfile(profile)) return 1385;
-		if (profile == 0x0009 || profile == 0x000A ||
-			profile == 0x0021 || profile == 0x0022)
-			return static_cast<int>(CD_SPEED_1X);
-		return 0;
-	};
-	auto speedFamily = [](WORD profile) -> const char* {
-		if (DriveCapabilityParsing::IsWritableBDProfile(profile)) return "BD";
-		if (DriveCapabilityParsing::IsWritableDVDProfile(profile)) return "DVD";
-		if (profile == 0x0009 || profile == 0x000A ||
-			profile == 0x0021 || profile == 0x0022)
-			return "CD";
-		return nullptr;
-	};
 	auto speedX = [](int kbps, int base) {
 		return base > 0 ? (kbps + base / 2) / base : 0;
 	};
@@ -208,15 +192,20 @@ void OpticalDrive::PrintDriveCapabilities(const DriveCapabilities& caps) {
 	if (caps.currentReadSpeedKB > 0)
 		std::cout << "  Current Read Speed:    " << caps.currentReadSpeedKB << " KB/s ("
 		<< speedX(caps.currentReadSpeedKB, CD_SPEED_1X) << "x CD)\n";
-	const int writeBase = speedBase(caps.currentMediaProfile);
-	const char* writeFamily = speedFamily(caps.currentMediaProfile);
+	const int writeBase = DriveCapabilityParsing::WriteSpeedBaseKB(
+		caps.currentMediaProfile);
+	const char* writeFamily = DriveCapabilityParsing::WriteSpeedFamilyName(
+		caps.currentMediaProfile);
 	if (caps.maxWriteSpeedKB > 0) {
-		std::cout << "  Max Write Speed:       " << caps.maxWriteSpeedKB << " KB/s";
-		if (writeBase > 0 && writeFamily)
-			std::cout << " (" << speedX(caps.maxWriteSpeedKB, writeBase)
-				<< "x " << writeFamily << ")";
-		else
-			std::cout << " (x-rate unavailable; load writable media)";
+		std::cout << "  Max Write Speed:       ";
+		if (writeBase > 0 && writeFamily) {
+			std::cout << speedX(caps.maxWriteSpeedKB, writeBase)
+				<< "x " << writeFamily;
+		}
+		else {
+			std::cout << caps.maxWriteSpeedKB
+				<< " KB/s (x-rate unavailable; load matching media)";
+		}
 		std::cout << "\n";
 	}
 	else if (canWrite)
@@ -224,12 +213,15 @@ void OpticalDrive::PrintDriveCapabilities(const DriveCapabilities& caps) {
 	else
 		std::cout << "  Max Write Speed:       (read-only drive)\n";
 	if (caps.currentWriteSpeedKB > 0) {
-		std::cout << "  Current Write Speed:   " << caps.currentWriteSpeedKB << " KB/s";
-		if (writeBase > 0 && writeFamily)
-			std::cout << " (" << speedX(caps.currentWriteSpeedKB, writeBase)
-				<< "x " << writeFamily << ")";
-		else
-			std::cout << " (x-rate unavailable; load writable media)";
+		std::cout << "  Current Write Speed:   ";
+		if (writeBase > 0 && writeFamily) {
+			std::cout << speedX(caps.currentWriteSpeedKB, writeBase)
+				<< "x " << writeFamily;
+		}
+		else {
+			std::cout << caps.currentWriteSpeedKB
+				<< " KB/s (x-rate unavailable; load matching media)";
+		}
 		std::cout << "\n";
 	}
 	if (caps.bufferSizeKB > 0)

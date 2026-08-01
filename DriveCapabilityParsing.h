@@ -56,6 +56,25 @@ inline bool IsBDProfile(WORD profile) {
 	return profile == 0x0040 || IsWritableBDProfile(profile);
 }
 
+// Convert write-performance values to an x-rate only when the mounted
+// profile identifies the applicable transfer-rate family. A read-only CD-ROM
+// still establishes the CD base for write speeds reported by the recorder.
+inline int WriteSpeedBaseKB(WORD profile) {
+	if (IsWritableBDProfile(profile)) return 4495;
+	if (IsWritableDVDProfile(profile)) return 1385;
+	if (profile == 0x0008 || profile == 0x0009 || profile == 0x000A)
+		return 176;
+	return 0;
+}
+
+inline const char* WriteSpeedFamilyName(WORD profile) {
+	if (IsWritableBDProfile(profile)) return "BD";
+	if (IsWritableDVDProfile(profile)) return "DVD";
+	if (profile == 0x0008 || profile == 0x0009 || profile == 0x000A)
+		return "CD";
+	return nullptr;
+}
+
 inline std::string MediaProfileName(WORD profile) {
 	switch (profile) {
 	case 0x0000: return "None";
