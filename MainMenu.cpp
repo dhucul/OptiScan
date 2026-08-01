@@ -198,8 +198,9 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					std::wcout << logPath << L"\n";
 				}
 				else {
-					Console::Error("Failed to save Q-Check scan log.\n");
-					dispatchStatus = 1;
+					Console::Warning("Q-Check scan completed, but its log could not be saved.\n");
+					Console::Info("Requested path: ");
+					std::wcout << logPath << L"\n";
 				}
 			}
 			else {
@@ -232,8 +233,9 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					std::wcout << logPath << L"\n";
 				}
 				else {
-					Console::Error("Failed to save C2 scan log.\n");
-					dispatchStatus = 1;
+					Console::Warning("C2 scan completed, but its log could not be saved.\n");
+					Console::Info("Requested path: ");
+					std::wcout << logPath << L"\n";
 				}
 			}
 			else {
@@ -256,8 +258,9 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					std::wcout << logPath << L"\n";
 				}
 				else {
-					Console::Error("Failed to save BLER log.\n");
-					dispatchStatus = 1;
+					Console::Warning("BLER scan completed, but its log could not be saved.\n");
+					Console::Info("Requested path: ");
+					std::wcout << logPath << L"\n";
 				}
 			}
 			else {
@@ -280,8 +283,9 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					std::wcout << logPath << L"\n";
 				}
 				else {
-					Console::Error("Failed to save disc rot report.\n");
-					dispatchStatus = 1;
+					Console::Warning("Disc rot scan completed, but its report could not be saved.\n");
+					Console::Info("Requested path: ");
+					std::wcout << logPath << L"\n";
 				}
 			}
 			else {
@@ -542,7 +546,11 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					Console::Success("Fingerprint saved to: ");
 					std::wcout << fpPath << L"\n";
 				}
-				else dispatchStatus = 1;
+				else {
+					Console::Warning("Fingerprint generated, but its report could not be saved.\n");
+					Console::Info("Requested path: ");
+					std::wcout << fpPath << L"\n";
+				}
 			}
 			else {
 				Console::Error("Failed to generate disc fingerprint.\n");
@@ -906,8 +914,9 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					std::wcout << logPath << L"\n";
 				}
 				else {
-					Console::Error("Failed to save jitter scan log.\n");
-					dispatchStatus = 1;
+					Console::Warning("Jitter scan completed, but its log could not be saved.\n");
+					Console::Info("Requested path: ");
+					std::wcout << logPath << L"\n";
 				}
 			}
 			else if (!jr.supported) {
@@ -934,8 +943,9 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					std::wcout << logPath << L"\n";
 				}
 				else {
-					Console::Error("Failed to save FE/TE scan log.\n");
-					dispatchStatus = 1;
+					Console::Warning("FE/TE scan completed, but its log could not be saved.\n");
+					Console::Info("Requested path: ");
+					std::wcout << logPath << L"\n";
 				}
 			}
 			else if (!fr.supported) {

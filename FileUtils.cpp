@@ -1,7 +1,38 @@
 ﻿#include "FileUtils.h"
 #include "ConsoleColors.h"
 #include <windows.h>
+#include <shlobj.h>
 #include <iostream>
+
+namespace {
+
+bool DirectoryIsWritable(const std::wstring& directory) {
+	if (directory.empty()) return false;
+	wchar_t suffix[80] = {};
+	swprintf_s(suffix, L"\\.optiscan-write-test-%lu-%lu.tmp",
+		GetCurrentProcessId(), GetTickCount());
+	const std::wstring probePath = directory + suffix;
+	HANDLE probe = CreateFileW(probePath.c_str(), GENERIC_WRITE, 0, nullptr,
+		CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+	if (probe == INVALID_HANDLE_VALUE) return false;
+	CloseHandle(probe);
+	return true;
+}
+
+std::wstring KnownFolderOutput(REFKNOWNFOLDERID folderId,
+	const wchar_t* childPath) {
+	wchar_t* base = nullptr;
+	if (FAILED(SHGetKnownFolderPath(folderId, KF_FLAG_CREATE, nullptr, &base)))
+		return {};
+	std::wstring path(base);
+	CoTaskMemFree(base);
+	path += childPath;
+	if (!CreateDirectoryRecursive(path) || !DirectoryIsWritable(path))
+		return {};
+	return path;
+}
+
+} // namespace
 
 std::wstring GetWorkingDirectory() {
 	std::wstring dir(MAX_PATH, L'\0');
@@ -15,7 +46,7 @@ std::wstring GetWorkingDirectory() {
 			return L".";
 		}
 		dir.resize(len);
-		return dir;
+		if (DirectoryIsWritable(dir)) return dir;
 	}
 
 	// Fix: Check for truncation immediately (len == size means possible truncation)
@@ -24,13 +55,37 @@ std::wstring GetWorkingDirectory() {
 		len = GetModuleFileNameW(nullptr, &dir[0], static_cast<DWORD>(dir.size()));
 		if (len == 0 || len >= dir.size()) {
 			Console::Warning("Path too long, using current directory\n");
-			return L".";
+			dir.clear();
 		}
 	}
 
-	dir.resize(len);
-	size_t pos = dir.find_last_of(L"\\/");
-	return (pos != std::wstring::npos) ? dir.substr(0, pos) : dir;
+	if (len > 0 && len < dir.size()) {
+		dir.resize(len);
+		size_t pos = dir.find_last_of(L"\\/");
+		if (pos != std::wstring::npos) dir.resize(pos);
+		if (DirectoryIsWritable(dir)) return dir;
+	}
+
+	// Installed builds normally live under Program Files, which is read-only
+	// for a non-elevated user. Keep portable builds writing beside the EXE, but
+	// place installed-build reports in a visible per-user folder.
+	std::wstring output = KnownFolderOutput(FOLDERID_Documents, L"\\OptiScan");
+	if (!output.empty()) return output;
+	output = KnownFolderOutput(FOLDERID_LocalAppData, L"\\OptiScan\\Output");
+	if (!output.empty()) return output;
+
+	wchar_t tempPath[MAX_PATH] = {};
+	DWORD tempLen = GetTempPathW(MAX_PATH, tempPath);
+	if (tempLen > 0 && tempLen < MAX_PATH) {
+		output.assign(tempPath, tempLen);
+		while (!output.empty() && (output.back() == L'\\' || output.back() == L'/'))
+			output.pop_back();
+		output += L"\\OptiScan";
+		if (CreateDirectoryRecursive(output) && DirectoryIsWritable(output))
+			return output;
+	}
+
+	return L".";
 }
 
 bool CreateDirectoryRecursive(const std::wstring& path) {
