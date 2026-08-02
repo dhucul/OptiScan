@@ -10,14 +10,16 @@
 ; ============================================================================
 
 #define MyAppName        "OptiScan"
-#define MyAppVersion      "3.28"
+#define MyAppVersion      "3.29"
 #define MyAppPublisher    "dhucul"
 #define MyAppURL          "https://github.com/dhucul/OptiScan"
 #define MyAppExeName       "OptiScan.exe"
 
 ; Repo root, derived from this script's location (installer\..)
 #define RepoDir           SourcePath + ".."
+#ifndef ReleaseDir
 #define ReleaseDir         RepoDir + "\x64\Release"
+#endif
 
 [Setup]
 ; A unique AppId keeps upgrades/uninstall consistent across versions.

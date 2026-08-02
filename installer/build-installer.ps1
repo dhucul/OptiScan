@@ -14,6 +14,8 @@
 $ErrorActionPreference = 'Stop'
 # This script lives in installer\; the solution is one level up at the repo root.
 Set-Location (Split-Path -Parent $PSScriptRoot)
+$stagingDir = Join-Path $PSScriptRoot 'Release'
+New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
 
 # --- Locate MSBuild via vswhere (portable across VS versions) ---------------
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -32,12 +34,16 @@ if (-not $iscc) { throw "ISCC.exe (Inno Setup 6) not found." }
 
 Write-Host "=== Building Release | x64 ===" -ForegroundColor Cyan
 Write-Host "  MSBuild: $msbuild"
-& $msbuild OptiScan.slnx -p:Configuration=Release -p:Platform=x64 -m -nologo -v:m
+Write-Host "  Staging: $stagingDir"
+# Build away from x64\Release so packaging still works when a developer is
+# running that executable and Windows has it locked against relinking.
+& $msbuild OptiScan.slnx -p:Configuration=Release -p:Platform=x64 `
+    "-p:OutDir=$stagingDir\" -m -nologo -v:m
 if ($LASTEXITCODE -ne 0) { throw "Build failed." }
 
 Write-Host "`n=== Compiling installer ===" -ForegroundColor Cyan
 Write-Host "  ISCC: $iscc"
-& $iscc installer\OptiScan.iss
+& $iscc "/DReleaseDir=$stagingDir" installer\OptiScan.iss
 if ($LASTEXITCODE -ne 0) { throw "Installer compile failed." }
 
 Write-Host "`n=== Done. Installer written to installer\Output\ ===" -ForegroundColor Green
