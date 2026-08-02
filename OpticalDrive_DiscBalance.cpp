@@ -449,7 +449,12 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 			bool cancelled = false;
 			bool communicationLost = false;
 			DWORD firstLBA = 0, lastLBA = 0;
-			for (int i = 0; i < HW_SAMPLES_PER_SPEED + 3; i++) {
+			bool haveFirstLBA = false;
+			DWORD lastReportedLBA = DWORD(-1);
+			int startupSamples = 0;
+			auto lastLBAProgress = std::chrono::steady_clock::now();
+			constexpr auto QCHECK_STALL_TIMEOUT = std::chrono::seconds(30);
+			while (validSamples < HW_SAMPLES_PER_SPEED) {
 				if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
 					cancelled = true;
 					break;
@@ -462,14 +467,44 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 				bool pollOk = hasPioneerHwC1
 					? m_drive.PioneerScanPoll(c1, secondStage, cu, lba, done)
 					: m_drive.LiteOnScanPoll(c1, secondStage, cu, lba, done);
+				if (!pollOk && hasPioneerHwC1) {
+					std::this_thread::sleep_for(std::chrono::milliseconds(200));
+					pollOk = m_drive.PioneerScanPoll(
+						c1, secondStage, cu, lba, done);
+				}
 				if (!pollOk) {
 					communicationLost = true;
 					break;
 				}
-				// Skip first 3 samples — drive reports accumulated startup errors
-				if (i < 3) {
-					if (i == 0) firstLBA = lba;
+
+				if (!hasPioneerHwC1 && lba >= maxLBA)
+					done = true;
+
+				const auto pollTime = std::chrono::steady_clock::now();
+				if (done || lba != lastReportedLBA)
+					lastLBAProgress = pollTime;
+				else if (pollTime - lastLBAProgress >= QCHECK_STALL_TIMEOUT) {
+					communicationLost = true;
+					break;
+				}
+
+				if (!hasPioneerHwC1 && lba == 0 && c1 == 0 &&
+					secondStage == 0 && cu == 0 && !done) {
+					continue;
+				}
+				if (!haveFirstLBA) {
+					firstLBA = lba;
+					haveFirstLBA = true;
+				}
+				if (lba == lastReportedLBA) {
 					if (done) break;
+					continue;
+				}
+				lastReportedLBA = lba;
+
+				// Skip first 3 samples — drive reports accumulated startup errors
+				if (startupSamples < 3 && !done) {
+					startupSamples++;
 					continue;
 				}
 
@@ -491,11 +526,15 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 				validSamples, totalC1, hwSecondStageLabel, totalSecondStage);
 			OutputDebugStringA(dbg);
 
-			// A transport failure invalidates the partial speed bucket. Disc Balance
-			// can still produce a timing-based result, but must not score partial ECC
-			// data as if the hardware sweep completed normally.
-			if (communicationLost) {
+			// A transport failure, stall, or early terminal response invalidates the
+			// partial speed bucket. Disc Balance can still produce a timing-based
+			// result, but must not score incomplete ECC data as a full comparison.
+			if (communicationLost || validSamples < HW_SAMPLES_PER_SPEED) {
 				hwSweepFailed = true;
+				std::cout << "  Hardware ECC sweep at " << speeds[s] << "x "
+					<< (communicationLost ? "lost communication or stalled" : "ended early")
+					<< " after " << validSamples << "/" << HW_SAMPLES_PER_SPEED
+					<< " usable samples; partial bucket discarded.\n";
 				validSamples = 0;
 				totalC1 = 0;
 				totalSecondStage = 0;

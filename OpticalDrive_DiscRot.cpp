@@ -152,8 +152,12 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 			bool scanDone = false;
 			bool c1Cancelled = false;
 			bool c1Failed = false;
+			std::string c1FailureReason;
 			int sampleIndex = 0;
 			DWORD lastReportedLBA = DWORD(-1);
+			auto lastLBAProgress = std::chrono::steady_clock::now();
+			DWORD progressLBA = DWORD(-1);
+			constexpr auto QCHECK_STALL_TIMEOUT = std::chrono::seconds(30);
 
 			ProgressIndicator c1Progress(40);
 			c1Progress.SetLabel("  C1 Scan");
@@ -185,6 +189,37 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 				}
 				if (!pollOk) {
 					c1Failed = true;
+					std::ostringstream reason;
+					reason << "lost communication";
+					if (lastReportedLBA != DWORD(-1)) {
+						const double coverage = c1Result.totalSectors > 0 &&
+							lastReportedLBA >= firstLBA
+							? std::min(100.0,
+								static_cast<double>(lastReportedLBA - firstLBA + 1) *
+								100.0 / c1Result.totalSectors)
+							: 0.0;
+						reason << " at LBA " << lastReportedLBA << " ("
+							<< std::fixed << std::setprecision(1) << coverage
+							<< "% coverage)";
+					}
+					c1FailureReason = reason.str();
+					break;
+				}
+
+				// Match Q-Check's completion ordering: detect LiteOn's positional
+				// end marker before filtering empty, duplicate, or startup samples.
+				if (useLiteOn && currentLBA >= lastLBA)
+					scanDone = true;
+
+				auto pollTime = std::chrono::steady_clock::now();
+				if (scanDone || currentLBA != progressLBA) {
+					progressLBA = currentLBA;
+					lastLBAProgress = pollTime;
+				}
+				else if (pollTime - lastLBAProgress >= QCHECK_STALL_TIMEOUT) {
+					c1Failed = true;
+					c1FailureReason = "stalled for 30 seconds at LBA " +
+						std::to_string(currentLBA);
 					break;
 				}
 				if (!usePioneer && currentLBA == 0 && c1 == 0 && c2 == 0 && cu == 0 && !scanDone) continue;
@@ -192,9 +227,7 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 				lastReportedLBA = currentLBA;
 
 				// Match Q-Check: discard the first 3 startup/seek-settle samples.
-				if (sampleIndex < 3) { sampleIndex++; continue; }
-
-				if (useLiteOn && currentLBA >= lastLBA) scanDone = true;
+				if (sampleIndex < 3 && !scanDone) { sampleIndex++; continue; }
 
 				QCheckSample sample;
 				sample.lba = currentLBA;
@@ -229,12 +262,15 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 				sampleIndex++;
 
 				if (currentLBA >= firstLBA) {
-					int done = static_cast<int>(std::min<DWORD>(currentLBA - firstLBA, totalSectors));
-					c1Progress.Update(done, static_cast<int>(totalSectors));
+					int done = static_cast<int>(std::min<DWORD>(
+						currentLBA - firstLBA + 1, c1Result.totalSectors));
+					c1Progress.Update(done,
+						static_cast<int>(c1Result.totalSectors));
 				}
 			}
 
-			c1Progress.Finish(!c1Cancelled && !c1Failed, static_cast<int>(totalSectors));
+			c1Progress.Finish(!c1Cancelled && !c1Failed,
+				static_cast<int>(c1Result.totalSectors));
 
 			if (usePlextor) m_drive.PlextorQCheckStop();
 			else if (usePioneer) m_drive.PioneerScanStop();
@@ -246,7 +282,8 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 				return false;
 			}
 			if (c1Failed) {
-				std::cout << "  C1 quality scan lost communication; partial samples discarded.\n";
+				std::cout << "  C1 quality scan " << c1FailureReason
+					<< "; partial samples discarded.\n";
 				c1Result.samples.clear();
 			}
 
@@ -584,6 +621,10 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 				Console::DrawBarGraph(e22Buckets, std::max(peakE22, 100), e22Opts,
 					static_cast<DWORD>(c1Result.samples.size()));
 			}
+		}
+		else {
+			std::cout << "  C1 quality scan could not start; continuing with "
+				"the independent C2 and consistency phases.\n";
 		}
 	}
 

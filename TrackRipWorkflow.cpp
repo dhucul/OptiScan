@@ -808,10 +808,17 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 
 	// ── 13. Verify ripped tracks against physical disk ──────────────────
 	bool physicalVerificationPassed = true;
+	bool physicalVerificationIntermittent = false;
+	std::vector<int> physicalVerificationAffectedTracks;
 	if (verifyRip) {
 		// Per-track verification state. `verifiedAtAttempt` is 0 for verified-on-first-pass,
 		// N>0 for verified-after-N-retries, and -1 for unresolved.
 		std::vector<int> verifiedAtAttempt(selectedTracks.size(), -1);
+		// Preserve instability history even when a later pass matches the saved
+		// rip. A retry match supplies the required second identical read, but the
+		// earlier disagreement remains important evidence about repeatability.
+		std::vector<bool> hadVerificationInstability(selectedTracks.size(), false);
+		bool verificationPassFailed = false;
 		// Tracks with read errors during the rip itself are excluded from retry —
 		// they cannot match because the rip data is already known-bad.
 		std::vector<bool> hasRipReadErrors(selectedTracks.size(), false);
@@ -876,6 +883,7 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 			if (!verifyReadOk) {
 				verProg.Finish(false);
 				Console::Error("Verification read failed.\n");
+				verificationPassFailed = true;
 				verifyDisc.rawSectors.clear();
 				if (!autoRetry) break;
 				continue;  // try again on next retry attempt
@@ -906,6 +914,7 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 
 				if (hasRipReadErrors[si] ||
 					TrackHadReadErrors(verifyDisc, verifyDisc.tracks[ri])) {
+					hadVerificationInstability[si] = true;
 					Console::Warning("[READ ERRORS]\n");
 					continue;
 				}
@@ -914,6 +923,11 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 				for (size_t i = 0; i < sl.count; i++) {
 					size_t idx = sl.start + i;
 					if (idx >= ripDisc.rawSectors.size() || idx >= verifyDisc.rawSectors.size()) {
+						trackMatch = false;
+						break;
+					}
+					if (ripDisc.rawSectors[idx].size() < AUDIO_SECTOR_SIZE ||
+						verifyDisc.rawSectors[idx].size() < AUDIO_SECTOR_SIZE) {
 						trackMatch = false;
 						break;
 					}
@@ -928,11 +942,15 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 					verifiedAtAttempt[si] = attempt;
 					if (attempt == 0) Console::Success("[MATCH]\n");
 					else {
-						std::string msg = "[MATCH after retry " + std::to_string(attempt) + "]\n";
+						std::string msg = "[MATCH after retry " + std::to_string(attempt);
+						if (hadVerificationInstability[si])
+							msg += "; earlier instability retained";
+						msg += "]\n";
 						Console::Success(msg.c_str());
 					}
 				}
 				else {
+					hadVerificationInstability[si] = true;
 					if (autoRetry && attempt < maxAttempts - 1)
 						Console::Warning("[MISMATCH - will retry]\n");
 					else
@@ -952,7 +970,29 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 		}
 
 		if (unresolvedCount == 0) {
-			Console::Success("\nAll ripped tracks verified successfully against the disk.\n");
+			for (size_t si = 0; si < selectedTracks.size(); si++) {
+				if (hadVerificationInstability[si]) {
+					int ri = ripIndices[si];
+					physicalVerificationAffectedTracks.push_back(
+						ripDisc.tracks[ri].trackNumber);
+				}
+			}
+			physicalVerificationIntermittent =
+				verificationPassFailed || !physicalVerificationAffectedTracks.empty();
+
+			Console::Success("\nAll ripped tracks have two byte-identical reads.\n");
+			if (physicalVerificationIntermittent) {
+				Console::Warning("VERIFIED WITH CAUTION: intermittent read instability was observed");
+				if (!physicalVerificationAffectedTracks.empty()) {
+					std::cout << " on track" << (physicalVerificationAffectedTracks.size() == 1 ? " " : "s ");
+					for (size_t i = 0; i < physicalVerificationAffectedTracks.size(); i++) {
+						std::cout << (i == 0 ? "" : ", ")
+							<< physicalVerificationAffectedTracks[i];
+					}
+				}
+				std::cout << ".\n";
+				Console::Info("The saved data is verified, but the disc/drive/speed combination was not fully repeatable.\n");
+			}
 			if (autoRetry && attemptsRun > 1) {
 				std::string msg = "Verification used " + std::to_string(attemptsRun) +
 					" pass(es) total.\n";
@@ -961,6 +1001,13 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 		}
 		else {
 			physicalVerificationPassed = false;
+			for (size_t si = 0; si < selectedTracks.size(); ++si) {
+				if (verifiedAtAttempt[si] < 0) {
+					const int ri = ripIndices[si];
+					physicalVerificationAffectedTracks.push_back(
+						ripDisc.tracks[ri].trackNumber);
+				}
+			}
 			std::string msg = "\n" + std::to_string(verifiedCount) + "/" +
 				std::to_string(selectedTracks.size()) + " tracks verified, " +
 				std::to_string(unresolvedCount) + " did NOT match";
@@ -978,7 +1025,9 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 	finishPureReadMonitoring(!verifyRip
 		? "Read completed"
 		: (physicalVerificationPassed
-			? "Read and physical verification completed"
+			? (physicalVerificationIntermittent
+				? "Read verified with intermittent instability"
+				: "Read and physical verification completed")
 			: "Read completed; physical verification failed"));
 
 	PreservationOffsetResult preservationOffset =
@@ -991,6 +1040,27 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 	manifest.artifacts = preservationArtifacts;
 	manifest.drive = haveDriveCaps ? &driveCaps : nullptr;
 	manifest.writeOffset = &preservationOffset;
+	manifest.verificationAffectedTracks = physicalVerificationAffectedTracks;
+	if (!verifyRip) {
+		manifest.verificationStatus = "UNVERIFIED";
+		manifest.verificationMethod = "Not performed";
+		manifest.verificationNote = "No independent physical re-read was requested.";
+	}
+	else if (!physicalVerificationPassed) {
+		manifest.verificationStatus = "NOT VERIFIED";
+		manifest.verificationMethod = "Physical byte comparison";
+		manifest.verificationNote = "One or more saved tracks did not obtain a byte-identical physical re-read.";
+	}
+	else if (physicalVerificationIntermittent) {
+		manifest.verificationStatus = "VERIFIED WITH CAUTION";
+		manifest.verificationMethod = "Physical byte comparison";
+		manifest.verificationNote = "A later read matched, but earlier verification instability was observed.";
+	}
+	else {
+		manifest.verificationStatus = "VERIFIED";
+		manifest.verificationMethod = "Physical byte comparison";
+		manifest.verificationNote = "Each saved track matched an independent physical re-read.";
+	}
 	std::wstring manifestPath = outputDir + L"OptiScan_tracks.manifest.json";
 	// Keep the original full-disc TOC/IDs in a selected-track manifest; the
 	// artifact list itself records which tracks were actually written.
@@ -1014,7 +1084,10 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 		return false;
 	}
 
-	Console::Success("\nRip complete. Files written to: ");
+	if (physicalVerificationIntermittent)
+		Console::Warning("\nRip verified with CAUTION (intermittent read instability). Files written to: ");
+	else
+		Console::Success("\nRip complete. Files written to: ");
 	std::wcout << outputDir << L"\n";
 	return true;
 }

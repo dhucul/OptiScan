@@ -44,16 +44,19 @@ arm      DF A3 00                    clear
          DF A0 00 00 02  /  00 00 04 start C1/C2 measurement
 per iv:  READ the interval           <-- REQUIRED: the MediaTek counters only tally
                                           sectors the host reads (BE READ CD, audio),
-                                          chunked <= 16 sectors (under the 0xFFFE cap)
-         DF 82 09                    latch
-         DF 82 05                    read C1/C2/CU
-         DF 97                       reset interval, advance LBA += 75
+                                          normally 75 sectors, final interval shortened
+                                          at lead-out, chunks <= 16 sectors
+         DF 82 09                    latch (retry transient failure with backoff)
+         DF 82 05                    read C1/C2/CU (same retry policy)
+         DF 97                       reset interval, advance by sectors actually read
 disarm   DF A3 01
 ```
 
 **The read step is the fix this repo added** — without it the counters stay idle at zero
 (the "0xDF accepted but trial reads returned all zeros" failure). See
-`ScsiDrive::LiteOnScanDriveHead`.
+`ScsiDrive::LiteOnScanDriveHead`. Q-Check, Disc Rot, and Disc Balance all consume this
+backend and apply the same completion-before-filtering, duplicate-response, and
+non-progress rules; incomplete hardware samples are never scored as complete data.
 
 ### Counter buffer field map (`DF 82 05` reply, big-endian)
 

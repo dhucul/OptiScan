@@ -69,6 +69,10 @@ struct FileHashSet {
 struct PreservationManifestContext {
 	std::string workflow;
 	std::vector<std::wstring> artifacts;
+	std::string verificationStatus;
+	std::string verificationMethod;
+	std::string verificationNote;
+	std::vector<int> verificationAffectedTracks;
 	const DriveCapabilities* drive = nullptr;
 	const RecoveryRipResult* recovery = nullptr;
 	const DataValidationSummary* dataValidation = nullptr;

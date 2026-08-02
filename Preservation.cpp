@@ -658,6 +658,20 @@ bool WritePreservationManifest(const DiscInfo& disc,
 	}
 	else out << "  \"preservation_write_offset\": null,\n";
 
+	if (!context.verificationStatus.empty()) {
+		out << "  \"verification\": {\"status\": \""
+			<< JsonEscape(context.verificationStatus)
+			<< "\", \"method\": \"" << JsonEscape(context.verificationMethod)
+			<< "\", \"note\": \"" << JsonEscape(context.verificationNote)
+			<< "\", \"affected_tracks\": [";
+		for (size_t i = 0; i < context.verificationAffectedTracks.size(); ++i) {
+			if (i) out << ", ";
+			out << context.verificationAffectedTracks[i];
+		}
+		out << "]},\n";
+	}
+	else out << "  \"verification\": null,\n";
+
 	if (context.recovery) {
 		const auto& recovery = *context.recovery;
 		out << "  \"recovery\": {\"total\": " << recovery.totalSectors

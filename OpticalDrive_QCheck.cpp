@@ -105,6 +105,42 @@ void RecalculateQCheckTotals(QCheckResult& result) {
 		? static_cast<double>(result.totalPioneerE22) / sampleCount : 0.0;
 }
 
+std::vector<QCheckTrackErrors> MapQCheckTrackErrors(
+	const std::vector<QCheckSample>& samples, const DiscInfo& disc) {
+	std::vector<QCheckTrackErrors> tracks;
+	for (const auto& s : samples) {
+		if (s.c2 == 0 && s.cu == 0) continue;
+		for (const auto& t : disc.tracks) {
+			if (!t.isAudio) continue;
+			DWORD trackStart = (t.trackNumber == 1) ? 0 : t.pregapLBA;
+			if (s.lba < trackStart || s.lba > t.endLBA) continue;
+
+			auto it = std::find_if(tracks.begin(), tracks.end(),
+				[&](const QCheckTrackErrors& e) {
+					return e.trackNumber == t.trackNumber;
+				});
+			if (it == tracks.end()) {
+				QCheckTrackErrors entry;
+				entry.trackNumber = t.trackNumber;
+				entry.c2Count = s.c2;
+				entry.cuCount = s.cu;
+				tracks.push_back(entry);
+			}
+			else {
+				it->c2Count += s.c2;
+				it->cuCount += s.cu;
+			}
+			break;
+		}
+	}
+
+	std::sort(tracks.begin(), tracks.end(),
+		[](const QCheckTrackErrors& a, const QCheckTrackErrors& b) {
+			return a.trackNumber < b.trackNumber;
+		});
+	return tracks;
+}
+
 // PioneerPureReadOffGuard and PioneerPerformanceModeGuard are now in
 // PioneerVendor.h (shared with OpticalDrive_DiscRot.cpp).
 }  // namespace
@@ -269,9 +305,12 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 	// ── Timer state for elapsed / ETA display ────────────────
 	auto scanStartTime = std::chrono::steady_clock::now();
 	auto lastProgressPaint = scanStartTime - std::chrono::milliseconds(250);
+	auto lastPrimaryLBAProgress = scanStartTime;
+	DWORD primaryProgressLBA = DWORD(-1);
 	int lastLineLength = 0;              // For padding '\r' lines to clear remnants
 	constexpr int BAR_WIDTH = 25;        // Width of the UTF-8 progress bar in columns
 	constexpr auto PROGRESS_PAINT_INTERVAL = std::chrono::milliseconds(250);
+	constexpr auto QCHECK_STALL_TIMEOUT = std::chrono::seconds(30);
 
 	while (!scanDone) {
 		// ── Check for user cancellation ──────────────────────
@@ -315,12 +354,45 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 				// Communication lost.  Stop the scan if possible.
 				stopPrimaryScan();
 				std::cout << "\nERROR: Lost communication with drive during scan";
-				if (!result.samples.empty())
+				if (!result.samples.empty()) {
 					std::cout << " after " << result.samples.size()
-						<< " sample(s); partial data will not be rated";
+						<< " sample(s)";
+					if (lastReportedLBA != DWORD(-1)) {
+						const double coverage = result.totalSectors > 0 &&
+							lastReportedLBA >= firstLBA
+							? std::min(100.0,
+								static_cast<double>(lastReportedLBA - firstLBA + 1) *
+								100.0 / result.totalSectors)
+							: 0.0;
+						std::cout << " at LBA " << lastReportedLBA << " ("
+							<< std::fixed << std::setprecision(1) << coverage
+							<< "% coverage)";
+					}
+					std::cout << "; partial data will not be rated";
+				}
 				std::cout << ".\n";
 				return false;
 			}
+		}
+
+		// LiteOn reports completion by position rather than through the poll
+		// result. Detect it before filtering so a short scan's terminal sample
+		// is not discarded as startup noise.
+		if (useLiteOn && currentLBA >= lastLBA)
+			scanDone = true;
+
+		// Empty and duplicate responses are normal briefly, but a drive that
+		// never advances must not leave the workflow polling forever.
+		auto primaryPollTime = std::chrono::steady_clock::now();
+		if (scanDone || currentLBA != primaryProgressLBA) {
+			primaryProgressLBA = currentLBA;
+			lastPrimaryLBAProgress = primaryPollTime;
+		}
+		else if (primaryPollTime - lastPrimaryLBAProgress >= QCHECK_STALL_TIMEOUT) {
+			stopPrimaryScan();
+			std::cout << "\nERROR: Quality scan stalled for 30 seconds at LBA "
+				<< currentLBA << "; partial data will not be rated.\n";
+			return false;
 		}
 
 		// Skip empty responses — the drive hasn't produced data yet
@@ -341,16 +413,9 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		// QPXTool does the same; without this the first sample creates a
 		// massive spike that dominates the entire graph and skews statistics.
 		// Applies to all scan paths (Plextor, Pioneer, LiteOn).
-		if (sampleIndex < 3) {
+		if (sampleIndex < 3 && !scanDone) {
 			sampleIndex++;
 			continue;
-		}
-
-		// LiteOn drives don't set the `scanDone` flag automatically —
-		// detect end-of-disc by checking if the current position has
-		// reached or passed the last audio sector.
-		if (useLiteOn && currentLBA >= lastLBA) {
-			scanDone = true;
 		}
 
 		// ── Record the sample ────────────────────────────────
@@ -542,21 +607,21 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 	// Pioneer E22 participates in startup-spike detection but remains separate
 	// from verified C2 totals and verdict logic.
 
-	// Track whether the drive reported any C2 during the primary scan,
-	// before the recheck potentially zeroes the total.  Used later to
-	// avoid a false c1Unverified flag — if C2 was reported, the drive's
-	// measurement mode is at least partially functional.
+	// Track whether the drive reported any C2 during the primary scan. Used
+	// later to avoid a false c1Unverified flag: any reported C2 establishes
+	// that the measurement mode is at least partially functional.
 	bool hadC2BeforeRecheck = result.totalC2 > 0;
 
-	// ── C2 recheck: verify transient C2 errors ───────────────
+	// ── C2 recheck: characterize intermittent C2 errors ──────
 	// C2 errors are significant — they mean C1 correction failed and the
 	// drive needed second-level error correction.  However, a single scan
 	// can produce transient C2 spikes from vibration, dust, or thermal
-	// drift.  To avoid false alarms, re-scan the entire disc if any C2
-	// errors were detected.  If the re-scan shows 0 C2, the original
-	// C2 counts are discarded as transient artefacts.
+	// drift. Re-scan the entire disc if any C2 errors were detected, but retain
+	// both passes: a clean recheck establishes non-reproducibility, not that the
+	// primary observation was false or that an earlier extraction was valid.
 	if (!usePioneer && result.totalC2 > 0 &&
 		!InterruptHandler::Instance().IsInterrupted()) {
+		result.c2RecheckAttempted = true;
 		std::cout << "\n  C2 errors detected (" << result.totalC2
 			<< " total) - running verification re-scan...\n";
 
@@ -572,7 +637,6 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 				: m_drive.LiteOnScanStart(firstLBA, lastLBA));
 
 		if (recheckStarted) {
-			int recheckC2Total = 0;        // Only C2 matters for this pass
 			bool recheckDone = false;
 			bool recheckStopped = false;
 			int recheckSampleIdx = 0;
@@ -580,9 +644,11 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 			int recheckLastLine = 0;
 			auto recheckStart = std::chrono::steady_clock::now();
 			auto lastRecheckProgressPaint = recheckStart - std::chrono::milliseconds(250);
+			auto lastRecheckLBAProgress = recheckStart;
+			DWORD recheckProgressLBA = DWORD(-1);
 
-			// Same polling loop as the primary scan, but we only accumulate
-			// C2 counts — C1 and CU from the recheck are discarded.
+			// Same polling loop as the primary scan. C2 drives the repeatability
+			// verdict, but retain C1/CU too so the second pass is complete evidence.
 			while (!recheckDone) {
 				if (InterruptHandler::Instance().IsInterrupted() || InterruptHandler::Instance().CheckEscapeKey()) {
 					if (usePlextor) m_drive.PlextorQCheckStop();
@@ -626,6 +692,24 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 					}
 				}
 
+				if (useLiteOn && rLBA >= lastLBA)
+					recheckDone = true;
+
+				auto recheckPollTime = std::chrono::steady_clock::now();
+				if (recheckDone || rLBA != recheckProgressLBA) {
+					recheckProgressLBA = rLBA;
+					lastRecheckLBAProgress = recheckPollTime;
+				}
+				else if (recheckPollTime - lastRecheckLBAProgress >= QCHECK_STALL_TIMEOUT) {
+					if (usePlextor) m_drive.PlextorQCheckStop();
+					else if (usePioneer) m_drive.PioneerScanStop();
+					else m_drive.LiteOnScanStop();
+					recheckStopped = true;
+					std::cout << "\n  Verification pass stalled for 30 seconds at LBA "
+						<< rLBA << "; keeping partial evidence.\n";
+					break;
+				}
+
 				// Same filtering as primary scan: skip empty / duplicate / startup samples.
 				// Pioneer tracks LBA in software starting at firstLBA, so LBA 0
 				// is a valid position — don't apply this filter for Pioneer scans.
@@ -636,15 +720,25 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 				recheckLastLBA = rLBA;
 
 				// Discard first 3 samples (startup artefacts).
-				if (recheckSampleIdx < 3) {
+				if (recheckSampleIdx < 3 && !recheckDone) {
 					recheckSampleIdx++;
 					continue;
 				}
 
-				if (useLiteOn && rLBA >= lastLBA)
-					recheckDone = true;
-
-				recheckC2Total += rc2;
+				QCheckSample recheckSample;
+				recheckSample.lba = rLBA;
+				recheckSample.c1 = rc1;
+				recheckSample.c2 = rc2;
+				recheckSample.cu = rcu;
+				result.c2RecheckSamples.push_back(recheckSample);
+				result.c2RecheckTotalC1 += rc1;
+				result.c2RecheckTotal += rc2;
+				result.c2RecheckTotalCU += rcu;
+				if (rc2 > result.c2RecheckMaxPerSecond) {
+					result.c2RecheckMaxPerSecond = rc2;
+					result.c2RecheckMaxSecondIndex =
+						static_cast<int>(result.c2RecheckSamples.size()) - 1;
+				}
 				recheckSampleIdx++;
 
 				// ── Recheck progress bar ─────────────────────
@@ -673,7 +767,7 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 				rline << "] " << std::fixed << std::setprecision(1) << rpct << "%"
 					<< "  " << (rElapsed / 60) << ":"
 					<< std::setfill('0') << std::setw(2) << (rElapsed % 60)
-					<< "  C2=" << recheckC2Total;
+					<< "  C2=" << result.c2RecheckTotal;
 
 				std::string routput = rline.str();
 				if (static_cast<int>(routput.size()) < recheckLastLine)
@@ -683,31 +777,38 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 			}
 
 			// ── Evaluate recheck results ─────────────────────
-			if (recheckDone) {
-				if (recheckC2Total == 0) {
-					// Recheck found zero C2 — the original C2 errors were
-					// transient (vibration, dust particle, thermal).  Zero
-					// out the C2 data in the primary result so the report
-					// and rating reflect the clean re-scan.
-					std::cout << "\n  Recheck PASSED: 0 C2 errors on re-scan.\n";
-					std::cout << "  Original C2 count (" << result.totalC2
-						<< ") discarded as transient.\n";
-
-					for (auto& s : result.samples) {
-						s.c2 = 0;
-					}
-					result.totalC2 = 0;
-					result.maxC2PerSecond = 0;
-					result.maxC2SecondIndex = -1;
+			if (recheckDone && !result.c2RecheckSamples.empty()) {
+				result.c2RecheckCompleted = true;
+				if (result.c2RecheckTotal == 0 && result.c2RecheckTotalCU == 0) {
+					// The activity did not reproduce. Preserve the primary-pass
+					// evidence and let the report flag intermittent instability.
+					std::cout << "\n  Verification pass CLEAN: 0 C2/CU on re-scan.\n";
+					std::cout << "  Primary-pass C2 activity (" << result.totalC2
+						<< ") retained and flagged as intermittent.\n";
+				}
+				else if (result.c2RecheckTotalCU > 0) {
+					std::cout << "\n  Verification pass ESCALATED: "
+						<< result.c2RecheckTotalCU << " CU and "
+						<< result.c2RecheckTotal << " C2 reported.\n";
+					std::cout << "  Uncorrectable activity is retained as a critical result.\n";
 				}
 				else {
 					// C2 errors reproduced — they're genuine surface or
 					// pressing defects.  Keep the original (first-pass)
 					// results intact for accurate reporting.
-					std::cout << "\n  Recheck CONFIRMED: " << recheckC2Total
+					std::cout << "\n  Recheck CONFIRMED: " << result.c2RecheckTotal
 						<< " C2 errors on re-scan (original: " << result.totalC2 << ").\n";
-					std::cout << "  C2 errors are genuine - keeping original results.\n";
+					std::cout << "  C2 activity is reproducible; both passes are retained.\n";
 				}
+			}
+			else if (recheckDone) {
+				std::cout << "\n  Verification pass ended without a usable sample; "
+					"it cannot be treated as clean.\n";
+			}
+			else if (!result.c2RecheckSamples.empty()) {
+				std::cout << "  Partial verification evidence retained: C2 "
+					<< result.c2RecheckTotal << ", CU "
+					<< result.c2RecheckTotalCU << ".\n";
 			}
 
 			// Ensure the scan session is stopped regardless of outcome.
@@ -722,41 +823,11 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		}
 	}
 
-	// ── Bucket C2 / CU errors by track ───────────────────────
-	// Walk every sample and find the audio track whose LBA range contains
-	// the sample.  Aggregate C2 and CU counts per track so the report can
-	// pinpoint which track(s) hold the trouble.  Only audio tracks are
-	// considered — Q-Check skips data tracks during scanning.
-	{
-		result.errorTracks.clear();
-		for (const auto& s : result.samples) {
-			if (s.c2 == 0 && s.cu == 0) continue;
-			for (const auto& t : disc.tracks) {
-				if (!t.isAudio) continue;
-				DWORD trackStart = (t.trackNumber == 1) ? 0 : t.pregapLBA;
-				if (s.lba >= trackStart && s.lba <= t.endLBA) {
-					auto it = std::find_if(result.errorTracks.begin(), result.errorTracks.end(),
-						[&](const QCheckTrackErrors& e) { return e.trackNumber == t.trackNumber; });
-					if (it == result.errorTracks.end()) {
-						QCheckTrackErrors entry;
-						entry.trackNumber = t.trackNumber;
-						entry.c2Count = s.c2;
-						entry.cuCount = s.cu;
-						result.errorTracks.push_back(entry);
-					}
-					else {
-						it->c2Count += s.c2;
-						it->cuCount += s.cu;
-					}
-					break;
-				}
-			}
-		}
-		std::sort(result.errorTracks.begin(), result.errorTracks.end(),
-			[](const QCheckTrackErrors& a, const QCheckTrackErrors& b) {
-				return a.trackNumber < b.trackNumber;
-			});
-	}
+	// Bucket both passes independently so the report and CSV retain where the
+	// drive observed trouble, including a different location on the recheck.
+	result.errorTracks = MapQCheckTrackErrors(result.samples, disc);
+	result.c2RecheckErrorTracks =
+		MapQCheckTrackErrors(result.c2RecheckSamples, disc);
 
 	// ── Compute summary statistics ───────────────────────────
 	// Average errors per second (per sample) for the report and rating.
@@ -765,6 +836,11 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		result.avgC1PerSecond = static_cast<double>(result.totalC1) / sampleCount;
 		result.avgC2PerSecond = static_cast<double>(result.totalC2) / sampleCount;
 		result.avgPioneerE22PerSecond = static_cast<double>(result.totalPioneerE22) / sampleCount;
+	}
+	if (!result.c2RecheckSamples.empty()) {
+		result.c2RecheckAvgC2PerSecond =
+			static_cast<double>(result.c2RecheckTotal) /
+			result.c2RecheckSamples.size();
 	}
 
 	// ── Quality rating ───────────────────────────────────────
@@ -776,11 +852,14 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 	//   C1 avg ≥ 50      → FAIR   (elevated but within spec)
 	//   C1 avg ≥ 5       → GOOD   (normal wear)
 	//   C1 avg < 5       → EXCELLENT (pristine disc)
-	if (result.totalCU > 0)
+	const bool anyC2 = result.totalC2 > 0 || result.c2RecheckTotal > 0;
+	const double worstC2Average = std::max(
+		result.avgC2PerSecond, result.c2RecheckAvgC2PerSecond);
+	if (result.totalCU > 0 || result.c2RecheckTotalCU > 0)
 		result.qualityRating = "BAD";
-	else if (result.totalC2 > 0 && result.avgC2PerSecond > 10.0)
+	else if (anyC2 && worstC2Average > 10.0)
 		result.qualityRating = "POOR";
-	else if (result.totalC2 > 0)
+	else if (anyC2)
 		result.qualityRating = "FAIR";
 	else if (result.avgC1PerSecond >= 220.0)
 		result.qualityRating = "POOR";
@@ -838,8 +917,7 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 	//
 	// Guards against false positives:
 	//   !hadC2BeforeRecheck — if the drive did report C2 in the primary
-	//     scan, the measurement mode is at least partially functional
-	//     (even if the recheck later zeroed the C2 as transient).
+	//     scan, the measurement mode is at least partially functional.
 	//   !spikesTrimmed — if startup spikes were removed, the original
 	//     data had non-zero errors; the zeroes are from trimming, not
 	//     from a non-functional drive.
@@ -1112,7 +1190,6 @@ bool OpticalDrive::RunPioneerCdCheckMeasurement(const DiscInfo& disc,
 					break;
 				}
 			}
-
 			pv.CdCheckStop();
 			if (!rangeCompleted) {
 				allRangesCompleted = false;
@@ -1316,6 +1393,7 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 	// zero CU total is an absence of measurement, not a clean result. Gate the
 	// CU verdict/graph/heatmap on this so we never imply a check that never ran.
 	const bool cuMeasured = result.cuMeasured;
+	const QCheckC2Stability c2Stability = ClassifyQCheckC2Stability(result);
 
 	std::cout << "\n" << std::string(60, '=') << "\n";
 	std::cout << "              CD QUALITY SCAN REPORT\n";
@@ -1454,10 +1532,10 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 	}
 	else {
 		std::cout << "\n--- C2 Errors ---\n";
-		std::cout << "  Total C2:    " << result.totalC2 << "\n";
-		std::cout << "  Avg C2/sec:  " << std::fixed << std::setprecision(2)
+		std::cout << "  Primary pass total:   " << result.totalC2 << "\n";
+		std::cout << "  Primary pass avg/sec: " << std::fixed << std::setprecision(2)
 			<< result.avgC2PerSecond << "\n";
-		std::cout << "  Max C2/sec:  " << result.maxC2PerSecond;
+		std::cout << "  Primary pass max/sec: " << result.maxC2PerSecond;
 		if (result.maxC2SecondIndex >= 0 && result.maxC2SecondIndex < static_cast<int>(result.samples.size()))
 			std::cout << "  (at LBA " << result.samples[result.maxC2SecondIndex].lba << ")";
 
@@ -1472,7 +1550,41 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 		}
 		std::cout << "\n";
 
-		if (result.totalC2 == 0)
+		if (result.c2RecheckAttempted) {
+			if (result.c2RecheckCompleted) {
+				std::cout << "  Verification pass:   C1 " << result.c2RecheckTotalC1
+					<< ", C2 " << result.c2RecheckTotal
+					<< ", CU " << result.c2RecheckTotalCU
+					<< " (C2 avg " << std::fixed << std::setprecision(2)
+					<< result.c2RecheckAvgC2PerSecond << "/sec, max "
+					<< result.c2RecheckMaxPerSecond << "/sec)";
+				if (result.c2RecheckMaxSecondIndex >= 0 &&
+					result.c2RecheckMaxSecondIndex <
+					static_cast<int>(result.c2RecheckSamples.size())) {
+					std::cout << "  (at LBA "
+						<< result.c2RecheckSamples[result.c2RecheckMaxSecondIndex].lba
+						<< ")";
+				}
+				std::cout << "\n";
+			}
+			else {
+				std::cout << "  Verification pass:   INCOMPLETE - partial C1 "
+					<< result.c2RecheckTotalC1 << ", C2 " << result.c2RecheckTotal
+					<< ", CU " << result.c2RecheckTotalCU
+					<< ", " << result.c2RecheckSamples.size()
+					<< " usable sample(s); primary evidence retained\n";
+			}
+		}
+
+		if (c2Stability == QCheckC2Stability::Intermittent)
+			std::cout << "  C2 Assessment: CAUTION - intermittent activity; verification pass was clean\n";
+		else if (c2Stability == QCheckC2Stability::Unrecoverable)
+			std::cout << "  C2 Assessment: BAD - verification pass reported uncorrectable activity\n";
+		else if (c2Stability == QCheckC2Stability::Reproducible)
+			std::cout << "  C2 Assessment: POOR - C2 activity reproduced on the verification pass\n";
+		else if (c2Stability == QCheckC2Stability::RecheckIncomplete)
+			std::cout << "  C2 Assessment: CAUTION - C2 observed; verification pass incomplete\n";
+		else if (result.totalC2 == 0)
 			std::cout << "  C2 Assessment: PERFECT - no C2 correction needed\n";
 		else if (result.avgC2PerSecond < 1.0)
 			std::cout << "  C2 Assessment: ACCEPTABLE - few C2 corrections (C1 fallthrough)\n";
@@ -1487,11 +1599,27 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 	// portion of the disc.
 	if (!pioneerScan && result.totalC2 > 0) {
 		bool first = true;
-		std::cout << "  Affected tracks:";
+		std::cout << "  Primary affected tracks:";
 		for (const auto& te : result.errorTracks) {
 			if (te.c2Count == 0) continue;
 			std::cout << (first ? " " : ", ") << te.trackNumber
 				<< " (" << te.c2Count << " C2)";
+			first = false;
+		}
+		if (first) std::cout << " (none mapped - sample LBAs outside any track range)";
+		std::cout << "\n";
+	}
+	if (!pioneerScan &&
+		(result.c2RecheckTotal > 0 || result.c2RecheckTotalCU > 0)) {
+		bool first = true;
+		std::cout << "  Verification affected tracks:";
+		for (const auto& te : result.c2RecheckErrorTracks) {
+			if (te.c2Count == 0 && te.cuCount == 0) continue;
+			std::cout << (first ? " " : ", ") << te.trackNumber << " (";
+			if (te.c2Count > 0) std::cout << te.c2Count << " C2";
+			if (te.c2Count > 0 && te.cuCount > 0) std::cout << ", ";
+			if (te.cuCount > 0) std::cout << te.cuCount << " CU";
+			std::cout << ")";
 			first = false;
 		}
 		if (first) std::cout << " (none mapped - sample LBAs outside any track range)";
@@ -1503,12 +1631,18 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 	// lost.  Any CU > 0 means audible glitches or interpolated samples.
 	std::cout << "\n--- CU (Uncorrectable) ---\n";
 	if (cuMeasured) {
-		std::cout << "  Total CU:    " << result.totalCU << "\n";
-		std::cout << "  Max CU/sec:  " << result.maxCUPerSecond << "\n";
-		if (result.totalCU == 0)
+		std::cout << "  Primary pass total: " << result.totalCU << "\n";
+		std::cout << "  Primary pass max:   " << result.maxCUPerSecond << "/sec\n";
+		if (result.c2RecheckAttempted &&
+			(!result.c2RecheckSamples.empty() || result.c2RecheckTotalCU > 0)) {
+			std::cout << "  Verification "
+				<< (result.c2RecheckCompleted ? "total: " : "partial total: ")
+				<< result.c2RecheckTotalCU << "\n";
+		}
+		if (result.totalCU == 0 && result.c2RecheckTotalCU == 0)
 			std::cout << "  CU Assessment: PERFECT - all errors were correctable\n";
 		else
-			std::cout << "  CU Assessment: BAD - data loss likely in " << result.totalCU << " sector(s)\n";
+			std::cout << "  CU Assessment: BAD - uncorrectable activity was reported\n";
 	}
 	else if (result.pioneerCdCheckRun) {
 		// The vendor scan has no CU counter, but the Pioneer CD Check (0xE6)
@@ -1575,7 +1709,7 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 			int graphMax = std::max(peakC1, 250);
 			auto buckets = Console::BucketData(c1Vals, GRAPH_WIDTH);
 			Console::GraphOptions opts;
-			opts.title = "C1 Error Distribution (BLER)";
+			opts.title = "C1 Error Distribution - Primary Pass (BLER)";
 			opts.subtitle = "Each column = a time slice; height = C1 errors/sec";
 			opts.width = GRAPH_WIDTH;
 			opts.height = GRAPH_HEIGHT;
@@ -1590,7 +1724,7 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 			if (peakC2 > 0) {
 				auto buckets = Console::BucketData(c2Vals, GRAPH_WIDTH);
 				Console::GraphOptions opts;
-				opts.title = "C2 Error Distribution";
+				opts.title = "C2 Error Distribution - Primary Pass";
 				opts.subtitle = "Each column = a time slice; height = C2 errors/sec";
 				opts.width = GRAPH_WIDTH;
 				opts.height = GRAPH_HEIGHT;
@@ -1603,7 +1737,7 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 			}
 			else {
 				Console::SetColorRGB(Console::Theme::GreenR, Console::Theme::GreenG, Console::Theme::GreenB);
-				std::cout << "\n  " << Console::Sym::Check << " No C2 errors.\n";
+				std::cout << "\n  " << Console::Sym::Check << " No C2 errors on primary pass.\n";
 				Console::Reset();
 			}
 		}
@@ -1649,7 +1783,7 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 			if (peakCU > 0) {
 				auto buckets = Console::BucketData(cuVals, GRAPH_WIDTH);
 				Console::GraphOptions opts;
-				opts.title = "CU (Uncorrectable) Distribution";
+				opts.title = "CU (Uncorrectable) Distribution - Primary Pass";
 				opts.subtitle = "Each column = a time slice; height = CU events/sec";
 				opts.width = GRAPH_WIDTH;
 				opts.height = GRAPH_HEIGHT;
@@ -1657,7 +1791,7 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 			}
 			else {
 				Console::SetColorRGB(Console::Theme::GreenR, Console::Theme::GreenG, Console::Theme::GreenB);
-				std::cout << "\n  " << Console::Sym::Check << " No CU events.\n";
+				std::cout << "\n  " << Console::Sym::Check << " No CU events on primary pass.\n";
 				Console::Reset();
 			}
 		}
@@ -1710,7 +1844,7 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 
 		// Build the "(C1, C2, CU)" title from the rows actually shown so it can't
 		// advertise a CU row the backend never measured.
-		std::string heatTitle = "Disc Health Map (C1";
+		std::string heatTitle = "Primary Pass Disc Health Map (C1";
 		if (includeC2InCombined) heatTitle += ", C2";
 		if (pioneerScan) heatTitle += ", E22*";
 		if (cuMeasured) heatTitle += ", CU";
@@ -1771,7 +1905,7 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 	std::cout << " (peak " << result.maxC1PerSecond << "/sec)\n";
 
 	if (!pioneerScan && result.totalC2 > 0) {
-		std::cout << "  C2:            ";
+		std::cout << "  C2 Primary:    ";
 		if (result.avgC2PerSecond < 1.0)
 			Console::SetColorRGB(Console::Theme::YellowR, Console::Theme::YellowG, Console::Theme::YellowB);
 		else
@@ -1785,6 +1919,36 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 		Console::Reset();
 		std::cout << " (" << result.totalC2 << " total, peak "
 			<< result.maxC2PerSecond << "/sec)\n";
+	}
+	if (!pioneerScan) {
+		std::cout << "  C2 Stability:   ";
+		if (c2Stability == QCheckC2Stability::Intermittent) {
+			Console::SetColorRGB(Console::Theme::YellowR, Console::Theme::YellowG,
+				Console::Theme::YellowB);
+			std::cout << "INTERMITTENT READ INSTABILITY";
+		}
+		else if (c2Stability == QCheckC2Stability::Unrecoverable) {
+			Console::SetColorRGB(Console::Theme::RedR, Console::Theme::RedG,
+				Console::Theme::RedB);
+			std::cout << "UNRECOVERABLE ACTIVITY ON VERIFICATION PASS";
+		}
+		else if (c2Stability == QCheckC2Stability::Reproducible) {
+			Console::SetColorRGB(Console::Theme::RedR, Console::Theme::RedG,
+				Console::Theme::RedB);
+			std::cout << "REPRODUCIBLE C2 ACTIVITY";
+		}
+		else if (c2Stability == QCheckC2Stability::RecheckIncomplete) {
+			Console::SetColorRGB(Console::Theme::YellowR, Console::Theme::YellowG,
+				Console::Theme::YellowB);
+			std::cout << "C2 ACTIVITY OBSERVED; RECHECK INCOMPLETE";
+		}
+		else {
+			Console::SetColorRGB(Console::Theme::GreenR, Console::Theme::GreenG,
+				Console::Theme::GreenB);
+			std::cout << "NO C2 ACTIVITY OBSERVED";
+		}
+		Console::Reset();
+		std::cout << "\n";
 	}
 	if (pioneerE22Observed) {
 		std::cout << "  Pioneer E22:   ";
@@ -1801,23 +1965,29 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 	}
 	if (pioneerScan) {
 		if (result.pioneerCdCheckRun) {
-			std::cout << "  Copy Decision: "
+			std::cout << "  Data-Loss Check: "
 				<< (result.pioneerCdCheckC2Bytes > 0
 					? "DATA LOSS DETECTED by Pioneer CD Check"
 					: "No uncorrectable data reported by Pioneer CD Check")
 				<< "\n";
 		}
 		else {
-			std::cout << "  Copy Decision: NOT TESTED - CU/E32 unavailable on this firmware\n";
+			std::cout << "  Data-Loss Check: NOT TESTED - CU/E32 unavailable on this firmware\n";
 		}
 	}
+	std::cout << "  Prior Copy:     NOT VERIFIED BY THIS QUALITY SCAN\n";
 
 	Console::SetColorRGB(Console::Theme::DimR, Console::Theme::DimG, Console::Theme::DimB);
 	std::cout << std::string(60, '-') << "\n";
 	Console::Reset();
 
-	// Actionable recommendation based on the overall rating.
-	if (qr == "EXCELLENT") {
+	// Actionable recommendation based on the overall rating and repeatability.
+	if (!pioneerScan && c2Stability == QCheckC2Stability::Intermittent) {
+		std::cout << "  C2 activity did not reproduce, but the disc/drive/speed combination was\n"
+			<< "  not fully repeatable. Clean the disc and use Safe mode or verified\n"
+			<< "  re-reading. A clean quality recheck does not validate an earlier copy.\n";
+	}
+	else if (qr == "EXCELLENT") {
 		if (pioneerScan && !result.pioneerCdCheckRun)
 			std::cout << "  C1 quality is excellent; copyability remains unmeasured.\n";
 		else
@@ -1865,8 +2035,9 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 // SaveQCheckLog — Export scan data to CSV for external analysis
 // ============================================================================
 // Format: commented header block with summary statistics, followed by a
-// CSV table with one row per time-slice sample. Plextor/LiteOn rows contain
-// C1/C2/CU; Pioneer rows contain only the measured C1 and diagnostic E22.
+// CSV table with one row per time-slice sample. Plextor/LiteOn rows identify
+// the primary or verification pass and contain C1/C2/CU; Pioneer rows contain
+// only the measured C1 and diagnostic E22.
 // The header uses '#' prefixes so it's ignored by most CSV parsers but
 // readable when opened in a text editor.
 // ============================================================================
@@ -1877,6 +2048,7 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 	// numeric-zero C2/CU fields: downstream tools could mistake them for clean
 	// measurements even when the metadata says those counters were unavailable.
 	const bool pioneerScan = IsPioneerScanMethod(result.scanMethod);
+	const QCheckC2Stability c2Stability = ClassifyQCheckC2Stability(result);
 
 	// ── Header block: summary statistics ─────────────────────
 	// Written as '#'-prefixed comments so CSV parsers skip them but
@@ -1892,18 +2064,21 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 		<< result.qualityRating << "\n";
 	if (pioneerScan) {
 		if (result.pioneerCdCheckRun) {
-			log << "# Copy Decision:         "
+			log << "# Data-Loss Check:       "
 				<< (result.pioneerCdCheckC2Bytes > 0
 					? "DATA LOSS DETECTED by Pioneer CD Check"
 					: "No uncorrectable data reported by Pioneer CD Check")
 				<< "\n";
 		}
 		else {
-			log << "# Copy Decision:         NOT TESTED - CU/E32 unavailable on this firmware\n";
+			log << "# Data-Loss Check:       NOT TESTED - CU/E32 unavailable on this firmware\n";
 		}
 	}
+	log << "# Prior Copy:            NOT VERIFIED BY THIS QUALITY SCAN\n";
 	log << "# Total Sectors:         " << result.totalSectors << "\n";
-	log << "# Samples Collected:     " << result.samples.size() << "\n";
+	log << "# Primary Samples:       " << result.samples.size() << "\n";
+	if (result.c2RecheckAttempted)
+		log << "# Verification Samples:  " << result.c2RecheckSamples.size() << "\n";
 	log << "# Disc Length:           "
 		<< (result.totalSeconds / 60) << ":"
 		<< std::setfill('0') << std::setw(2) << (result.totalSeconds % 60)
@@ -1925,15 +2100,15 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 		log << "# Verified C2:           Not checked by Pioneer Q-Check vendor scan\n";
 	}
 	else {
-		log << "# Total C2:              " << result.totalC2 << "\n";
-		log << "# Avg C2/sec:            " << std::fixed << std::setprecision(2)
+		log << "# Primary Pass Total C2: " << result.totalC2 << "\n";
+		log << "# Primary Pass Avg/sec:  " << std::fixed << std::setprecision(2)
 			<< result.avgC2PerSecond << "\n";
-		log << "# Max C2/sec:            " << result.maxC2PerSecond;
+		log << "# Primary Pass Max/sec:  " << result.maxC2PerSecond;
 		if (result.maxC2SecondIndex >= 0 && result.maxC2SecondIndex < static_cast<int>(result.samples.size()))
 			log << " (at LBA " << result.samples[result.maxC2SecondIndex].lba << ")";
 		log << "\n";
 		if (result.totalC2 > 0) {
-			log << "# C2 Affected Tracks:    ";
+			log << "# Primary Affected:      ";
 			bool first = true;
 			for (const auto& te : result.errorTracks) {
 				if (te.c2Count == 0) continue;
@@ -1943,6 +2118,73 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 			if (first) log << "(none mapped)";
 			log << "\n";
 		}
+		if (result.c2RecheckAttempted) {
+			log << "# Verification Pass:     "
+				<< (result.c2RecheckCompleted ? "COMPLETE" : "INCOMPLETE") << "\n";
+			if (result.c2RecheckCompleted) {
+				log << "# Verification Total C1: " << result.c2RecheckTotalC1 << "\n";
+				log << "# Verification Total C2: " << result.c2RecheckTotal << "\n";
+				log << "# Verification Total CU: " << result.c2RecheckTotalCU << "\n";
+				log << "# Verification Avg C2/s: " << std::fixed << std::setprecision(2)
+					<< result.c2RecheckAvgC2PerSecond << "\n";
+				log << "# Verification Max/sec:  " << result.c2RecheckMaxPerSecond;
+				if (result.c2RecheckMaxSecondIndex >= 0 &&
+					result.c2RecheckMaxSecondIndex <
+					static_cast<int>(result.c2RecheckSamples.size())) {
+					log << " (at LBA "
+						<< result.c2RecheckSamples[result.c2RecheckMaxSecondIndex].lba
+						<< ")";
+				}
+				log << "\n";
+				if (result.c2RecheckTotal > 0 || result.c2RecheckTotalCU > 0) {
+					log << "# Verification Affected: ";
+					bool first = true;
+					for (const auto& te : result.c2RecheckErrorTracks) {
+						if (te.c2Count == 0 && te.cuCount == 0) continue;
+						log << (first ? "" : ", ") << te.trackNumber << "(";
+						if (te.c2Count > 0) log << te.c2Count << " C2";
+						if (te.c2Count > 0 && te.cuCount > 0) log << ", ";
+						if (te.cuCount > 0) log << te.cuCount << " CU";
+						log << ")";
+						first = false;
+					}
+					if (first) log << "(none mapped)";
+					log << "\n";
+				}
+			}
+			else {
+				log << "# Verification Partial C1: " << result.c2RecheckTotalC1 << "\n";
+				log << "# Verification Partial C2: " << result.c2RecheckTotal << "\n";
+				log << "# Verification Partial CU: " << result.c2RecheckTotalCU << "\n";
+				log << "# Verification Partial Avg C2/s: " << std::fixed
+					<< std::setprecision(2) << result.c2RecheckAvgC2PerSecond << "\n";
+				if (!result.c2RecheckErrorTracks.empty()) {
+					log << "# Partial Pass Affected: ";
+					bool first = true;
+					for (const auto& te : result.c2RecheckErrorTracks) {
+						if (te.c2Count == 0 && te.cuCount == 0) continue;
+						log << (first ? "" : ", ") << te.trackNumber << "(";
+						if (te.c2Count > 0) log << te.c2Count << " C2";
+						if (te.c2Count > 0 && te.cuCount > 0) log << ", ";
+						if (te.cuCount > 0) log << te.cuCount << " CU";
+						log << ")";
+						first = false;
+					}
+					log << "\n";
+				}
+			}
+		}
+		log << "# C2 Stability:          ";
+		if (c2Stability == QCheckC2Stability::Intermittent)
+			log << "INTERMITTENT READ INSTABILITY\n";
+		else if (c2Stability == QCheckC2Stability::Unrecoverable)
+			log << "UNRECOVERABLE ACTIVITY ON VERIFICATION PASS\n";
+		else if (c2Stability == QCheckC2Stability::Reproducible)
+			log << "REPRODUCIBLE C2 ACTIVITY\n";
+		else if (c2Stability == QCheckC2Stability::RecheckIncomplete)
+			log << "C2 ACTIVITY OBSERVED; RECHECK INCOMPLETE\n";
+		else
+			log << "NO C2 ACTIVITY OBSERVED\n";
 	}
 	if (pioneerScan) {
 		log << "#\n";
@@ -1982,8 +2224,13 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 		}
 	}
 	if (result.cuMeasured) {
-		log << "# Total CU:              " << result.totalCU << "\n";
-		log << "# Max CU/sec:            " << result.maxCUPerSecond << "\n";
+		log << "# Primary Total CU:      " << result.totalCU << "\n";
+		log << "# Primary Max CU/sec:    " << result.maxCUPerSecond << "\n";
+		if (result.c2RecheckAttempted &&
+			(!result.c2RecheckSamples.empty() || result.c2RecheckTotalCU > 0))
+			log << "# Verification "
+				<< (result.c2RecheckCompleted ? "Total CU: " : "Partial CU: ")
+				<< result.c2RecheckTotalCU << "\n";
 	}
 	if (result.cuMeasured && result.totalCU > 0) {
 		log << "# CU Affected Tracks:    ";
@@ -2016,13 +2263,15 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 	log << "# ==============================\n";
 	log << (pioneerScan ? "# Per-Second Pioneer C1/E22 Data\n" : "# Per-Second C1/C2/CU Data\n");
 	log << "# ==============================\n";
-	log << (pioneerScan ? "Time,Second,LBA,C1,PioneerE22\n" : "Time,Second,LBA,C1,C2,CU\n");
+	log << (pioneerScan ? "Time,Second,LBA,C1,PioneerE22\n"
+		: "Pass,Time,Second,LBA,C1,C2,CU\n");
 
 	for (size_t i = 0; i < result.samples.size(); i++) {
 		const auto& s = result.samples[i];
 		int minutes = static_cast<int>(i) / 60;
 		int seconds = static_cast<int>(i) % 60;
 
+		if (!pioneerScan) log << "Primary,";
 		log << minutes << ":" << std::setfill('0') << std::setw(2) << seconds
 			<< std::setfill(' ')
 			<< "," << i
@@ -2036,6 +2285,18 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 				<< "," << s.cu;
 		}
 		log << "\n";
+	}
+
+	if (!pioneerScan) {
+		for (size_t i = 0; i < result.c2RecheckSamples.size(); i++) {
+			const auto& s = result.c2RecheckSamples[i];
+			int minutes = static_cast<int>(i) / 60;
+			int seconds = static_cast<int>(i) % 60;
+			log << "Verification," << minutes << ":" << std::setfill('0')
+				<< std::setw(2) << seconds << std::setfill(' ')
+				<< "," << i << "," << s.lba << "," << s.c1 << ","
+				<< s.c2 << "," << s.cu << "\n";
+		}
 	}
 
 	log.flush();

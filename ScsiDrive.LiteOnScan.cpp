@@ -30,6 +30,7 @@
 // Both methods read at the current drive speed (not locked to 1x).
 // At 8x a 72-min disc takes ~9 minutes — same as BLER scan.
 #include "ScsiDrive.h"
+#include <algorithm>
 #include <iostream>
 #include <iomanip>
 #include <vector>
@@ -42,6 +43,7 @@ static bool s_liteonNewMethod = false;
 
 // Current LBA tracking for old method
 static DWORD s_liteonLBA = 0;
+static DWORD s_liteonEndLBA = 0;
 
 // ── Head-driving reads (shared by the C1/C2, jitter and FE/TE scans) ────────
 // The MediaTek/PLDS error counters only advance for sectors the host reads, so
@@ -225,8 +227,11 @@ bool ScsiDrive::SupportsLiteOnScan() {
 	return false;
 }
 
-bool ScsiDrive::LiteOnScanStart(DWORD startLBA, DWORD /*endLBA*/) {
+bool ScsiDrive::LiteOnScanStart(DWORD startLBA, DWORD endLBA) {
+	if (startLBA > endLBA)
+		return false;
 	s_liteonLBA = startLBA;
+	s_liteonEndLBA = endLBA;
 
 	if (s_liteonNewMethod) {
 		SeekToLBA(startLBA);          // ✅ seeks
@@ -285,6 +290,29 @@ bool ScsiDrive::LiteOnScanStart(DWORD startLBA, DWORD /*endLBA*/) {
 bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
 	DWORD& currentLBA, bool& scanDone) {
 	BYTE sk = 0, asc = 0, ascq = 0;
+	constexpr int kCommandAttempts = 5;
+	auto sendPollCommand = [&](BYTE* cdb, BYTE cdbLength, BYTE* data,
+		DWORD dataSize, const char* stage) {
+		for (int attempt = 0; attempt < kCommandAttempts; ++attempt) {
+			sk = asc = ascq = 0;
+			if (SendSCSIWithSense(cdb, cdbLength, data, dataSize,
+				&sk, &asc, &ascq)) {
+				return true;
+			}
+			if (attempt + 1 < kCommandAttempts)
+				std::this_thread::sleep_for(
+					std::chrono::milliseconds(200 * (attempt + 1)));
+		}
+
+		char dbg[192];
+		snprintf(dbg, sizeof(dbg),
+			"LiteOnScanPoll: %s failed after %d attempts "
+			"at LBA %lu (sk=0x%02X asc=0x%02X ascq=0x%02X)\n",
+			stage, kCommandAttempts, static_cast<unsigned long>(s_liteonLBA),
+			sk, asc, ascq);
+		OutputDebugStringA(dbg);
+		return false;
+	};
 
 	if (s_liteonNewMethod) {
 		// NEW: each 0xF3/0x0E call returns one time slice
@@ -293,8 +321,7 @@ bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
 		cdb[1] = 0x0E;
 		std::vector<BYTE> buf(0x10, 0);
 
-		bool ok = SendSCSIWithSense(cdb, 12, buf.data(), 0x10, &sk, &asc, &ascq);
-		if (!ok && sk > 0x01) {
+		if (!sendPollCommand(cdb, 12, buf.data(), 0x10, "0xF3/0x0E data")) {
 			scanDone = true;
 			return false;
 		}
@@ -308,29 +335,48 @@ bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
 		c2 = (static_cast<int>(buf[6]) << 8) | buf[7];   // E22
 		cu = 0;
 
-		// Scan done when LBA stops advancing or returns 0 after data
+		// A zero position after real data is the new protocol's terminal
+		// response. Preserve the last position rather than moving backward to
+		// LBA 0, which would make a completed scan look like lost coverage.
 		scanDone = (currentLBA == 0 && s_liteonLBA > 0);
-		s_liteonLBA = currentLBA;
+		if (scanDone)
+			currentLBA = s_liteonLBA;
+		else
+			s_liteonLBA = currentLBA;
 		return true;
 	}
 	else {
+		if (s_liteonLBA > s_liteonEndLBA) {
+			currentLBA = s_liteonEndLBA;
+			scanDone = true;
+			return true;
+		}
+
 		// OLD: drive the head over this interval, then read the tallied counts.
 		// Without the read the MediaTek counters never advance (verified on the
-		// PX-891SAF PLUS). One interval = one CD second = 75 sectors.
-		LiteOnScanDriveHead(s_liteonLBA, 75);
+		// PX-891SAF PLUS). One interval is at most one CD second (75 sectors),
+		// with a shorter final interval so the read never crosses lead-out.
+		const DWORD remaining = s_liteonEndLBA - s_liteonLBA + 1;
+		const DWORD intervalSectors = std::min<DWORD>(75, remaining);
+		LiteOnScanDriveHead(s_liteonLBA, intervalSectors);
 
 		std::vector<BYTE> buf(256, 0);
 		BYTE cdb[12] = {};
 
 		// 1. Latch interval counters: 0xDF/0x82/0x09
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0x82; cdb[2] = 0x09;
-		bool ok = SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq);
-		if (!ok && sk > 0x01) { scanDone = true; return false; }
+		if (!sendPollCommand(cdb, 12, buf.data(), 256, "0xDF/0x82/0x09 latch")) {
+			scanDone = true;
+			return false;
+		}
 
 		// 2. Get data: 0xDF/0x82/0x05
+		std::fill(buf.begin(), buf.end(), BYTE(0));
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0x82; cdb[2] = 0x05;
-		ok = SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq);
-		if (!ok && sk > 0x01) { scanDone = true; return false; }
+		if (!sendPollCommand(cdb, 12, buf.data(), 256, "0xDF/0x82/0x05 data")) {
+			scanDone = true;
+			return false;
+		}
 
 		c1 = (static_cast<int>(buf[0]) << 8) | buf[1];   // BLER
 		c2 = (static_cast<int>(buf[2]) << 8) | buf[3];   // E22
@@ -340,9 +386,15 @@ bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0x97;
 		SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq);
 
-		s_liteonLBA += 75;
-		currentLBA = s_liteonLBA;
-		scanDone = false;
+		if (intervalSectors == remaining) {
+			currentLBA = s_liteonEndLBA;
+			scanDone = true;
+		}
+		else {
+			s_liteonLBA += intervalSectors;
+			currentLBA = s_liteonLBA;
+			scanDone = false;
+		}
 		return true;
 	}
 }

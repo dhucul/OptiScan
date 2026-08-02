@@ -48,6 +48,21 @@ struct QCheckResult {
 	int maxC2PerSecond = 0;
 	int maxC2SecondIndex = -1;
 
+	// Verification re-scan evidence. When the primary pass reports C2, Q-Check
+	// runs a second full-disc pass. Keep that pass separate instead of replacing
+	// or zeroing the primary measurements: a clean recheck means the activity was
+	// intermittent, not that the first observation never happened.
+	bool c2RecheckAttempted = false;
+	bool c2RecheckCompleted = false;
+	int c2RecheckTotalC1 = 0;
+	int c2RecheckTotal = 0;
+	int c2RecheckTotalCU = 0;
+	double c2RecheckAvgC2PerSecond = 0.0;
+	int c2RecheckMaxPerSecond = 0;
+	int c2RecheckMaxSecondIndex = -1;
+	std::vector<QCheckSample> c2RecheckSamples;
+	std::vector<QCheckTrackErrors> c2RecheckErrorTracks;
+
 	// Pioneer vendor E22 diagnostics.  These are intentionally separate
 	// from C2 because Pioneer 0x3B/0x3C E22 does not match LiteOn/Plextor
 	// C2 totals closely enough to drive the copy/no-copy decision.
@@ -103,6 +118,30 @@ struct QCheckResult {
 	// initial capability probe produce valid measurement data.
 	bool c1Unverified = false;
 };
+
+enum class QCheckC2Stability {
+	NoActivity,
+	Intermittent,
+	Reproducible,
+	Unrecoverable,
+	RecheckIncomplete
+};
+
+inline QCheckC2Stability ClassifyQCheckC2Stability(const QCheckResult& result) {
+	// Positive evidence remains valid even if the verification pass was
+	// interrupted. Only a clean verdict requires a completed pass with at
+	// least one usable sample.
+	if (result.c2RecheckTotalCU > 0)
+		return QCheckC2Stability::Unrecoverable;
+	if (result.c2RecheckTotal > 0)
+		return QCheckC2Stability::Reproducible;
+	if (result.c2RecheckCompleted && !result.c2RecheckSamples.empty() &&
+		result.totalC2 > 0)
+		return QCheckC2Stability::Intermittent;
+	if (result.totalC2 > 0)
+		return QCheckC2Stability::RecheckIncomplete;
+	return QCheckC2Stability::NoActivity;
+}
 
 // ── Single jitter/beta time-slice from a LiteOn jitter scan ─────────────────
 struct JitterSample {

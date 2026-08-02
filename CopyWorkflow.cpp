@@ -85,7 +85,13 @@ void TryApplyPioneerAudioPreset(OpticalDrive& copier) {
 }
 }
 
-bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstring& /*workDir*/) {
+bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc,
+	const std::wstring& /*workDir*/,
+	CopyVerificationStatus* outVerificationStatus) {
+	CopyVerificationStatus copyVerificationStatus =
+		CopyVerificationStatus::NotPerformed;
+	if (outVerificationStatus)
+		*outVerificationStatus = copyVerificationStatus;
 	Console::Info("\n(Enter 0 at any prompt to go back to menu)\n");
 
 	{
@@ -549,14 +555,24 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstring& /
 			accurateRipVerificationPerformed = true;
 			accurateRipResult =
 				AccurateRip::VerifyCRCs(disc, disc.accurateRipPressings);
+			if (accurateRipResult == AccurateRipVerificationResult::Verified)
+				copyVerificationStatus = CopyVerificationStatus::Verified;
+			else if (accurateRipResult == AccurateRipVerificationResult::Mismatch)
+				copyVerificationStatus = CopyVerificationStatus::Mismatch;
+			else
+				copyVerificationStatus = CopyVerificationStatus::Inconclusive;
+			if (outVerificationStatus)
+				*outVerificationStatus = copyVerificationStatus;
 			if (accurateRipResult == AccurateRipVerificationResult::Mismatch) {
-				Console::Error("One or more AccurateRip checksums did not match; the image will be "
-					"saved for inspection but will not be reported as verified.\n");
+				Console::Error("COPY RESULT: NOT VERIFIED - one or more AccurateRip track "
+					"checksums did not match.\n");
+				Console::Info("The image will be saved for inspection. Re-rip the affected "
+					"track(s) in Safe mode or with verification/auto-retry.\n");
 			}
 			else if (accurateRipResult ==
 				AccurateRipVerificationResult::Inconclusive) {
-				Console::Warning("AccurateRip verification was inconclusive; the image "
-					"will be saved but will not be reported as verified.\n");
+				Console::Warning("COPY RESULT: UNVERIFIED - AccurateRip verification was "
+					"inconclusive. The image will be saved for inspection.\n");
 			}
 		}
 	}
@@ -606,6 +622,27 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstring& /
 	manifest.drive = haveDriveCaps ? &driveCaps : nullptr;
 	manifest.dataValidation = hasDataTracks ? &dataValidation : nullptr;
 	manifest.writeOffset = &preservationOffset;
+	manifest.verificationMethod = accurateRipVerificationPerformed
+		? "AccurateRip" : "Not performed";
+	switch (copyVerificationStatus) {
+	case CopyVerificationStatus::Verified:
+		manifest.verificationStatus = "VERIFIED";
+		manifest.verificationNote = "All eligible audio tracks matched an AccurateRip pressing.";
+		break;
+	case CopyVerificationStatus::Mismatch:
+		manifest.verificationStatus = "NOT VERIFIED";
+		manifest.verificationNote = "One or more AccurateRip track checksums did not match.";
+		break;
+	case CopyVerificationStatus::Inconclusive:
+		manifest.verificationStatus = "UNVERIFIED";
+		manifest.verificationNote = "AccurateRip did not produce a conclusive decision.";
+		break;
+	case CopyVerificationStatus::NotPerformed:
+	default:
+		manifest.verificationStatus = "UNVERIFIED";
+		manifest.verificationNote = "AccurateRip verification was not performed.";
+		break;
+	}
 	std::wstring manifestPath = path + L".manifest.json";
 	if (!WritePreservationManifest(disc, manifest, manifestPath)) {
 		Console::Error("Failed to create preservation manifest.\n");
@@ -623,26 +660,29 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstring& /
 
 	if (accurateRipVerificationPerformed &&
 		accurateRipResult == AccurateRipVerificationResult::Mismatch) {
-		Console::Warning("\nCopy saved, but AccurateRip verification FAILED "
-			"(one or more track checksum mismatches). Files written to: ");
+		Console::Warning("\nCOPY RESULT: NOT VERIFIED - AccurateRip track mismatch(es). "
+			"Files written to: ");
 	}
 	else if (accurateRipVerificationPerformed &&
 		accurateRipResult == AccurateRipVerificationResult::Inconclusive) {
-		Console::Warning("\nCopy saved, but AccurateRip verification was "
-			"INCONCLUSIVE. Files written to: ");
+		Console::Warning("\nCOPY RESULT: UNVERIFIED - AccurateRip was INCONCLUSIVE. "
+			"Files written to: ");
 	}
 	else if (!accurateRipVerificationPerformed) {
-		Console::Success("\nCopy complete. AccurateRip verification was not "
-			"performed. Files written to: ");
+		Console::Warning("\nCOPY RESULT: UNVERIFIED - AccurateRip was not performed. "
+			"Files written to: ");
 	}
 	else {
-		Console::Success("\nCopy complete. AccurateRip VERIFIED. Files written to: ");
+		Console::Success("\nCOPY RESULT: VERIFIED by AccurateRip. Files written to: ");
 	}
 	std::wcout << outputDir << L"\n";
 	Console::Info("Output basename: ");
 	std::wcout << path << L"\n";
-	return !accurateRipVerificationPerformed ||
-		accurateRipResult == AccurateRipVerificationResult::Verified;
+	// Reaching this point means extraction, artifact write-back verification,
+	// and manifest creation all succeeded. The independent AccurateRip verdict
+	// is returned separately so an unverified saved copy is not misreported as
+	// a failed workflow.
+	return true;
 }
 
 void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,

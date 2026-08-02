@@ -3,6 +3,7 @@
 #include "../DriveCapabilityParsing.h"
 #include "../Preservation.h"
 #include "../RecoveryCheckpoint.h"
+#include "../ScanResults.h"
 #include <windows.h>
 #include <algorithm>
 #include <array>
@@ -240,6 +241,45 @@ DiscInfo MakeDisc() {
 int main() {
 	std::cout << std::unitbuf;
 	std::cerr << std::unitbuf;
+
+	QCheckResult qcheckStability;
+	Check(ClassifyQCheckC2Stability(qcheckStability) ==
+		QCheckC2Stability::NoActivity,
+		"Q-Check classifies a C2-clean primary pass as no observed activity");
+	qcheckStability.totalC2 = 12;
+	Check(ClassifyQCheckC2Stability(qcheckStability) ==
+		QCheckC2Stability::RecheckIncomplete,
+		"Q-Check retains primary C2 when verification is unavailable");
+	qcheckStability.c2RecheckCompleted = true;
+	Check(ClassifyQCheckC2Stability(qcheckStability) ==
+		QCheckC2Stability::RecheckIncomplete,
+		"Q-Check does not accept a sample-less verification pass as clean");
+	qcheckStability.c2RecheckSamples.push_back(QCheckSample{});
+	Check(ClassifyQCheckC2Stability(qcheckStability) ==
+		QCheckC2Stability::Intermittent,
+		"Q-Check treats a clean verification pass as intermittent");
+	qcheckStability.c2RecheckTotal = 3;
+	Check(ClassifyQCheckC2Stability(qcheckStability) ==
+		QCheckC2Stability::Reproducible,
+		"Q-Check treats repeated C2 as reproducible");
+	qcheckStability.c2RecheckTotalCU = 1;
+	Check(ClassifyQCheckC2Stability(qcheckStability) ==
+		QCheckC2Stability::Unrecoverable,
+		"Q-Check gives verification-pass CU the highest severity");
+	QCheckResult partialRecheckC2;
+	partialRecheckC2.totalC2 = 4;
+	partialRecheckC2.c2RecheckAttempted = true;
+	partialRecheckC2.c2RecheckTotal = 2;
+	Check(ClassifyQCheckC2Stability(partialRecheckC2) ==
+		QCheckC2Stability::Reproducible,
+		"Q-Check retains reproducible C2 from an incomplete verification pass");
+	QCheckResult partialRecheckCU;
+	partialRecheckCU.totalC2 = 4;
+	partialRecheckCU.c2RecheckAttempted = true;
+	partialRecheckCU.c2RecheckTotalCU = 1;
+	Check(ClassifyQCheckC2Stability(partialRecheckCU) ==
+		QCheckC2Stability::Unrecoverable,
+		"Q-Check retains CU from an incomplete verification pass");
 
 	// MMC Mode Page 2Ah: exercise the corrected DVD masks, C2/R-W/Q
 	// distinction, changer mechanism values, and speed descriptor offsets.
@@ -821,6 +861,10 @@ int main() {
 	PreservationManifestContext manifest;
 	manifest.workflow = "Automated test";
 	manifest.artifacts.push_back(abc.wstring());
+	manifest.verificationStatus = "VERIFIED WITH CAUTION";
+	manifest.verificationMethod = "Physical byte comparison";
+	manifest.verificationNote = "A retry was required.";
+	manifest.verificationAffectedTracks = { 1, 2 };
 	std::filesystem::path manifestPath = temp / L"manifest.json";
 	Check(WritePreservationManifest(disc, manifest, manifestPath.wstring()),
 		"Preservation manifest is generated");
@@ -828,8 +872,10 @@ int main() {
 	std::string manifestText((std::istreambuf_iterator<char>(manifestInput)),
 		std::istreambuf_iterator<char>());
 	Check(manifestText.find(hashes.sha256) != std::string::npos &&
-		manifestText.find("\"workflow\": \"Automated test\"") != std::string::npos,
-		"Manifest records workflow and artifact hashes");
+		manifestText.find("\"workflow\": \"Automated test\"") != std::string::npos &&
+		manifestText.find("\"status\": \"VERIFIED WITH CAUTION\"") != std::string::npos &&
+		manifestText.find("\"affected_tracks\": [1, 2]") != std::string::npos,
+		"Manifest records workflow, artifact hashes, and verification evidence");
 	PreservationManifestContext missingManifest;
 	missingManifest.workflow = "Missing artifact test";
 	missingManifest.artifacts.push_back((temp / L"missing.bin").wstring());

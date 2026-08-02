@@ -192,6 +192,8 @@ OptiScan offers five rip modes with increasing verification. The mode determines
 
 All secure modes use C2 error pointers when available — a clean C2 read is trusted as verified, skipping unnecessary re-reads. Cache defeat forces a seek to a distant location between reads to ensure each pass is a true disc re-read rather than cached data.
 
+Full-disc copy reports extraction completion separately from verification as **VERIFIED**, **NOT VERIFIED** (a checksum mismatch), or **UNVERIFIED** (no conclusive AccurateRip decision). A saved mismatch or inconclusive result is still a completed extraction, not a workflow failure. A later quality scan describes the disc/drive measurement only; it never retroactively validates a previously mismatched copy. In selected-track **Test & Copy**, a track is verified only after the saved rip and an independent physical re-read are byte-identical. If an earlier verification pass mismatched or had read errors before a retry matched, the rip remains verified but is prominently marked **VERIFIED WITH CAUTION — intermittent read instability**. Preservation manifests record the verification status, method, explanatory note, and affected track numbers so the warning survives beyond console output.
+
 For discs that fail even Secure Paranoid — or when the drive's C2 reporting can't be trusted — use the separate **[Recovery Rip](#recovery-rip-drive-independent)** engine (menu option 5), which rebuilds hard sectors from cross-read consensus instead of relying on the drive's C2.
 
 ### Pioneer Real-Time PureRead diagnostics
@@ -267,7 +269,9 @@ Three command sets are supported:
 
 If none of these command sets is supported by the drive, the scan reports the incompatibility and suggests using the BLER scan (option 8) instead.
 
-**Output:** Per-second backend-specific time-series data, aggregate statistics (total, average, peak), quality rating, and a CSV log (`qcheck_scan.csv`) for graphing. Pioneer CSV rows contain only measured C1 and diagnostic E22 columns; unmeasured C2/E32 and CU fields are omitted rather than serialized as clean zeroes.
+When a Plextor/LiteOn primary pass reports C2 activity, OptiScan automatically runs a full verification pass. Both passes are retained. A clean verification pass is reported as **INTERMITTENT READ INSTABILITY**, not used to erase the original count or validate an earlier extraction; C2 on both passes is reported as **REPRODUCIBLE C2 ACTIVITY**. A pass can be called clean only after it completes with usable measurement samples. If a recheck stalls, is cancelled, or loses communication, any C2/CU already measured still contributes to the verdict and the pass is labeled incomplete; 30 seconds without LBA progress stops polling. Because read behavior depends on the media, drive, firmware, and speed together, the warning describes the disc/drive/speed combination rather than declaring the physical disc alone defective.
+
+**Output:** Per-second backend-specific time-series data, aggregate statistics (total, average, peak), separate quality and C2-stability verdicts, and a CSV log (`qcheck_scan.csv`) for graphing. Plextor/LiteOn CSV rows identify the primary or verification pass and preserve each pass's LBA observations. Pioneer CSV rows contain only measured C1 and diagnostic E22 columns; unmeasured C2/E32 and CU fields are omitted rather than serialized as clean zeroes. Every report states that the quality scan does not verify a prior copy.
 
 **When to use:** For drive-reported quality trends without relying on host-side C2 pointer interpretation. Plextor/LiteOn provide the fullest C1/C2/CU assessment; Pioneer C1/E22 remains diagnostic and should be paired with secure extraction/AccurateRip for a copy decision.
 
