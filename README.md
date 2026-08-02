@@ -6,7 +6,7 @@ A Windows **GUI application** for high-quality audio CD ripping, writing, and ad
 
 OptiScan reads and writes audio CDs at the raw sector level using SCSI/MMC commands and provides multiple quality scanning modes to assess disc health before, during, or after extraction.
 
-**[Download the latest release](https://github.com/dhucul/OptiScan/releases/latest)** — `OptiScan-<version>-Setup.exe`, a 64-bit installer for Windows 10 or later. It installs the Microsoft Visual C++ 2015–2022 runtime if the system doesn't already have it, so it requires administrator rights.
+**[Download OptiScan 3.29](https://github.com/dhucul/OptiScan/releases/latest)** — choose `OptiScan-3.29-Setup.exe`, the 64-bit installer for Windows 10 or later. It installs the Microsoft Visual C++ 2015–2022 runtime when needed, so setup requires administrator rights.
 
 > [!IMPORTANT]
 > **Drive compatibility is not universal.** OptiScan relies on low-level SCSI/MMC and vendor-specific optical-drive commands, so support depends on the exact drive model, firmware, chipset, USB bridge, and media type. A drive may work for normal ripping but still fail features such as pregap detection, subchannel reading/writing, CD-Text writing, C2/C1 reporting, or hardware quality scans.
@@ -1068,7 +1068,29 @@ The target Windows platform is taken from the installed SDK (`SDKDDKVer.h`), and
 
 ## Building
 
-Requires **Visual Studio** with the **C++ Desktop Development** workload. Open `OptiScan.vcxproj` and build. There are no third-party dependencies — everything links against import libraries that ship with the Windows SDK, pulled in via `#pragma comment(lib, ...)` in the source. Those libraries are: `gdiplus.lib` and `comctl32.lib` (UI rendering and common controls), `winhttp.lib` and `wininet.lib` (AccurateRip lookups and the GitHub update check), `ole32.lib` (the folder picker and the IMAPI2 disc-burning fallback), `uiautomationcore.lib` (screen-reader announcements), and `winmm.lib` (the UI click sound).
+Requires **Visual Studio** with the **Desktop development with C++** workload and a Windows 10 or later SDK. The project targets x64, uses C++20, and currently selects the `v145` platform toolset.
+
+Open `OptiScan.slnx` in Visual Studio and build the `Release | x64` configuration, or run the following from a Developer PowerShell:
+
+```powershell
+msbuild OptiScan.slnx -p:Configuration=Release -p:Platform=x64 -m
+```
+
+The normal Release output is written to `x64\Release`. The solution also contains `tests\OptiScan.Tests.vcxproj`.
+
+There are no third-party link dependencies — everything links against import libraries supplied by the Windows SDK. These include `gdiplus.lib` and `comctl32.lib` (UI rendering and common controls), `winhttp.lib` and `wininet.lib` (AccurateRip lookups and the GitHub update check), `ole32.lib` (the folder picker and the IMAPI2 disc-burning fallback), `uiautomationcore.lib` (screen-reader announcements), and `winmm.lib` (the UI click sound).
+
+### Building the installer
+
+Installer builds additionally require **Inno Setup 6** and `installer\redist\vc_redist.x64.exe`. From the repository root, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File installer\build-installer.ps1
+```
+
+The script discovers MSBuild with `vswhere`, builds `Release | x64` into the separate `installer\Release` staging directory, and writes the versioned setup executable to `installer\Output`. Using a separate staging directory allows packaging to succeed even when the regular `x64\Release\OptiScan.exe` is running.
+
+Before producing a release, keep the version synchronized in `installer\OptiScan.iss`, `OptiScan.rc`, and `UpdateChecker.cpp`. The installer filename is derived from the version in `installer\OptiScan.iss`.
 
 ### Optional runtime dependency: `flac.exe`
 
