@@ -14,12 +14,26 @@
 // ============================================================================
 static std::string WideToUTF8(const std::wstring& wide) {
 	if (wide.empty()) return std::string();
-	int requiredSize = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
+	int requiredSize = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+		wide.data(), static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
 	if (requiredSize == 0) return std::string();
 
-	std::string utf8(requiredSize - 1, '\0');
-	WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, &utf8[0], requiredSize, nullptr, nullptr);
+	std::string utf8(requiredSize, '\0');
+	if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+		wide.data(), static_cast<int>(wide.size()), utf8.data(), requiredSize,
+		nullptr, nullptr) == 0) return std::string();
 	return utf8;
+}
+
+static bool UTF8ToWide(const std::string& utf8, std::wstring& wide) {
+	wide.clear();
+	if (utf8.empty()) return true;
+	const int required = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+		utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+	if (required <= 0) return false;
+	wide.resize(required);
+	return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+		utf8.data(), static_cast<int>(utf8.size()), wide.data(), required) == required;
 }
 
 // ============================================================================
@@ -47,12 +61,25 @@ bool OpticalDrive::ParseCueSheet(const std::wstring& cueFile,
 	std::string& discTitle, std::string& discPerformer,
 	std::string& discMCN) {
 
-	std::wifstream file(cueFile);
-	if (!file.is_open()) {
+	std::ifstream rawFile(cueFile, std::ios::binary);
+	if (!rawFile.is_open()) {
 		Console::Error("Cannot open CUE file: ");
 		std::wcout << cueFile << L"\n";
 		return false;
 	}
+	std::string cueBytes((std::istreambuf_iterator<char>(rawFile)),
+		std::istreambuf_iterator<char>());
+	if (cueBytes.size() >= 3 && static_cast<unsigned char>(cueBytes[0]) == 0xEF &&
+		static_cast<unsigned char>(cueBytes[1]) == 0xBB &&
+		static_cast<unsigned char>(cueBytes[2]) == 0xBF) {
+		cueBytes.erase(0, 3);
+	}
+	std::wstring cueText;
+	if (!UTF8ToWide(cueBytes, cueText)) {
+		Console::Error("CUE sheet is not valid UTF-8\n");
+		return false;
+	}
+	std::wistringstream file(cueText);
 
 	discTitle.clear();
 	discPerformer.clear();
@@ -90,7 +117,6 @@ bool OpticalDrive::ParseCueSheet(const std::wstring& cueFile,
 			fileCount++;
 			if (fileCount > 1) {
 				Console::Error("Multi-file CUE sheets are not supported\n");
-				file.close();
 				tracks.clear();
 				return false;
 			}
@@ -128,7 +154,6 @@ bool OpticalDrive::ParseCueSheet(const std::wstring& cueFile,
 				std::wcout << line << L"\n";
 				Console::Info("Only AUDIO, MODE1/2352, and MODE2/2352 are supported\n");
 				tracks.clear();
-				file.close();
 				return false;
 			}
 
@@ -206,8 +231,6 @@ bool OpticalDrive::ParseCueSheet(const std::wstring& cueFile,
 		tracks.push_back(currentTrack);
 	}
 
-	file.close();
-
 	if (fileCount == 0) {
 		Console::Error("No FILE directive found in CUE sheet\n");
 		tracks.clear();
@@ -256,6 +279,11 @@ bool OpticalDrive::ParseCueSheet(const std::wstring& cueFile,
 
 	// Remove non-audio tracks (enhanced CDs have a data session that cannot
 	// be written back as part of an audio disc image).
+	if (!tracks.front().isAudio) {
+		Console::Error("CUE begins with a data track; audio-only writing cannot preserve its LBA layout\n");
+		tracks.clear();
+		return false;
+	}
 	auto it = std::remove_if(tracks.begin(), tracks.end(),
 		[](const TrackWriteInfo& t) { return !t.isAudio; });
 	size_t removed = std::distance(it, tracks.end());

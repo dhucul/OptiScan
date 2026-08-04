@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstring>
 #include <cwchar>
+#include <new>
 
 // Progress.h (pulled in elsewhere) does `#undef min` / `#undef max`, which
 // would otherwise break the legacy `min(a, b)` / `max(a, b)` calls in the GUI
@@ -131,8 +132,25 @@ static void EnsureBackdropBitmap(int width, int height)
         return;
     }
     delete gBackdropBitmap;
-    gBackdropBitmap = new Gdiplus::Bitmap(width, height, PixelFormat32bppPARGB);
+    try {
+        gBackdropBitmap = new Gdiplus::Bitmap(width, height, PixelFormat32bppPARGB);
+    }
+    catch (const std::bad_alloc&) {
+        gBackdropBitmap = nullptr;
+    }
+    if (!gBackdropBitmap || gBackdropBitmap->GetLastStatus() != Gdiplus::Ok) {
+        delete gBackdropBitmap;
+        gBackdropBitmap = nullptr;
+        gBackdropW = gBackdropH = 0;
+        return;
+    }
     Gdiplus::Graphics g(gBackdropBitmap);
+    if (g.GetLastStatus() != Gdiplus::Ok) {
+        delete gBackdropBitmap;
+        gBackdropBitmap = nullptr;
+        gBackdropW = gBackdropH = 0;
+        return;
+    }
     PaintProceduralBackdrop(g, width, height);
     gBackdropW = width;
     gBackdropH = height;
@@ -141,10 +159,16 @@ static void EnsureBackdropBitmap(int width, int height)
 }
 
 
-void InitializeUiResources()
+bool InitializeUiResources()
 {
     Gdiplus::GdiplusStartupInput gdiplusStartupInput;
-    Gdiplus::GdiplusStartup(&gGdiPlusToken, &gdiplusStartupInput, nullptr);
+    const Gdiplus::Status status =
+        Gdiplus::GdiplusStartup(&gGdiPlusToken, &gdiplusStartupInput, nullptr);
+    if (status != Gdiplus::Ok) {
+        gGdiPlusToken = 0;
+        return false;
+    }
+    return true;
 }
 
 void DestroyUiResources()
@@ -186,7 +210,10 @@ void DestroyUiResources()
     // PrivateFontCollection) before GDI+ itself shuts down.
     UnloadBundledFonts();
 
-    Gdiplus::GdiplusShutdown(gGdiPlusToken);
+    if (gGdiPlusToken) {
+        Gdiplus::GdiplusShutdown(gGdiPlusToken);
+        gGdiPlusToken = 0;
+    }
 }
 
 HBRUSH CreateOutputEditBrush(int /*width*/, int /*height*/)
@@ -435,8 +462,9 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
         WCHAR number[8];
         LPCWSTR rawLabel = CommandLabels[commandIndex];
         SplitCommandLabel(CommandLabels[commandIndex], number, ARRAYSIZE(number), &rawLabel);
-        WCHAR label[160];
-        wcsncpy_s(label, rawLabel, _TRUNCATE);
+        WCHAR label[160] = {};
+        wcsncpy_s(label, ARRAYSIZE(label), rawLabel ? rawLabel : L"", _TRUNCATE);
+        label[ARRAYSIZE(label) - 1] = L'\0';
         size_t labelLength = wcslen(label);
         while (labelLength > 0 && (label[labelLength - 1] == L'*' || label[labelLength - 1] == L' '))
             label[--labelLength] = L'\0';

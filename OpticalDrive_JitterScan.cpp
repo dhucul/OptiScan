@@ -29,6 +29,7 @@ bool OpticalDrive::RunJitterScan(const DiscInfo& disc, JitterResult& result, int
 		return false;
 	}
 	result.supported = true;
+	ScopedDriveSpeed speedRestore(m_drive);
 
 	// Scan range — audio sectors only, matches QCheck.
 	DWORD firstLBA = 0, lastLBA = 0;
@@ -58,6 +59,7 @@ bool OpticalDrive::RunJitterScan(const DiscInfo& disc, JitterResult& result, int
 	}
 
 	auto start = std::chrono::steady_clock::now();
+	auto lastProgress = start;
 	bool scanDone = false;
 	int sampleIndex = 0;
 	DWORD lastReportedLBA = DWORD(-1);
@@ -82,10 +84,22 @@ bool OpticalDrive::RunJitterScan(const DiscInfo& disc, JitterResult& result, int
 			m_drive.SetSpeed(0);
 			return false;
 		}
+		auto pollNow = std::chrono::steady_clock::now();
+		if (currentLBA != lastReportedLBA) lastProgress = pollNow;
+		else if (!scanDone && pollNow - lastProgress > std::chrono::seconds(30)) {
+			m_drive.LiteOnJitterStop();
+			std::cout << "\nERROR: Jitter scan stalled for 30 seconds.\n";
+			return false;
+		}
+		if (pollNow - start > std::chrono::minutes(90)) {
+			m_drive.LiteOnJitterStop();
+			std::cout << "\nERROR: Jitter scan exceeded the 90-minute safety limit.\n";
+			return false;
+		}
 
 		// Skip empty / duplicate responses while the drive seeks/spins up
-		if (currentLBA == 0 && jitter == 0 && beta == 0 && !scanDone) continue;
-		if (currentLBA == lastReportedLBA && !scanDone) continue;
+		if (currentLBA == 0 && jitter == 0 && beta == 0 && !scanDone) { Sleep(10); continue; }
+		if (currentLBA == lastReportedLBA && !scanDone) { Sleep(10); continue; }
 		lastReportedLBA = currentLBA;
 
 		// Discard first 3 raw samples — startup artefacts (matches QCheck)
@@ -176,7 +190,8 @@ bool OpticalDrive::SaveJitterLog(const JitterResult& result, const std::wstring&
 	f << "lba,jitter,beta\n";
 	for (const auto& s : result.samples)
 		f << s.lba << "," << s.jitter << "," << s.beta << "\n";
-	return true;
+	f.close();
+	return f.good();
 }
 
 void OpticalDrive::PrintJitterReport(const JitterResult& result) {

@@ -332,6 +332,11 @@ namespace {
         // (ES_READONLY only blocks *user* keystrokes, not programmatic
         // messages); passing FALSE skips building an undo buffer.
         const int endPos = GetWindowTextLengthW(h);
+        DWORD savedStart = 0, savedEnd = 0;
+        SendMessageW(h, EM_GETSEL, reinterpret_cast<WPARAM>(&savedStart),
+            reinterpret_cast<LPARAM>(&savedEnd));
+        const bool followTail = savedEnd >= static_cast<DWORD>(endPos);
+        const int firstVisibleLine = static_cast<int>(SendMessageW(h, EM_GETFIRSTVISIBLELINE, 0, 0));
         SendMessageW(h, EM_SETSEL, (WPARAM)endPos, (LPARAM)endPos);
         SendMessageW(h, EM_REPLACESEL, FALSE, (LPARAM)crlf.c_str());
 
@@ -341,11 +346,21 @@ namespace {
             SendMessageW(h, EM_SETSEL, 0, (LPARAM)removeCount);
             SendMessageW(h, EM_REPLACESEL, FALSE, (LPARAM)L"");
             total = GetWindowTextLengthW(h);
+            savedStart = savedStart > static_cast<DWORD>(removeCount)
+                ? savedStart - removeCount : 0;
+            savedEnd = savedEnd > static_cast<DWORD>(removeCount)
+                ? savedEnd - removeCount : 0;
         }
 
-        // Follow the tail so streamed output stays in view / under the caret.
-        SendMessageW(h, EM_SETSEL, (WPARAM)total, (LPARAM)total);
-        SendMessageW(h, EM_SCROLLCARET, 0, 0);
+        if (followTail) {
+            SendMessageW(h, EM_SETSEL, (WPARAM)total, (LPARAM)total);
+            SendMessageW(h, EM_SCROLLCARET, 0, 0);
+        }
+        else {
+            SendMessageW(h, EM_SETSEL, savedStart, savedEnd);
+            const int currentFirst = static_cast<int>(SendMessageW(h, EM_GETFIRSTVISIBLELINE, 0, 0));
+            SendMessageW(h, EM_LINESCROLL, 0, firstVisibleLine - currentFirst);
+        }
     }
 
     // ----------------------------------------------------------------------
@@ -389,12 +404,29 @@ namespace {
         int sync() override {
             std::ptrdiff_t n = pptr() - pbase();
             if (n <= 0) return 0;
-            GuiSink::AppendUtf8(pbase(), static_cast<size_t>(n));
+            m_pending.append(pbase(), static_cast<size_t>(n));
             pbump(static_cast<int>(-n));
+            size_t complete = m_pending.size();
+            size_t lead = complete;
+            while (lead > 0 &&
+                (static_cast<unsigned char>(m_pending[lead - 1]) & 0xC0) == 0x80) --lead;
+            if (lead > 0) {
+                const unsigned char c = static_cast<unsigned char>(m_pending[lead - 1]);
+                const size_t expected = c < 0x80 ? 1 :
+                    ((c & 0xE0) == 0xC0 ? 2 : ((c & 0xF0) == 0xE0 ? 3 :
+                    ((c & 0xF8) == 0xF0 ? 4 : 1)));
+                const size_t available = complete - (lead - 1);
+                if (expected > available) complete = lead - 1;
+            }
+            if (complete > 0) {
+                GuiSink::AppendUtf8(m_pending.data(), complete);
+                m_pending.erase(0, complete);
+            }
             return 0;
         }
     private:
         char m_buf[4096];
+        std::string m_pending;
     };
 
     class WideSinkBuf : public std::wstreambuf {
@@ -432,6 +464,12 @@ namespace {
     };
     EmptyNarrowBuf* g_cinBuf  = nullptr;
     EmptyWideBuf*   g_wcinBuf = nullptr;
+    std::streambuf* g_oldCoutBuf = nullptr;
+    std::streambuf* g_oldCerrBuf = nullptr;
+    std::wstreambuf* g_oldWcoutBuf = nullptr;
+    std::wstreambuf* g_oldWcerrBuf = nullptr;
+    std::streambuf* g_oldCinBuf = nullptr;
+    std::wstreambuf* g_oldWcinBuf = nullptr;
 
     bool g_installed = false;
 
@@ -564,16 +602,34 @@ namespace GuiSink {
         g_wcerrBuf = new WideSinkBuf();
         g_cinBuf   = new EmptyNarrowBuf();
         g_wcinBuf  = new EmptyWideBuf();
-        std::cout.rdbuf(g_coutBuf);
-        std::cerr.rdbuf(g_cerrBuf);
-        std::wcout.rdbuf(g_wcoutBuf);
-        std::wcerr.rdbuf(g_wcerrBuf);
-        std::cin.rdbuf(g_cinBuf);
-        std::wcin.rdbuf(g_wcinBuf);
+        g_oldCoutBuf = std::cout.rdbuf(g_coutBuf);
+        g_oldCerrBuf = std::cerr.rdbuf(g_cerrBuf);
+        g_oldWcoutBuf = std::wcout.rdbuf(g_wcoutBuf);
+        g_oldWcerrBuf = std::wcerr.rdbuf(g_wcerrBuf);
+        g_oldCinBuf = std::cin.rdbuf(g_cinBuf);
+        g_oldWcinBuf = std::wcin.rdbuf(g_wcinBuf);
         std::cout.setf(std::ios::unitbuf);
         std::cerr.setf(std::ios::unitbuf);
         std::wcout.setf(std::ios::unitbuf);
         std::wcerr.setf(std::ios::unitbuf);
+    }
+
+    void UninstallStreamRedirect() {
+        if (!g_installed) return;
+        std::cout.flush(); std::cerr.flush(); std::wcout.flush(); std::wcerr.flush();
+        std::cout.rdbuf(g_oldCoutBuf);
+        std::cerr.rdbuf(g_oldCerrBuf);
+        std::wcout.rdbuf(g_oldWcoutBuf);
+        std::wcerr.rdbuf(g_oldWcerrBuf);
+        std::cin.rdbuf(g_oldCinBuf);
+        std::wcin.rdbuf(g_oldWcinBuf);
+        delete g_coutBuf; delete g_cerrBuf;
+        delete g_wcoutBuf; delete g_wcerrBuf;
+        delete g_cinBuf; delete g_wcinBuf;
+        g_coutBuf = g_cerrBuf = nullptr;
+        g_wcoutBuf = g_wcerrBuf = nullptr;
+        g_cinBuf = nullptr; g_wcinBuf = nullptr;
+        g_installed = false;
     }
 
 }  // namespace GuiSink

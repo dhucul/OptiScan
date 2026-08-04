@@ -111,6 +111,12 @@ static bool SetWriteParametersPage(ScsiDrive& drive, int subchannelMode, bool qu
 	BYTE verifyBuf[60] = { 0 };
 	if (drive.SendSCSI(senseCdb, sizeof(senseCdb), verifyBuf, sizeof(verifyBuf), true)) {
 		WORD bdLen = (static_cast<WORD>(verifyBuf[6]) << 8) | verifyBuf[7];
+		if (static_cast<size_t>(8) + bdLen + 5 > sizeof(verifyBuf)) {
+			if (!quiet) Console::Warning("Drive returned an unusable Write Parameters page\n");
+			// MODE SELECT itself succeeded; an unusable optional readback is not
+			// proof that the drive rejected the requested write parameters.
+			return true;
+		}
 		BYTE* vPage = verifyBuf + 8 + bdLen;
 		BYTE writeType = vPage[2] & 0x0F;
 		BYTE blockType = vPage[4];

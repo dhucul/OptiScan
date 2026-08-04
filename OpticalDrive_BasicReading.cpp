@@ -12,6 +12,11 @@
 bool OpticalDrive::ReadSectorWithRetry(DWORD lba, BYTE* data, int sectorSize,
 	bool isAudio, bool includeSubchannel, int& retryCount, bool detectC2, int* c2Errors) {
 	if (c2Errors) *c2Errors = 0;
+	const WORD entrySpeed = m_drive.GetCurrentSpeed();
+	auto restoreEntrySpeed = [&]() {
+		m_drive.SetSpeed(entrySpeed == CD_SPEED_MAX ? 0
+			: (std::max)(1, static_cast<int>(entrySpeed / CD_SPEED_1X)));
+	};
 
 	for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
 		bool ok = false;
@@ -39,8 +44,7 @@ bool OpticalDrive::ReadSectorWithRetry(DWORD lba, BYTE* data, int sectorSize,
 
 		if (ok) {
 			retryCount += attempt;
-			// Restore full speed after a successful retry
-			if (attempt > 0) m_drive.SetSpeed(0);
+			if (attempt > 0) restoreEntrySpeed();
 			return true;
 		}
 
@@ -51,9 +55,7 @@ bool OpticalDrive::ReadSectorWithRetry(DWORD lba, BYTE* data, int sectorSize,
 		Sleep(5 << attempt);  // 5, 10, 20, 40, 80ms (was 10, 20, 40, 80, 160ms)
 	}
 
-	// Restore speed before returning failure — critical for CD-R to avoid
-	// staying at reduced speed for subsequent good sectors
-	m_drive.SetSpeed(0);
+	restoreEntrySpeed();
 	return false;
 }
 

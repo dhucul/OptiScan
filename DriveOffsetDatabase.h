@@ -12,8 +12,8 @@
 struct DriveOffsetRecord {
 	std::string vendor;
 	std::string model;
-	int offset;
-	int submissions;
+	int offset = 0;
+	int submissions = 0;
 };
 
 class DriveOffsetDatabase {

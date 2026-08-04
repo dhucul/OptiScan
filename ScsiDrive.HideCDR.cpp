@@ -40,6 +40,7 @@ bool ScsiDrive::SetHideCDRMedia(bool enable) {
 	// ── MODE SENSE 10 — read current vendor page 0x31 ──────────────────
 	BYTE cdbSense[10] = {};
 	cdbSense[0] = 0x5A;                              // MODE SENSE 10
+	cdbSense[1] = 0x08;                              // DBD: omit block descriptor
 	cdbSense[2] = PLEXTOR_PAGE_CODE;                 // PC=00, page code 0x31
 	cdbSense[7] = 0;
 	cdbSense[8] = static_cast<BYTE>(PAGE_BUFFER_LEN);
@@ -87,7 +88,7 @@ bool ScsiDrive::SetHideCDRMedia(bool enable) {
 
 	// Total length to send = header + block desc + page header + page payload.
 	int writeLen = pageOffset + 2 + pageLen;
-	if (writeLen > PAGE_BUFFER_LEN) writeLen = PAGE_BUFFER_LEN;
+	if (writeLen > PAGE_BUFFER_LEN) return false;
 
 	// ── MODE SELECT 10 — write modified page back ──────────────────────
 	BYTE cdbSelect[10] = {};

@@ -175,7 +175,7 @@ namespace detail {
 		}
 		Reset();
 		std::cout << "  ";
-		DrawRule(width);
+		DrawRule(std::max(1, width - 2));
 	}
 
 	// Legend showing the three severity bands used by the bar gradient.
@@ -626,8 +626,8 @@ inline void DrawScoreBar(const std::string& label,
 // ────────────────────────────────────────────────────────────────────────────
 
 inline std::vector<int> BucketData(const std::vector<int>& perSecond, int width) {
-	std::vector<int> buckets(width, 0);
-	if (perSecond.empty() || width <= 0) return buckets;
+	if (perSecond.empty() || width <= 0) return {};
+	std::vector<int> buckets(static_cast<size_t>(width), 0);
 	for (size_t i = 0; i < perSecond.size(); i++) {
 		size_t b = (i * width) / perSecond.size();
 		if (b >= static_cast<size_t>(width)) b = width - 1;

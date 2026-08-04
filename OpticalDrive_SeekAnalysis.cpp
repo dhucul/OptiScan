@@ -15,6 +15,7 @@
 bool OpticalDrive::RunSeekTimeAnalysis(DiscInfo& disc, std::vector<SeekTimeResult>& results) {
 	std::cout << "\n=== Seek Time Analysis ===\n";
 	results.clear();
+	ScopedDriveSpeed speedRestore(m_drive);
 
 	// Build a list of contiguous audio LBA ranges from the TOC so that
 	// seek tests only target readable audio sectors (skipping data tracks).
@@ -25,6 +26,7 @@ bool OpticalDrive::RunSeekTimeAnalysis(DiscInfo& disc, std::vector<SeekTimeResul
 		// Track 1 may have a hidden pre-gap starting at LBA 0; every other
 		// track's audio begins at its pregapLBA.
 		DWORD start = (t.trackNumber == 1) ? 0 : t.pregapLBA;
+		if (t.endLBA < start) continue;
 		audioRanges.push_back({ start, t.endLBA });
 		totalSectors += t.endLBA - start + 1;
 	}
@@ -36,7 +38,7 @@ bool OpticalDrive::RunSeekTimeAnalysis(DiscInfo& disc, std::vector<SeekTimeResul
 
 	// Drop to minimum (1×) speed so the drive doesn't mask slow seeks
 	// behind high-speed read-ahead buffering.
-	m_drive.SetSpeed(0);
+	m_drive.GetLowestHonoredSpeed(/*apply=*/true);
 	std::cout << "Testing seek times across disc surface...\n";
 	std::cout << "  (Press ESC or Ctrl+C to cancel)\n\n";
 
@@ -180,7 +182,8 @@ bool OpticalDrive::RunSeekTimeAnalysis(DiscInfo& disc, std::vector<SeekTimeResul
 		double diff = r.seekTimeMs - avgSeek;
 		varianceSum += diff * diff;
 	}
-	double stddev = std::sqrt(varianceSum / (results.size() - 1));
+	double stddev = results.size() > 1
+		? std::sqrt(varianceSum / (results.size() - 1)) : 0.0;
 
 	// Flag seeks that are more than 3 standard deviations above the mean.
 	// These outliers typically indicate a region where the head had to

@@ -52,6 +52,7 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 	// stay under our control.
 	PioneerVendor pioneerProbe(m_drive);
 	const bool isPioneerDrive = pioneerProbe.IsPioneerDrive();
+	ScopedDriveSpeed restoreSpeed(m_drive);
 	PioneerPureReadOffGuard pioneerPureReadGuard(m_drive, isPioneerDrive);
 	PioneerCdCheckSummary balanceCdCheck;
 	bool balanceCdCheckAttempted = false;
@@ -96,7 +97,9 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 	// so ~60% of samples fall in the outer 40% of the disc, where wobble
 	// effects are strongest (centrifugal force ∝ radius²).
 	for (int i = 0; i < SAMPLE_COUNT && maxLBA > 0; i++) {
-		double t = static_cast<double>(i) / SAMPLE_COUNT;
+		double t = SAMPLE_COUNT > 1
+			? static_cast<double>(i) / static_cast<double>(SAMPLE_COUNT - 1)
+			: 0.0;
 		// Concave bias toward outer edge: 1-(1-t)² = 2t - t²
 		// maps [0,1] → [0,1] with higher sample density near 1.0
 		double biased = 2.0 * t - t * t;
@@ -136,7 +139,8 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 	std::vector<double> avgReadCdC2PerSpeed(NUM_SPEEDS, 0.0);
 	std::vector<double> jitterCoeffVar(NUM_SPEEDS, 0.0);
 	std::vector<double> avgReadTimeMs(NUM_SPEEDS, 0.0);
-	std::vector<double> avgStabilityRatio(NUM_SPEEDS, 1.0);
+	std::vector<double> avgStabilityRatio(NUM_SPEEDS, 0.0);
+	std::vector<bool> stabilityMeasured(NUM_SPEEDS, false);
 	std::vector<int> validReadSamplesPerSpeed(NUM_SPEEDS, 0);
 	// Actual read speed (x) the drive ran at each requested step, from the MODE
 	// SENSE readback. Many drives clamp low requests to a floor (e.g. 4x/8x
@@ -329,8 +333,10 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 
 		// Average per-sector worst/best ratio: 1.0 = perfectly stable,
 		// >2.0 = the same sector takes 2× longer on a bad read than a good one.
-		avgStabilityRatio[s] = (stabilityCount > 0)
-			? stabilitySum / stabilityCount : 1.0;
+		if (stabilityCount > 0) {
+			avgStabilityRatio[s] = stabilitySum / stabilityCount;
+			stabilityMeasured[s] = true;
+		}
 	}
 
 	// A relative score is meaningless without enough successful timing reads.
@@ -394,6 +400,11 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 			double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
 			if (ok) { driftSum += ms; driftValid++; }
+		}
+		if (g_interrupt.IsInterrupted()) {
+			m_drive.SpinDown();
+			std::cout << "\n*** Balance check cancelled during thermal-drift re-test ***\n";
+			return false;
 		}
 
 		if (driftValid > 0 && avgReadTimeMs[0] > 0.001) {
@@ -463,14 +474,16 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 				int c1 = 0, secondStage = 0, cu = 0;
 				DWORD lba = 0;
 				bool done = false;
+				bool pioneerSampleValid = true;
 
 				bool pollOk = hasPioneerHwC1
-					? m_drive.PioneerScanPoll(c1, secondStage, cu, lba, done)
+					? m_drive.PioneerScanPoll(c1, secondStage, cu, lba, done,
+						&pioneerSampleValid)
 					: m_drive.LiteOnScanPoll(c1, secondStage, cu, lba, done);
 				if (!pollOk && hasPioneerHwC1) {
 					std::this_thread::sleep_for(std::chrono::milliseconds(200));
 					pollOk = m_drive.PioneerScanPoll(
-						c1, secondStage, cu, lba, done);
+						c1, secondStage, cu, lba, done, &pioneerSampleValid);
 				}
 				if (!pollOk) {
 					communicationLost = true;
@@ -479,6 +492,8 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 
 				if (!hasPioneerHwC1 && lba >= maxLBA)
 					done = true;
+				if (hasPioneerHwC1 && !pioneerSampleValid)
+					continue;
 
 				const auto pollTime = std::chrono::steady_clock::now();
 				if (done || lba != lastReportedLBA)
@@ -635,6 +650,8 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 			break;
 		}
 	}
+	errorCeilingIdx = std::max(errorCeilingIdx,
+		std::min(baselineIdx + 1, NUM_SPEEDS - 1));
 
 	// Detect speed fallback: if a higher speed step has read times that
 	// match or exceed a much lower speed, the drive silently fell back.
@@ -683,7 +700,8 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 	// ranges: the audio-relevant ceiling (<=16x) for the primary score, and
 	// the full sweep (incl. 24/32/40x) for the secondary "full-speed" score.
 	// 'ceilIdx' is the highest speed index that contributes to the score.
-		auto ComputeErrorScore = [&](int ceilIdx) -> int {
+	auto ComputeErrorScore = [&](int ceilIdx) -> int {
+		if (ceilIdx <= baselineIdx) return 100;
 		int errorScore = 0;
 
 		if (hasHwC1 && !hwEccFlat) {
@@ -824,25 +842,34 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 	// This directly measures wobble — a balanced disc reads the same sector
 	// in the same time regardless of attempt, while wobble causes the servo
 	// to hunt, producing large read-time spread for individual sectors.
-	double baselineStability = std::max(avgStabilityRatio[baselineIdx], 1.001);
+	int stabilityBaselineIdx = baselineIdx;
+	while (stabilityBaselineIdx < NUM_SPEEDS && !stabilityMeasured[stabilityBaselineIdx])
+		stabilityBaselineIdx++;
+	const bool stabilityAvailable = stabilityBaselineIdx < NUM_SPEEDS;
+	double baselineStability = stabilityAvailable
+		? std::max(avgStabilityRatio[stabilityBaselineIdx], 1.001) : 1.001;
 	double peakStabilityRatio = 0.0;
-	for (int s = baselineIdx + 1; s < NUM_SPEEDS; s++) {
+	for (int s = stabilityBaselineIdx + 1; stabilityAvailable && s < NUM_SPEEDS; s++) {
+		if (!stabilityMeasured[s]) continue;
 		double ratio = avgStabilityRatio[s] / baselineStability;
 		if (ratio > peakStabilityRatio) peakStabilityRatio = ratio;
 	}
 
-	int stabilityScore = ContinuousScore(peakStabilityRatio, {
+	int stabilityScore = stabilityAvailable ? ContinuousScore(peakStabilityRatio, {
 		{1.0, 100}, {1.5, 100}, {2.5, 75}, {4.0, 50}, {8.0, 25}, {16.0, 0}
-		});
+		}) : 100;
 
 	// Also check absolute stability at top speed — cap score based on
 	// raw worst/best ratio regardless of baseline comparison.
-	double maxStability = *std::max_element(avgStabilityRatio.begin(),
-		avgStabilityRatio.end());
-	int absoluteStabilityCap = ContinuousScore(maxStability, {
-		{1.0, 100}, {3.0, 75}, {5.0, 50}, {10.0, 25}, {20.0, 0}
-		});
-	stabilityScore = std::min(stabilityScore, absoluteStabilityCap);
+	if (stabilityAvailable) {
+		double maxStability = 0.0;
+		for (int s = 0; s < NUM_SPEEDS; s++)
+			if (stabilityMeasured[s]) maxStability = std::max(maxStability, avgStabilityRatio[s]);
+		int absoluteStabilityCap = ContinuousScore(maxStability, {
+			{1.0, 100}, {3.0, 75}, {5.0, 50}, {10.0, 25}, {20.0, 0}
+			});
+		stabilityScore = std::min(stabilityScore, absoluteStabilityCap);
+	}
 
 	// Detect drive speed ceiling — mirror of the baseline detection but from
 	// the top.  If the drive caps its speed, adjacent high-speed steps will
@@ -851,16 +878,13 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 	// "faster" setting produces equal or slower times is a wobble signal, NOT
 	// a speed cap.  Use strict less-than to avoid collapsing ties.
 	int ceilingIdx = NUM_SPEEDS - 1;
-	for (int s = NUM_SPEEDS - 2; s > baselineIdx; s--) {
-		if (avgReadTimeMs[s] > 0.001 && avgReadTimeMs[ceilingIdx] > 0.001) {
-			double ratio = avgReadTimeMs[s] / avgReadTimeMs[ceilingIdx];
-			if (ratio < 1.15 && avgReadTimeMs[ceilingIdx] < avgReadTimeMs[s]) {
-				ceilingIdx = s;
-			}
-			else {
-				break;
-			}
-		}
+	while (ceilingIdx > baselineIdx && avgReadTimeMs[ceilingIdx] < 0.001)
+		ceilingIdx--;
+	for (int s = ceilingIdx - 1; s > baselineIdx; s--) {
+		if (avgReadTimeMs[s] < 0.001 || avgReadTimeMs[ceilingIdx] < 0.001) break;
+		double ratio = avgReadTimeMs[s] / avgReadTimeMs[ceilingIdx];
+		if (ratio < 1.15 && avgReadTimeMs[ceilingIdx] < avgReadTimeMs[s]) ceilingIdx = s;
+		else break;
 	}
 
 	// Speed scaling score: detect when the drive fails to go faster at higher
@@ -1010,6 +1034,7 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 		}
 
 		// Check for stability degradation
+		if (!stabilityMeasured[s] || !stabilityMeasured[baselineIdx]) break;
 		if (avgStabilityRatio[s] > 2.0 * avgStabilityRatio[baselineIdx])
 			break;
 
@@ -1170,8 +1195,12 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 		std::cout << "  " << std::setw(3) << speeds[s] << "x:  CV "
 			<< std::fixed << std::setprecision(3) << jitterCoeffVar[s]
 			<< "  (avg " << std::setprecision(1) << avgReadTimeMs[s] << " ms)"
-			<< "  stability " << std::setprecision(2) << avgStabilityRatio[s] << "x"
-			<< "  reads " << validReadSamplesPerSpeed[s] << "/" << requestedSamples;
+			<< "  stability ";
+		if (stabilityMeasured[s])
+			std::cout << std::setprecision(2) << avgStabilityRatio[s] << "x";
+		else
+			std::cout << "N/A";
+		std::cout << "  reads " << validReadSamplesPerSpeed[s] << "/" << requestedSamples;
 		// Annotate clamped low rows so duplicate-looking times are explained.
 		if (clampedActualX[s] > 0)
 			std::cout << "  (ran at ~" << clampedActualX[s] << "x)";
@@ -1203,7 +1232,10 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 			<< " / 100  (* full speed - includes 24/32/40x)\n";
 	}
 	std::cout << "  Jitter Sub-Score:    " << jitterScore << " / 100\n";
-	std::cout << "  Stability Sub-Score: " << stabilityScore << " / 100  (per-sector read consistency)\n";
+	if (stabilityAvailable)
+		std::cout << "  Stability Sub-Score: " << stabilityScore << " / 100  (per-sector read consistency)\n";
+	else
+		std::cout << "  Stability Sub-Score: N/A (insufficient repeated reads)\n";
 	std::cout << "  Scaling Sub-Score:   " << scalingScore << " / 100\n";
 
 	if (std::isfinite(driftRatio) && (driftRatio > 1.3 || driftRatio < 0.7)) {

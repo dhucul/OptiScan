@@ -1,0 +1,31 @@
+# Dependency folders
+node_modules/
+bower_components/
+env/
+venv/
+.venv/
+
+# Build and output directories
+dist/
+build/
+out/
+.next/
+.nuxt/
+target/
+
+# Lock files and metadata
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+composer.lock
+Gemfile.lock
+.git/
+.svn/
+.hg/
+
+# Logs and system files
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.*

@@ -9,8 +9,8 @@ namespace {
 bool DirectoryIsWritable(const std::wstring& directory) {
 	if (directory.empty()) return false;
 	wchar_t suffix[80] = {};
-	swprintf_s(suffix, L"\\.optiscan-write-test-%lu-%lu.tmp",
-		GetCurrentProcessId(), GetTickCount());
+	swprintf_s(suffix, L"\\.optiscan-write-test-%lu-%llu.tmp",
+		GetCurrentProcessId(), GetTickCount64());
 	const std::wstring probePath = directory + suffix;
 	HANDLE probe = CreateFileW(probePath.c_str(), GENERIC_WRITE, 0, nullptr,
 		CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
@@ -105,6 +105,23 @@ bool CreateDirectoryRecursive(const std::wstring& path) {
 		if (workPath.substr(4, 4) == L"UNC\\") {
 			startPos = 8;
 		}
+	}
+	const bool uncPath = workPath.compare(0, 2, L"\\\\") == 0 &&
+		workPath.compare(0, 4, L"\\\\?\\") != 0;
+	const bool extendedUnc = workPath.compare(0, 8, L"\\\\?\\UNC\\") == 0;
+	if (uncPath || extendedUnc) {
+		// Do not try to create the UNC server itself.  For an ordinary UNC
+		// path, begin the component walk just after the leading two slashes;
+		// extended UNC paths already start after "\\?\UNC\" above.
+		if (uncPath) startPos = 2;
+		const size_t serverEnd = workPath.find_first_of(L"\\/", startPos);
+		if (serverEnd == std::wstring::npos) return false;
+		const size_t shareEnd = workPath.find_first_of(L"\\/", serverEnd + 1);
+		if (shareEnd == std::wstring::npos) {
+			DWORD attrs = GetFileAttributesW(workPath.c_str());
+			return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY);
+		}
+		startPos = shareEnd;
 	}
 
 	size_t pos = startPos;

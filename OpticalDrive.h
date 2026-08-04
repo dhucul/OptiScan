@@ -38,11 +38,11 @@ public:
 	int SelectSpeed();
 	int SelectSubchannel();
 	int SelectErrorHandling();
-	LogOutput SelectLogging();
+	LogOutput SelectLogging(bool* outOk = nullptr);
 	int SelectC2Detection();
 	int SelectScanSpeed();
 	int SelectWriteSpeed();
-	int SelectOffset();
+	int SelectOffset(bool* outOk = nullptr);
 	int SelectSecureRipMode(int selectedSpeed = 0);
 	SecureRipConfig GetSecureRipConfig(SecureRipMode mode);
 	int SelectPregapMode();

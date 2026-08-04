@@ -21,11 +21,12 @@ namespace {
 
 std::array<uint32_t, 256> BuildEdcTable() {
 	std::array<uint32_t, 256> table{};
-	for (uint32_t i = 0; i < table.size(); ++i) {
-		uint32_t value = i;
+	uint32_t index = 0;
+	for (uint32_t& entry : table) {
+		uint32_t value = index++;
 		for (int bit = 0; bit < 8; ++bit)
 			value = (value >> 1) ^ ((value & 1) ? 0xD8018001u : 0u);
-		table[i] = value;
+		entry = value;
 	}
 	return table;
 }
@@ -34,7 +35,7 @@ uint32_t ComputeEdc(const BYTE* data, size_t size) {
 	static const auto table = BuildEdcTable();
 	uint32_t edc = 0;
 	for (size_t i = 0; i < size; ++i)
-		edc = (edc >> 8) ^ table[(edc ^ data[i]) & 0xFF];
+		edc = (edc >> 8) ^ table.at(static_cast<BYTE>(edc ^ data[i]));
 	return edc;
 }
 
@@ -86,9 +87,9 @@ void ComputeEcc(const BYTE* source, int majorCount, int minorCount,
 			if (index >= size) index -= size;
 			a ^= value;
 			b ^= value;
-			a = forward[a];
+			a = forward.at(a);
 		}
-		a = backward[forward[a] ^ b];
+		a = backward.at(static_cast<BYTE>(forward.at(a) ^ b));
 		destination[major] = a;
 		destination[major + majorCount] = a ^ b;
 	}
@@ -197,18 +198,19 @@ void AddExpectedArtifact(std::vector<std::wstring>& artifacts,
 uint32_t PreservationCRC32(const BYTE* data, size_t size, uint32_t seed) {
 	static std::array<uint32_t, 256> table = [] {
 		std::array<uint32_t, 256> value{};
-		for (uint32_t i = 0; i < value.size(); ++i) {
-			uint32_t c = i;
+		uint32_t index = 0;
+		for (uint32_t& entry : value) {
+			uint32_t c = index++;
 			for (int bit = 0; bit < 8; ++bit)
 				c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
-			value[i] = c;
+			entry = c;
 		}
 		return value;
 	}();
 
 	uint32_t crc = seed ^ 0xFFFFFFFFu;
 	for (size_t i = 0; i < size; ++i)
-		crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+		crc = table.at(static_cast<BYTE>(crc ^ data[i])) ^ (crc >> 8);
 	return crc ^ 0xFFFFFFFFu;
 }
 
@@ -347,7 +349,10 @@ RawSectorValidation ValidateRawDataSector(const BYTE* sector, DWORD expectedLBA)
 		const bool form2 = (sector[18] & 0x20) != 0;
 		if (form2) {
 			result.mode = RawDataMode::Mode2Form2;
-			result.edcValid = ComputeEdc(sector + 16, 2332) == ReadLe32(sector + 2348);
+			const uint32_t storedEdc = ReadLe32(sector + 2348);
+			result.edcPresent = storedEdc != 0;
+			result.edcValid = !result.edcPresent ||
+				ComputeEdc(sector + 16, 2332) == storedEdc;
 			result.eccPresent = false;
 			result.eccValid = true;
 		}
@@ -429,7 +434,10 @@ PreservationOffsetResult AnalyzePreservationWriteOffset(const DiscInfo& disc) {
 		if (validation.syncValid && validation.addressDeltaSectors != 0)
 			addressDeltas[validation.addressDeltaSectors]++;
 	}
-	for (const auto& [delta, count] : addressDeltas) {
+	auto dominant = std::max_element(addressDeltas.begin(), addressDeltas.end(),
+		[](const auto& left, const auto& right) { return left.second < right.second; });
+	if (dominant != addressDeltas.end()) {
+		const auto [delta, count] = *dominant;
 		if (count >= 3) {
 			result.detected = true;
 			result.sampleOffset = delta * 588;
@@ -550,6 +558,7 @@ bool WriteDataValidationReport(const DataValidationSummary& summary,
 		}
 		out << "\n";
 	}
+	out.close();
 	return out.good();
 }
 
@@ -701,5 +710,6 @@ bool WritePreservationManifest(const DiscInfo& disc,
 		out << (i + 1 == artifacts.size() ? "\n" : ",\n");
 	}
 	out << "  ]\n}\n";
+	out.close();
 	return out.good();
 }

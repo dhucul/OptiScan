@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iomanip>
 #include <cstdlib>
+#include <cerrno>
 
 
 // ============================================================================
@@ -61,7 +62,8 @@ int OpticalDrive::SelectErrorHandling() {
 	return 1;
 }
 
-LogOutput OpticalDrive::SelectLogging() {
+LogOutput OpticalDrive::SelectLogging(bool* outOk) {
+	if (outOk) *outOk = false;
 	std::cout << "\n=== Logging Output ===\n";
 	std::cout << "0. Back to menu\n";
 	std::cout << "1. Log to file\n";
@@ -69,14 +71,16 @@ LogOutput OpticalDrive::SelectLogging() {
 	std::cout << "3. Log to both\n";
 	std::cout << "4. No logging\n";
 	std::cout << "Choice: ";
+	bool choiceOk = false;
 	int c = GetMenuChoice("Logging Output",
 		"0. Back to menu\n"
 		"1. Log to file\n"
 		"2. Log to console\n"
 		"3. Log to both\n"
 		"4. No logging",
-		0, 4, 1);
-	if (c == 0) return LogOutput::None;  // Sentinel for "back"
+		0, 4, 1, &choiceOk);
+	if (!choiceOk || c == 0) return LogOutput::None;
+	if (outOk) *outOk = true;
 	switch (c) {
 	case 1: return LogOutput::File;
 	case 2: return LogOutput::Console;
@@ -108,25 +112,32 @@ int OpticalDrive::SelectC2Detection() {
 	return enable ? 1 : 0;
 }
 
-int OpticalDrive::SelectOffset() {
+int OpticalDrive::SelectOffset(bool* outOk) {
+	if (outOk) *outOk = false;
 	std::cout << "\n=== Drive Offset ===\n0. Back to menu\n1. Auto-detect\n2. Enter manually\n3. No correction\nChoice: ";
+	bool choiceOk = false;
 	int c = GetMenuChoice("Drive Offset",
 		"0. Back to menu\n"
 		"1. Auto-detect\n"
 		"2. Enter manually\n"
 		"3. No correction",
-		0, 3, 1);
-	if (c == 0) return -1;  // ✓ Changed from MENU_BACK to -1 for consistency
+		0, 3, 1, &choiceOk);
+	if (!choiceOk || c == 0) return 0;
 	if (c == 1) {
 		int off = DetectDriveOffset();
 		std::cout << "Using offset: " << off << "\n";
+		if (outOk) *outOk = true;
 		return off;
 	}
 	if (c == 2) {
-		return GuiInput::PromptInt("Drive offset",
+		bool manualOk = false;
+		int value = GuiInput::PromptInt("Drive offset",
 			"Enter drive offset in samples (positive or negative):",
-			-10000, 10000, 0);
+			-10000, 10000, 0, &manualOk);
+		if (manualOk && outOk) *outOk = true;
+		return value;
 	}
+	if (outOk) *outOk = true;
 	return 0;
 }
 
@@ -394,10 +405,12 @@ SecureRipConfig OpticalDrive::GetSecureRipConfig(SecureRipMode mode) {
 		size_t len = 0;
 		if (getenv_s(&len, buf, sizeof(buf), "OPTISCAN_DRIVE_READ_RETRY") == 0
 			&& len > 1) {
-			int v = std::atoi(buf);
-			if (v >= 0 && v <= 255) {
-				config.driveReadRetryOverride = v;
-				std::cout << "  [experimental] OPTISCAN_DRIVE_READ_RETRY=" << v
+			char* end = nullptr;
+			errno = 0;
+			long parsed = std::strtol(buf, &end, 10);
+			if (errno == 0 && end != buf && *end == '\0' && parsed >= 0 && parsed <= 255) {
+				config.driveReadRetryOverride = static_cast<int>(parsed);
+				std::cout << "  [experimental] OPTISCAN_DRIVE_READ_RETRY=" << parsed
 					<< " -> will cap the drive's internal read-retry count for this rip.\n";
 			}
 			else {

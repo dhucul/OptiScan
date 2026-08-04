@@ -24,6 +24,11 @@ bool OpticalDrive::ReadDisc(DiscInfo& disc, int errorMode, std::function<void(in
 			start = disc.tracks[i].pregapLBA;
 		}
 
+		if (disc.tracks[i].endLBA < start) {
+			std::cerr << "Error: Invalid track read range for track "
+				<< disc.tracks[i].trackNumber << "\n";
+			return false;
+		}
 		DWORD count = disc.tracks[i].endLBA - start + 1;
 		if (total > UINT32_MAX - count) {
 			std::cerr << "Error: Disc too large\n";
@@ -43,6 +48,8 @@ bool OpticalDrive::ReadDisc(DiscInfo& disc, int errorMode, std::function<void(in
 
 	disc.errorCount = 0;
 	disc.badSectors.clear();
+	disc.c2ErrorSectors.clear();
+	disc.totalC2Errors = 0;
 	disc.readLog.clear();
 	if (disc.loggingOutput != LogOutput::None) disc.readLog.reserve(total);
 
@@ -105,7 +112,7 @@ bool OpticalDrive::ReadDisc(DiscInfo& disc, int errorMode, std::function<void(in
 				std::cerr << "\n  Read error at LBA " << lba << " (Track " << t.trackNumber << ")";
 				if (errorMode == 1) { std::cerr << " - Aborting\n"; return false; }
 				else if (errorMode == 2) std::cerr << " - Filled with silence\n";
-				else { std::cerr << " - Skipped\n"; cur++; if (progress && (cur & 63) == 0) progress(cur, total); continue; }
+				else std::cerr << " - Skipped (silence)\n";
 			}
 
 			bool logToFile = (disc.loggingOutput == LogOutput::File || disc.loggingOutput == LogOutput::Both);

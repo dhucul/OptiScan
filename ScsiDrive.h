@@ -12,6 +12,7 @@
 #include <ntddscsi.h>
 #include <vector>
 #include <string>
+#include <algorithm>
 
 class ScsiDrive {
 private:
@@ -216,7 +217,8 @@ public:
 	//   Read scan results: CDB 3C 02 E1 (READ BUFFER)
 	bool SupportsPioneerScan();
 	bool PioneerScanStart(DWORD startLBA, DWORD endLBA);
-	bool PioneerScanPoll(int& c1, int& e22, int& cu, DWORD& currentLBA, bool& scanDone);
+	bool PioneerScanPoll(int& c1, int& e22, int& cu, DWORD& currentLBA,
+		bool& scanDone, bool* outValid = nullptr);
 	bool PioneerScanStop();
 
 	// ── Drive capabilities ───────────────────────────────────────
@@ -390,12 +392,33 @@ private:
 	// On success fills c1 (BLER) and e22 with the parsed counters, already
 	// passed through the >300 firmware-garbage guard. Shared by the probe and
 	// the per-slice poll. Returns false if either transport hard-fails.
-	bool PioneerScanReadSlice(DWORD lba, DWORD count, int& c1, int& e22);
+	bool PioneerScanReadSlice(DWORD lba, DWORD count, int& c1, int& e22,
+		bool* outValid = nullptr);
 
 	bool ReadSectorQRaw(DWORD lba, int& qTrack, int& qIndex);
 	bool ParseRawSubchannel(const BYTE* sub, int& qTrack, int& qIndex);
 	bool ProbeC1BlockErrors();
 	bool ProbeC2Liveness();
+};
+
+// Restores the exact read-speed setting that was active on entry. SetSpeed()
+// accepts an x multiplier while GetCurrentSpeed() returns KB/s.
+class ScopedDriveSpeed {
+public:
+    explicit ScopedDriveSpeed(ScsiDrive& drive)
+        : m_drive(drive), m_savedSpeed(drive.GetCurrentSpeed()) {}
+    ScopedDriveSpeed(ScsiDrive& drive, int multiplier)
+        : ScopedDriveSpeed(drive) { m_drive.SetSpeed(multiplier); }
+    ~ScopedDriveSpeed() {
+        m_drive.SetSpeed(m_savedSpeed == CD_SPEED_MAX
+            ? 0
+            : (std::max)(1, static_cast<int>(m_savedSpeed / CD_SPEED_1X)));
+    }
+    ScopedDriveSpeed(const ScopedDriveSpeed&) = delete;
+    ScopedDriveSpeed& operator=(const ScopedDriveSpeed&) = delete;
+private:
+    ScsiDrive& m_drive;
+    WORD m_savedSpeed;
 };
 
 // ── RAII: lock the drive tray for the duration of a scope ───────────────────

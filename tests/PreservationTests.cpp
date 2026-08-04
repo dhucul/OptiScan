@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "../AccurateRip.h"
+#include "../DiscCrcComparison.h"
 #include "../DriveCapabilityParsing.h"
 #include "../Preservation.h"
 #include "../RecoveryCheckpoint.h"
@@ -29,11 +30,12 @@ void Check(bool condition, const char* message) {
 
 std::array<uint32_t, 256> BuildEdcTable() {
 	std::array<uint32_t, 256> table{};
-	for (uint32_t i = 0; i < table.size(); ++i) {
-		uint32_t value = i;
+	uint32_t index = 0;
+	for (uint32_t& entry : table) {
+		uint32_t value = index++;
 		for (int bit = 0; bit < 8; ++bit)
 			value = (value >> 1) ^ ((value & 1) ? 0xD8018001u : 0u);
-		table[i] = value;
+		entry = value;
 	}
 	return table;
 }
@@ -143,9 +145,9 @@ void Ecc(const BYTE* source, int majorCount, int minorCount,
 			if (index >= size) index -= size;
 			a ^= value;
 			b ^= value;
-			a = forward[a];
+			a = forward.at(a);
 		}
-		a = backward[forward[a] ^ b];
+		a = backward.at(static_cast<BYTE>(forward.at(a) ^ b));
 		destination[major] = a;
 		destination[major + majorCount] = a ^ b;
 	}
@@ -238,6 +240,9 @@ DiscInfo MakeDisc() {
 
 } // namespace
 
+// This linear integration harness deliberately keeps several small sector
+// fixtures alive together.  Its ~25 KB stack frame is bounded and nonrecursive.
+#pragma warning(suppress: 6262)
 int main() {
 	std::cout << std::unitbuf;
 	std::cerr << std::unitbuf;
@@ -412,6 +417,19 @@ int main() {
 	const BYTE crcInput[] = "123456789";
 	Check(PreservationCRC32(crcInput, 9) == 0xCBF43926u,
 		"CRC32 matches the canonical vector");
+	{
+		const std::vector<std::pair<int, uint32_t>> original = {
+			{ 1, 0x11111111u }, { 2, 0x22222222u }
+		};
+		const std::vector<std::pair<int, uint32_t>> copyWithExtra = {
+			{ 1, 0x11111111u }, { 2, 0x22222222u }, { 3, 0x33333333u }
+		};
+		const DiscCrcComparisonSummary summary =
+			AnalyzeDiscCrcSets(original, copyWithExtra);
+		Check(summary.matched == 2 && summary.extraOnCopy == 1 &&
+			!summary.Identical(),
+			"Disc CRC comparison rejects a copy with an extra track");
+	}
 
 	auto arV2Vector = MakeAudioSectors(1);
 	PutAudioFrame(arV2Vector, 1, 0xFFFFFFFFu);

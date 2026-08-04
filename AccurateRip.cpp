@@ -600,7 +600,7 @@ AccurateRipVerificationResult AccurateRip::VerifyCRCs(
 			track.session == disc.selectedSession;
 	};
 
-	const size_t invalidOffset = (std::numeric_limits<size_t>::max)();
+	constexpr size_t invalidOffset = (std::numeric_limits<size_t>::max)();
 	std::vector<size_t> trackDataOffset(
 		disc.tracks.size(), invalidOffset);
 	std::vector<DWORD> rawSectorLBA;

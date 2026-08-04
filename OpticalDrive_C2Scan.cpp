@@ -141,10 +141,10 @@ bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanS
 	result.totalSectors = totalSectors;
 	result.totalSeconds = (totalSectors + 74) / 75;
 	result.perSecondC2.resize(result.totalSeconds + 1, { 0, 0 });
+	result.perSecondReadFailures.resize(result.totalSeconds + 1, { 0, 0 });
 
 	// Track bad sectors with sense codes
 	std::vector<C2SectorError> badSectors;
-	int totalBadSectorCount = 0;   // True total before capping
 
 	std::cout << "Scanning " << totalSectors << " sectors ("
 		<< (result.totalSeconds / 60) << ":"
@@ -169,7 +169,9 @@ bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanS
 	c2Opts.countBytes = true;   // Byte counting — PlexTools-style C2 error interpretation
 	c2Opts.defeatCache = true;  // Defeat drive cache for accurate reads
 
-	// Allocate C2 buffer ONCE, outside the loop
+	// Allocate the transfer buffers once; a full-disc scan performs hundreds
+	// of thousands of reads and must not allocate for every sector.
+	std::vector<BYTE> audioBuffer(AUDIO_SECTOR_SIZE, 0);
 	std::vector<BYTE> c2Buffer(C2_ERROR_SIZE, 0);
 
 	// Collect error LBAs for cluster detection (separate from capped display list)
@@ -189,7 +191,6 @@ bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanS
 				return false;
 			}
 
-			std::vector<BYTE> buf(AUDIO_SECTOR_SIZE);
 			int c2Errors = 0;
 			BYTE senseKey = 0, asc = 0, ascq = 0;
 
@@ -204,9 +205,11 @@ bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanS
 			// Record starting LBA for each time bucket
 			if (scannedSectors % 75 == 0)
 				result.perSecondC2[secIdx].first = lba;
+			if (scannedSectors % 75 == 0)
+				result.perSecondReadFailures[secIdx].first = lba;
 
 			// Read sector with C2 error detection
-			bool readSuccess = m_drive.ReadSectorWithC2Ex(lba, buf.data(), nullptr, c2Errors,
+			bool readSuccess = m_drive.ReadSectorWithC2Ex(lba, audioBuffer.data(), nullptr, c2Errors,
 				c2Buffer.data(), c2Opts, &senseKey, &asc, &ascq);
 
 			if (readSuccess) {
@@ -237,7 +240,6 @@ bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanS
 						errorLBAs.push_back(lba);
 
 						// Record in display list (capped to prevent runaway growth)
-						totalBadSectorCount++;
 						if (badSectors.size() < MAX_BAD_SECTOR_ENTRIES) {
 							C2SectorError errorEntry;
 							errorEntry.lba = lba;
@@ -258,7 +260,6 @@ bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanS
 						result.recoveredC2Sectors++;
 
 						// Record recovered errors in display list (capped)
-						totalBadSectorCount++;
 						if (badSectors.size() < MAX_BAD_SECTOR_ENTRIES) {
 							C2SectorError errorEntry;
 							errorEntry.lba = lba;
@@ -286,7 +287,7 @@ bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanS
 				// Not counted in totalC2Sectors — read failures are tracked separately
 				// via totalReadFailures so the two fields remain mutually exclusive.
 				result.totalReadFailures++;
-				result.perSecondC2[secIdx].second++;              // register in per-second data
+				result.perSecondReadFailures[secIdx].second++;
 				currentErrorRun++;
 				if (currentErrorRun > result.consecutiveErrorSectors) {
 					result.consecutiveErrorSectors = currentErrorRun;
@@ -296,7 +297,6 @@ bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanS
 				errorLBAs.push_back(lba);
 
 				// Record read failure in display list (capped)
-				totalBadSectorCount++;
 				if (badSectors.size() < MAX_BAD_SECTOR_ENTRIES) {
 					C2SectorError errorEntry;
 					errorEntry.lba = lba;
@@ -357,7 +357,7 @@ bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanS
 	if (result.totalReadFailures > 0)
 		result.qualityRating = "BAD";
 	else if (result.totalC2Sectors == 0)
-		result.qualityRating = "EXCELLENT";
+		result.qualityRating = result.recoveredC2Sectors == 0 ? "EXCELLENT" : "GOOD";
 	else if (result.avgC2PerSecond < 1.0 && result.consecutiveErrorSectors < 3
 		&& result.maxC2InSingleSector < 50)
 		result.qualityRating = "GOOD";
@@ -374,12 +374,14 @@ bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanS
 	// populate C1 block error stats (bytes 294-295), the C2 pointer bitmap
 	// may also be non-functional.  Suggest vendor-command-based scanning.
 	if (result.totalC2Sectors == 0 && result.totalReadFailures == 0
+		&& result.recoveredC2Sectors == 0 && result.recoveredC2Errors == 0
 		&& !m_drive.SupportsC1BlockErrors()) {
 		result.c2Unverified = true;
 	}
 
 	// Print report
 	PrintC2ScanReport(result, disc, scanSpeed);
+	PrintC2SenseCodeChart(badSectors, disc, result);
 
 	if (result.c2Unverified) {
 		std::cout << "\n  ** NOTE: Zero C2 errors across entire disc, but this drive\n"
@@ -764,6 +766,12 @@ void OpticalDrive::PrintC2ScanReport(const BlerResult& result, const DiscInfo& d
 		Console::Reset();
 		std::cout << "\n  Moderate error rate detected.\n";
 		std::cout << "  Recommend using Secure rip mode for best results.\n";
+	}
+	else if (result.qualityRating == "FAIR") {
+		Console::SetColor(Console::Color::Yellow);
+		std::cout << "FAIR";
+		Console::Reset();
+		std::cout << "\n  Elevated error rate detected; secure ripping is recommended.\n";
 	}
 	else if (result.qualityRating == "POOR") {
 		Console::SetColor(Console::Color::Red);

@@ -136,6 +136,9 @@ bool ScsiDrive::Open(wchar_t driveLetter) {
 		m_lastSeekASCQ = 0;
 		m_lowestHonoredSpeed = -1;       // Re-probe the speed floor per drive/media
 		m_c2Functional = true;
+		m_c2Mode = C2Mode::NotSupported;
+		m_c1BlockErrorsAvailable = false;
+		m_currentSpeed = CD_SPEED_MAX;
 		// Apply the per-firmware C2/subchannel layout before any menu workflow
 		// can issue a combined raw read. This keeps rip and scan paths aligned
 		// even when Drive Capabilities is not the first operation this session.
@@ -249,11 +252,18 @@ bool ScsiDrive::SendSCSIWithSense(void* cdb, BYTE cdbLength, void* buffer, DWORD
 		&bytesReturned, nullptr);
 
 	BYTE* sense = sptdBuffer.data() + sizeof(SCSI_PASS_THROUGH_DIRECT);
+	if (!result) {
+		// A transport failure has no valid SCSI sense data.  Preserve that
+		// distinction explicitly so callers cannot mistake the zeroed sense
+		// buffer for NO SENSE / RECOVERED ERROR and report the command as accepted.
+		if (senseKey) *senseKey = 0xFF;
+		if (asc) *asc = 0;
+		if (ascq) *ascq = 0;
+		return false;
+	}
 	if (senseKey) *senseKey = sense[2] & 0x0F;
 	if (asc) *asc = sense[12];
 	if (ascq) *ascq = sense[13];
-
-	if (!result) return false;
 
 	// GOOD status — no error at all
 	if (sptd->ScsiStatus == 0) return true;
@@ -701,7 +711,11 @@ std::string ScsiDrive::GetSenseDescription(BYTE senseKey, BYTE asc, BYTE ascq) {
 		return "Illegal Request";
 	case 0x06: return "Unit Attention (media changed)";
 	case 0x0B: return "Aborted Command";
-	default: return "Unknown Error (0x" + std::to_string(senseKey) + ")";
+	default: {
+		char buf[8];
+		snprintf(buf, sizeof(buf), "0x%02X", senseKey);
+		return std::string("Unknown Error (") + buf + ")";
+	}
 	}
 }
 

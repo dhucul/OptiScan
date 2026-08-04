@@ -26,6 +26,7 @@ bool OpticalDrive::ReadDiscSecure(DiscInfo& disc, const SecureRipConfig& config,
 	if (!disc.enableC2Detection) effectiveConfig.useC2 = false;
 
 	// Apply the configured speed cap — higher speeds degrade read accuracy
+	ScopedDriveSpeed restoreSpeed(m_drive);
 	if (effectiveConfig.maxSpeed > 0) {
 		m_drive.SetSpeed(effectiveConfig.maxSpeed);
 	}
@@ -77,6 +78,8 @@ bool OpticalDrive::ReadDiscSecure(DiscInfo& disc, const SecureRipConfig& config,
 		total64 += count;
 	}
 	DWORD total = static_cast<DWORD>(total64);
+	long long verifiedPassTotal = 0;
+	int verifiedPassCount = 0;
 
 	result = SecureRipResult{};
 	result.totalSectors = static_cast<int>(total);
@@ -202,6 +205,8 @@ bool OpticalDrive::ReadDiscSecure(DiscInfo& disc, const SecureRipConfig& config,
 				result.singlePassSectors++;
 				phase1Stats.sectorsVerified++;
 				verified = true;
+				verifiedPassTotal++;
+				verifiedPassCount++;
 			}
 			else {
 				rereadLBAs.push_back(lba);
@@ -352,6 +357,8 @@ bool OpticalDrive::ReadDiscSecure(DiscInfo& disc, const SecureRipConfig& config,
 					result.multiPassSectors++;
 					totalPhase2Verified++;
 					verified = true;
+					verifiedPassTotal += totalPasses;
+					verifiedPassCount++;
 					if (totalPasses > result.maxPassesRequired)
 						result.maxPassesRequired = totalPasses;
 				}
@@ -364,7 +371,7 @@ bool OpticalDrive::ReadDiscSecure(DiscInfo& disc, const SecureRipConfig& config,
 				// for this sector yet, keep these bytes as best-effort fill so a
 				// later all-fail Phase 3 still has the freshest read; this never
 				// counts toward verification and never overwrites clean data.
-				if (ok && state.hadC2Errors) {
+				if (ok && (state.hadC2Errors || !state.hasValidHash)) {
 					memcpy(disc.rawSectors[state.index].data(), buf.data(), state.sectorSize);
 					state.hash = HashSector(buf.data(), AUDIO_SECTOR_SIZE);
 					state.hasValidHash = true;
@@ -406,6 +413,12 @@ bool OpticalDrive::ReadDiscSecure(DiscInfo& disc, const SecureRipConfig& config,
 			if (rereadLBAs.empty()) break;
 		}
 	}
+	SecureRipPhaseStats phase2Stats{ 2, phase2TotalProcessed,
+		totalPhase2Verified,
+		static_cast<int>(rereadLBAs.size() + phase3Pending.size()),
+		std::chrono::duration<double>(std::chrono::steady_clock::now() - phase2Start).count(),
+		phase2TotalProcessed > 0 ? phase2TotalReadTime / phase2TotalProcessed : 0.0 };
+	log.phaseStats.push_back(phase2Stats);
 
 	// Merge fast-tracked sectors back for Phase 3
 	rereadLBAs.insert(rereadLBAs.end(), phase3Pending.begin(), phase3Pending.end());
@@ -548,6 +561,8 @@ bool OpticalDrive::ReadDiscSecure(DiscInfo& disc, const SecureRipConfig& config,
 				result.secureSectors++;
 				result.multiPassSectors++;
 				phase3Stats.sectorsVerified++;
+				verifiedPassTotal += secResult.totalPasses;
+				verifiedPassCount++;
 				if (rescuedFull) result.byteRecoveredSectors++;
 			}
 			else {
@@ -594,15 +609,8 @@ bool OpticalDrive::ReadDiscSecure(DiscInfo& disc, const SecureRipConfig& config,
 
 	result.securityConfidence = total > 0 ? static_cast<double>(result.secureSectors) / total * 100.0 : 0;
 
-	// Calculate average passes from the phase stats
-	int totalPasses = 0;
-	int totalProcessed = 0;
-	for (const auto& ps : log.phaseStats) {
-		totalPasses += ps.sectorsProcessed;
-		totalProcessed += ps.sectorsVerified;
-	}
-	result.averagePassesRequired = totalProcessed > 0
-		? static_cast<int>(std::round(static_cast<double>(totalPasses) / totalProcessed))
+	result.averagePassesRequired = verifiedPassCount > 0
+		? static_cast<int>(std::round(static_cast<double>(verifiedPassTotal) / verifiedPassCount))
 		: 1;
 
 	result.qualityAssessment = result.securityConfidence >= 99.9 ? "Excellent" :

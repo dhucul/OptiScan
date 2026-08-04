@@ -9,11 +9,36 @@
 #include <shobjidl.h>
 #include <objbase.h>
 #include <atomic>
+#include <functional>
+#include <optional>
 #include <string>
 
 namespace {
 
     std::atomic<HWND> g_hOwner{ nullptr };
+    constexpr UINT kInvokeOnOwnerMessage = WM_APP + 0x3C0;
+
+    struct OwnerInvocation {
+        void (*run)(void*) = nullptr;
+        void* context = nullptr;
+    };
+
+    template<typename Action>
+    auto RunOnOwnerThread(Action&& action) -> decltype(action()) {
+        using Result = decltype(action());
+        HWND owner = g_hOwner.load(std::memory_order_acquire);
+        DWORD ownerThread = owner ? GetWindowThreadProcessId(owner, nullptr) : 0;
+        if (!owner || ownerThread == GetCurrentThreadId()) return action();
+
+        std::optional<Result> value;
+        auto thunk = [&]() { value.emplace(action()); };
+        OwnerInvocation request{
+            [](void* p) { (*static_cast<decltype(thunk)*>(p))(); }, &thunk
+        };
+        SendMessageW(owner, kInvokeOnOwnerMessage, 0,
+            reinterpret_cast<LPARAM>(&request));
+        return value ? std::move(*value) : Result{};
+    }
 
     // Palette aligned with the menu buttons and output panel; seeded from the
     // active theme (see GuiInput::ApplyTheme). Mutable so the runtime theme
@@ -40,8 +65,10 @@ namespace {
         if (!s) return std::wstring();
         int len = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
         if (len <= 0) return std::wstring();
-        std::wstring out(static_cast<size_t>(len - 1), L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, s, -1, out.data(), len);
+        std::wstring out(static_cast<size_t>(len), L'\0');
+        int copied = MultiByteToWideChar(CP_UTF8, 0, s, -1, out.data(), len);
+        if (copied <= 0) return std::wstring();
+        out.resize(static_cast<size_t>(copied - 1));
         return out;
     }
 
@@ -231,9 +258,9 @@ namespace {
                 if (ctx) {
                     HWND hEdit = GetDlgItem(hWnd, (int)ID_EDIT);
                     int len = GetWindowTextLengthW(hEdit);
-                    std::wstring buf(static_cast<size_t>(len), L'\0');
-                    if (len > 0)
-                        GetWindowTextW(hEdit, buf.data(), len + 1);
+					std::wstring buf(static_cast<size_t>(len) + 1, L'\0');
+					int copied = GetWindowTextW(hEdit, buf.data(), len + 1);
+					buf.resize(copied > 0 ? static_cast<size_t>(copied) : 0);
                     ctx->value = buf;
                     ctx->ok = true;
                 }
@@ -266,7 +293,7 @@ namespace {
         wc.lpfnWndProc = PromptWndProc;
         wc.hInstance = GetModuleHandleW(nullptr);
         wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hbrBackground = g_hBackBrush;
+        wc.hbrBackground = nullptr;
         wc.lpszClassName = L"OptiScanPromptDialog";
         RegisterClassExW(&wc);
         registered = true;
@@ -407,6 +434,14 @@ namespace GuiInput {
         g_hOwner.store(owner, std::memory_order_release);
     }
 
+    bool HandleOwnerMessage(unsigned int message, intptr_t lParam, intptr_t* result) {
+        if (message != kInvokeOnOwnerMessage) return false;
+        auto* request = reinterpret_cast<OwnerInvocation*>(lParam);
+        if (request && request->run) request->run(request->context);
+        if (result) *result = 0;
+        return true;
+    }
+
     void ApplyTheme() {
         const Palette& p = ActiveTheme();
         DialogBack         = p.dlgBack;
@@ -440,7 +475,7 @@ namespace GuiInput {
                   minVal, maxVal, defaultVal);
         wMsg += suffix;
         std::wstring value = std::to_wstring(defaultVal);
-        bool ok = RunPrompt(wTitle, wMsg, value);
+        bool ok = RunOnOwnerThread([&]() { return RunPrompt(wTitle, wMsg, value); });
         if (outOk) *outOk = ok;
         if (!ok) return defaultVal;
         try {
@@ -458,7 +493,7 @@ namespace GuiInput {
         std::wstring wTitle = ToWide(title ? title : "Input");
         std::wstring wMsg = ToWide(message ? message : "");
         std::wstring value = ToWide(defaultVal.c_str());
-        bool ok = RunPrompt(wTitle, wMsg, value);
+        bool ok = RunOnOwnerThread([&]() { return RunPrompt(wTitle, wMsg, value); });
         if (outOk) *outOk = ok;
         if (!ok) return defaultVal;
         return FromWide(value);
@@ -467,8 +502,10 @@ namespace GuiInput {
     std::wstring PromptStringW(const wchar_t* title, const wchar_t* message,
                                const std::wstring& defaultVal, bool* outOk) {
         std::wstring value = defaultVal;
-        bool ok = RunPrompt(title ? title : L"Input",
-                            message ? message : L"", value);
+        bool ok = RunOnOwnerThread([&]() {
+            return RunPrompt(title ? title : L"Input",
+                message ? message : L"", value);
+        });
         if (outOk) *outOk = ok;
         if (!ok) return defaultVal;
         return value;
@@ -477,8 +514,10 @@ namespace GuiInput {
     int PromptYesNoCancel(const char* title, const char* message) {
         std::wstring wTitle = ToWide(title ? title : "Confirm");
         std::wstring wMsg = ToWide(message ? message : "");
-        int r = MessageBoxW(ModalOwnerWindow(), wMsg.c_str(), wTitle.c_str(),
-                            MB_YESNOCANCEL | MB_ICONQUESTION | MB_SETFOREGROUND);
+        int r = RunOnOwnerThread([&]() {
+            return MessageBoxW(ModalOwnerWindow(), wMsg.c_str(), wTitle.c_str(),
+                MB_YESNOCANCEL | MB_ICONQUESTION | MB_SETFOREGROUND);
+        });
         if (r == IDYES) return 1;
         if (r == IDNO) return 0;
         return -1;
@@ -487,13 +526,16 @@ namespace GuiInput {
     bool PromptYesNo(const char* title, const char* message) {
         std::wstring wTitle = ToWide(title ? title : "Confirm");
         std::wstring wMsg = ToWide(message ? message : "");
-        int r = MessageBoxW(ModalOwnerWindow(), wMsg.c_str(), wTitle.c_str(),
-                            MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND);
+        int r = RunOnOwnerThread([&]() {
+            return MessageBoxW(ModalOwnerWindow(), wMsg.c_str(), wTitle.c_str(),
+                MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND);
+        });
         return r == IDYES;
     }
 
     std::wstring PromptForFolder(const wchar_t* title,
                                  const std::wstring& initialDir) {
+        return RunOnOwnerThread([&]() {
         std::wstring result;
 
         HRESULT hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -536,12 +578,23 @@ namespace GuiInput {
 
         if (needUninit) CoUninitialize();
         return result;
+        });
     }
 
     void WaitForKey(const char* message) {
         std::wstring wMsg = ToWide(message ? message : "Continue?");
-        MessageBoxW(ModalOwnerWindow(), wMsg.c_str(), L"OptiScan",
-                    MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+        RunOnOwnerThread([&]() {
+            return MessageBoxW(ModalOwnerWindow(), wMsg.c_str(), L"OptiScan",
+                MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+        });
+    }
+
+    void Shutdown() {
+        if (g_hPromptFont) { DeleteObject(g_hPromptFont); g_hPromptFont = nullptr; }
+        if (g_hEditFont) { DeleteObject(g_hEditFont); g_hEditFont = nullptr; }
+        if (g_hBackBrush) { DeleteObject(g_hBackBrush); g_hBackBrush = nullptr; }
+        if (g_hPanelBrush) { DeleteObject(g_hPanelBrush); g_hPanelBrush = nullptr; }
+        if (g_hEditBrush) { DeleteObject(g_hEditBrush); g_hEditBrush = nullptr; }
     }
 
 } // namespace GuiInput

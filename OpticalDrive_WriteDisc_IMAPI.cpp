@@ -14,6 +14,7 @@
 #include <wrl/client.h>
 #include <iomanip>
 #include <ocidl.h>
+#include <new>
 
 #pragma comment(lib, "ole32.lib")
 
@@ -54,9 +55,11 @@ public:
 		}
 		return E_NOINTERFACE;
 	}
-	STDMETHODIMP_(ULONG) AddRef() override { return ++m_ref; }
+	STDMETHODIMP_(ULONG) AddRef() override {
+		return static_cast<ULONG>(InterlockedIncrement(&m_ref));
+	}
 	STDMETHODIMP_(ULONG) Release() override {
-		ULONG r = --m_ref;
+		ULONG r = static_cast<ULONG>(InterlockedDecrement(&m_ref));
 		if (r == 0) delete this;
 		return r;
 	}
@@ -137,7 +140,7 @@ private:
 		}
 	}
 
-	ULONG m_ref;
+	volatile LONG m_ref;
 	IUnknown* m_ftm;  // free-threaded marshaler (keeps the sink apartment-agile)
 };
 
@@ -217,39 +220,140 @@ static bool FindRecorderForDrive(wchar_t driveLetter,
 }
 
 // ============================================================================
-// Helper: Create IStream by streaming file chunks (avoids full RAM copy)
+// Read-only IStream view over a bounded file range. Each track gets its own
+// file-backed stream, so IMAPI can keep every stream alive without retaining
+// the entire disc image in HGLOBAL memory.
 // ============================================================================
+class FileRangeStream final : public IStream {
+public:
+	FileRangeStream(std::wstring path, ULONGLONG offset, ULONGLONG length)
+		: m_path(std::move(path)), m_offset(offset), m_length(length) {}
+	~FileRangeStream() { if (m_file != INVALID_HANDLE_VALUE) CloseHandle(m_file); }
+
+	HRESULT Open() {
+		m_file = CreateFileW(m_path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+		return m_file == INVALID_HANDLE_VALUE ? HRESULT_FROM_WIN32(GetLastError()) : S_OK;
+	}
+
+	STDMETHODIMP QueryInterface(REFIID iid, void** value) override {
+		if (!value) return E_POINTER;
+		*value = nullptr;
+		if (iid == IID_IUnknown || iid == IID_ISequentialStream || iid == IID_IStream)
+			*value = static_cast<IStream*>(this);
+		if (!*value) return E_NOINTERFACE;
+		AddRef();
+		return S_OK;
+	}
+	STDMETHODIMP_(ULONG) AddRef() override {
+		return static_cast<ULONG>(InterlockedIncrement(&m_ref));
+	}
+	STDMETHODIMP_(ULONG) Release() override {
+		const ULONG refs = static_cast<ULONG>(InterlockedDecrement(&m_ref));
+		if (refs == 0) delete this;
+		return refs;
+	}
+	STDMETHODIMP Read(void* data, ULONG bytes, ULONG* read) override {
+		if (read) *read = 0;
+		if (!data && bytes != 0) return STG_E_INVALIDPOINTER;
+		if (m_position >= m_length || bytes == 0) return S_OK;
+		const DWORD request = static_cast<DWORD>((std::min)(
+			static_cast<ULONGLONG>(bytes), m_length - m_position));
+		LARGE_INTEGER absolute{};
+		absolute.QuadPart = static_cast<LONGLONG>(m_offset + m_position);
+		if (!SetFilePointerEx(m_file, absolute, nullptr, FILE_BEGIN))
+			return HRESULT_FROM_WIN32(GetLastError());
+		DWORD got = 0;
+		if (!ReadFile(m_file, data, request, &got, nullptr))
+			return HRESULT_FROM_WIN32(GetLastError());
+		m_position += got;
+		if (read) *read = got;
+		return got == request ? S_OK : S_FALSE;
+	}
+	STDMETHODIMP Write(const void*, ULONG, ULONG*) override { return STG_E_ACCESSDENIED; }
+	STDMETHODIMP Seek(LARGE_INTEGER move, DWORD origin, ULARGE_INTEGER* result) override {
+		LONGLONG base = 0;
+		if (origin == STREAM_SEEK_CUR) base = static_cast<LONGLONG>(m_position);
+		else if (origin == STREAM_SEEK_END) base = static_cast<LONGLONG>(m_length);
+		else if (origin != STREAM_SEEK_SET) return STG_E_INVALIDFUNCTION;
+		const LONGLONG next = base + move.QuadPart;
+		if (next < 0 || static_cast<ULONGLONG>(next) > m_length)
+			return STG_E_INVALIDFUNCTION;
+		m_position = static_cast<ULONGLONG>(next);
+		if (result) result->QuadPart = m_position;
+		return S_OK;
+	}
+	STDMETHODIMP SetSize(ULARGE_INTEGER) override { return STG_E_ACCESSDENIED; }
+	STDMETHODIMP CopyTo(IStream* target, ULARGE_INTEGER count,
+		ULARGE_INTEGER* readTotal, ULARGE_INTEGER* writtenTotal) override {
+		if (!target) return STG_E_INVALIDPOINTER;
+		if (readTotal) readTotal->QuadPart = 0;
+		if (writtenTotal) writtenTotal->QuadPart = 0;
+		std::vector<BYTE> buffer(64 * 1024);
+		ULONGLONG remaining = count.QuadPart;
+		while (remaining > 0) {
+			ULONG got = 0;
+			const ULONG request = static_cast<ULONG>((std::min)(remaining,
+				static_cast<ULONGLONG>(buffer.size())));
+			HRESULT hr = Read(buffer.data(), request, &got);
+			if (FAILED(hr)) return hr;
+			if (got == 0) break;
+			ULONG written = 0;
+			hr = target->Write(buffer.data(), got, &written);
+			if (FAILED(hr) || written != got) return STG_E_WRITEFAULT;
+			if (readTotal) readTotal->QuadPart += got;
+			if (writtenTotal) writtenTotal->QuadPart += written;
+			remaining -= got;
+		}
+		return remaining == 0 ? S_OK : S_FALSE;
+	}
+	STDMETHODIMP Commit(DWORD) override { return S_OK; }
+	STDMETHODIMP Revert() override { return STG_E_REVERTED; }
+	STDMETHODIMP LockRegion(ULARGE_INTEGER, ULARGE_INTEGER, DWORD) override { return STG_E_INVALIDFUNCTION; }
+	STDMETHODIMP UnlockRegion(ULARGE_INTEGER, ULARGE_INTEGER, DWORD) override { return STG_E_INVALIDFUNCTION; }
+	STDMETHODIMP Stat(STATSTG* stat, DWORD) override {
+		if (!stat) return STG_E_INVALIDPOINTER;
+		ZeroMemory(stat, sizeof(*stat));
+		stat->type = STGTY_STREAM;
+		stat->cbSize.QuadPart = m_length;
+		stat->grfMode = STGM_READ;
+		return S_OK;
+	}
+	STDMETHODIMP Clone(IStream** stream) override {
+		if (!stream) return E_POINTER;
+		*stream = nullptr;
+		auto* clone = new (std::nothrow) FileRangeStream(m_path, m_offset, m_length);
+		if (!clone) return E_OUTOFMEMORY;
+		HRESULT hr = clone->Open();
+		if (SUCCEEDED(hr)) {
+			clone->m_position = m_position;
+			*stream = clone;
+		}
+		else clone->Release();
+		return hr;
+	}
+
+private:
+	volatile LONG m_ref = 1;
+	std::wstring m_path;
+	HANDLE m_file = INVALID_HANDLE_VALUE;
+	ULONGLONG m_offset = 0;
+	ULONGLONG m_length = 0;
+	ULONGLONG m_position = 0;
+};
+
 static HRESULT CreateStreamFromFileRange(const std::wstring& filePath,
 	long long offset, DWORD length, IStream** ppStream) {
-
-	HRESULT hr = CreateStreamOnHGlobal(nullptr, TRUE, ppStream);
-	if (FAILED(hr)) return hr;
-
-	std::ifstream file(filePath, std::ios::binary);
-	if (!file.is_open()) return E_FAIL;
-
-	file.seekg(offset);
-	if (!file.good()) return E_INVALIDARG;
-
-	constexpr DWORD CHUNK = 256 * 1024;
-	std::vector<BYTE> buf(CHUNK);
-	DWORD remaining = length;
-	while (remaining > 0 && file.good()) {
-		DWORD toRead = (remaining < CHUNK) ? remaining : CHUNK;
-		file.read(reinterpret_cast<char*>(buf.data()), toRead);
-		DWORD got = static_cast<DWORD>(file.gcount());
-		if (got == 0) break;
-
-		ULONG written = 0;
-		hr = (*ppStream)->Write(buf.data(), got, &written);
-		if (FAILED(hr) || written != got) return STG_E_WRITEFAULT;
-		remaining -= got;
-	}
-	if (remaining != 0) return HRESULT_FROM_WIN32(ERROR_HANDLE_EOF);
-
-	LARGE_INTEGER zero = {};
-	(*ppStream)->Seek(zero, STREAM_SEEK_SET, nullptr);
-	return S_OK;
+	if (!ppStream) return E_POINTER;
+	*ppStream = nullptr;
+	if (offset < 0) return E_INVALIDARG;
+	auto* range = new (std::nothrow) FileRangeStream(filePath,
+		static_cast<ULONGLONG>(offset), length);
+	if (!range) return E_OUTOFMEMORY;
+	HRESULT hr = range->Open();
+	if (SUCCEEDED(hr)) *ppStream = range;
+	else range->Release();
+	return hr;
 }
 
 // ============================================================================

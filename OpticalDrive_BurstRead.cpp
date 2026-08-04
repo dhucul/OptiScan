@@ -12,6 +12,8 @@ bool OpticalDrive::ReadDiscBurst(DiscInfo& disc, std::function<void(int, int)> p
 	// Lock the tray for the duration of the read (auto-unlocked on return, before
 	// any caller-level eject such as the disc swap in Compare Disc CRCs).
 	DriveDoorLockGuard doorLock(m_drive);
+	disc.errorCount = 0;
+	disc.badSectors.clear();
 	uint64_t total64 = 0;
 	for (size_t i = 0; i < disc.tracks.size(); i++) {
 		if (disc.selectedSession > 0 && disc.tracks[i].session != disc.selectedSession) continue;
@@ -50,6 +52,7 @@ bool OpticalDrive::ReadDiscBurst(DiscInfo& disc, std::function<void(int, int)> p
 	constexpr DWORD CACHE_DEFEAT_INTERVAL = 20;
 
 	DWORD cur = 0;
+	DWORD lastCacheDefeatAt = 0;
 	for (size_t i = 0; i < disc.tracks.size(); i++) {
 		auto& t = disc.tracks[i];
 		if (disc.selectedSession > 0 && t.session != disc.selectedSession) continue;
@@ -62,8 +65,9 @@ bool OpticalDrive::ReadDiscBurst(DiscInfo& disc, std::function<void(int, int)> p
 				return false;
 			}
 
-			if (disc.enableCacheDefeat && cur > 0 && (cur % CACHE_DEFEAT_INTERVAL) == 0) {
+			if (disc.enableCacheDefeat && cur - lastCacheDefeatAt >= CACHE_DEFEAT_INTERVAL) {
 				DefeatDriveCache(start + offset, disc.leadOutLBA);
+				lastCacheDefeatAt = cur;
 			}
 
 			// Batch read: audio-only tracks without subchannel

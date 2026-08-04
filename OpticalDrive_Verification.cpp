@@ -1,5 +1,6 @@
 ﻿#define NOMINMAX
 #include "OpticalDrive.h"
+#include "DiscCrcComparison.h"
 #include "InterruptHandler.h"
 #include "MenuHelpers.h"
 #include <iostream>
@@ -9,6 +10,7 @@
 #include <chrono>
 #include <cstring>
 #include <unordered_map>
+#include <unordered_set>
 
 // ============================================================================
 // Multi-Pass Verification & Subchannel Integrity
@@ -21,13 +23,12 @@ bool OpticalDrive::RunMultiPassVerification(DiscInfo& disc, std::vector<MultiPas
 
 	EnsureCapabilitiesDetected();
 
-	m_drive.SetSpeed(scanSpeed);
-
 	DWORD totalSectors = CalculateTotalAudioSectors(disc);
 	if (totalSectors == 0) {
 		std::cout << "No audio tracks to verify.\n";
 		return false;
 	}
+	m_drive.SetSpeed(scanSpeed);
 
 	int sampleInterval = std::max(1, static_cast<int>(totalSectors / 1000));
 
@@ -120,7 +121,7 @@ bool OpticalDrive::RunMultiPassVerification(DiscInfo& disc, std::vector<MultiPas
 					matchCount++;
 				}
 			}
-			if (distinctCount > 1 && majorityIdx >= 0) {
+			if (passes > 1 && majorityIdx >= 0) {
 				for (int i = 0; i < passes; i++) {
 					if (i == majorityIdx) continue;
 					if (hashes[i] == majorityHash &&
@@ -704,7 +705,8 @@ bool OpticalDrive::VerifySubchannelBurnStatus(DiscInfo& disc, SubchannelBurnResu
 	if (emptyPercent > 50.0 || successfulReads == 0) {
 		int probeOk = 0, probeAttempts = 0;
 		for (const auto& t : disc.tracks) {
-			if (!t.isAudio || probeAttempts >= 5) break;
+			if (probeAttempts >= 5) break;
+			if (!t.isAudio) continue;
 			DWORD mid = t.startLBA + (t.endLBA - t.startLBA) / 2;
 			int qTrack = 0, qIndex = 0;
 			probeAttempts++;
@@ -914,9 +916,9 @@ bool OpticalDrive::CompareDiscCRCs(const std::vector<std::pair<int, uint32_t>>& 
 		copyByTrack[p.first] = p.second;
 	}
 
-	int matchCount = 0;
-	int mismatchCount = 0;
-	int missingCount = 0;
+	const DiscCrcComparisonSummary comparison =
+		AnalyzeDiscCrcSets(originalCRCs, copyCRCs);
+	std::unordered_set<int> originalTracks;
 
 	std::cout << "  Track   Original CRC   Copy CRC       Result\n";
 	std::cout << "  -----   ------------   --------       ------\n";
@@ -924,10 +926,10 @@ bool OpticalDrive::CompareDiscCRCs(const std::vector<std::pair<int, uint32_t>>& 
 	for (const auto& o : originalCRCs) {
 		const int trackNo = o.first;
 		const uint32_t origCRC = o.second;
+		originalTracks.insert(trackNo);
 
 		auto it = copyByTrack.find(trackNo);
 		if (it == copyByTrack.end()) {
-			missingCount++;
 			std::cout << "  " << std::setw(5) << trackNo << "   "
 				<< std::hex << std::setfill('0') << std::setw(8) << origCRC
 				<< "       " << "--------" << std::dec << std::setfill(' ')
@@ -941,9 +943,6 @@ bool OpticalDrive::CompareDiscCRCs(const std::vector<std::pair<int, uint32_t>>& 
 
 		const uint32_t copyCRC = it->second;
 		const bool match = (origCRC == copyCRC);
-
-		if (match) matchCount++;
-		else mismatchCount++;
 
 		std::cout << "  " << std::setw(5) << trackNo << "   "
 			<< std::hex << std::setfill('0') << std::setw(8) << origCRC
@@ -963,20 +962,36 @@ bool OpticalDrive::CompareDiscCRCs(const std::vector<std::pair<int, uint32_t>>& 
 		std::cout << "\n";
 	}
 
-	std::cout << "\n  Summary: " << matchCount << " matched, " << mismatchCount << " mismatched";
-	if (missingCount > 0) {
-		std::cout << ", " << missingCount << " missing on copy";
+	for (const auto& c : copyCRCs) {
+		if (originalTracks.find(c.first) != originalTracks.end()) continue;
+		std::cout << "  " << std::setw(5) << c.first << "   "
+			<< "--------" << "       "
+			<< std::hex << std::setfill('0') << std::setw(8) << c.second
+			<< std::dec << std::setfill(' ') << "       ";
+		Console::SetColor(Console::Color::Yellow);
+		std::cout << "EXTRA";
+		Console::Reset();
+		std::cout << "\n";
+	}
+
+	std::cout << "\n  Summary: " << comparison.matched << " matched, "
+		<< comparison.mismatched << " mismatched";
+	if (comparison.missingOnCopy > 0) {
+		std::cout << ", " << comparison.missingOnCopy << " missing on copy";
+	}
+	if (comparison.extraOnCopy > 0) {
+		std::cout << ", " << comparison.extraOnCopy << " extra on copy";
 	}
 	std::cout << "\n";
 
-	if (mismatchCount == 0 && missingCount == 0) {
+	if (comparison.Identical()) {
 		Console::Success("\n  *** ALL TRACKS MATCH - COPY IS IDENTICAL ***\n");
 	}
 	else {
 		Console::Error("\n  *** CRC MISMATCH DETECTED - COPY DIFFERS FROM ORIGINAL ***\n");
 	}
 
-	return mismatchCount == 0 && missingCount == 0;
+	return comparison.Identical();
 }
 
 int OpticalDrive::DetectSampleOffset(
@@ -1079,10 +1094,10 @@ void OpticalDrive::ApplySampleOffset(std::vector<std::vector<BYTE>>& rawSectors,
 	// Write back into per-sector buffers
 	size_t pos = 0;
 	for (auto& s : rawSectors) {
-		size_t len = std::min(static_cast<size_t>(AUDIO_SECTOR_SIZE), shifted.size() - pos);
-		if (pos < shifted.size())
-			memcpy(s.data(), &shifted[pos], len);
-		pos += AUDIO_SECTOR_SIZE;
+		const size_t stride = std::min(s.size(), static_cast<size_t>(AUDIO_SECTOR_SIZE));
+		if (pos >= shifted.size()) break;
+		memcpy(s.data(), &shifted[pos], std::min(stride, shifted.size() - pos));
+		pos += stride;
 	}
 }
 

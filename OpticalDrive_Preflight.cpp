@@ -8,6 +8,7 @@
 #include <iostream>
 #include <fstream>
 #include <iomanip>
+#include <unordered_set>
 // ... other includes as needed
 
 bool OpticalDrive::ValidateDiscStructure(const DiscInfo& disc, std::vector<std::string>& issues) {
@@ -129,6 +130,7 @@ bool OpticalDrive::VerifyWrittenArtifacts(const std::wstring& basePath, const Di
 	std::vector<DWORD>& mismatchedSectors) {
 	std::cout << "\n=== Verifying Written Artifacts ===\n";
 	mismatchedSectors.clear();
+	std::unordered_set<DWORD> mismatchSet;
 
 	if (disc.rawSectors.empty()) {
 		std::cout << "ERROR: No in-memory sectors are available for verification.\n";
@@ -138,8 +140,7 @@ bool OpticalDrive::VerifyWrittenArtifacts(const std::wstring& basePath, const Di
 	auto recordMismatch = [&](size_t sectorIndex) {
 		const DWORD logicalIndex = static_cast<DWORD>(
 			std::min<size_t>(sectorIndex, static_cast<size_t>(MAXDWORD)));
-		if (std::find(mismatchedSectors.begin(), mismatchedSectors.end(), logicalIndex) ==
-			mismatchedSectors.end()) {
+		if (mismatchSet.insert(logicalIndex).second) {
 			mismatchedSectors.push_back(logicalIndex);
 		}
 	};
@@ -164,6 +165,7 @@ bool OpticalDrive::VerifyWrittenArtifacts(const std::wstring& basePath, const Di
 				sourceOffset + bytesPerSector > disc.rawSectors[sectorIndex].size()) {
 				recordMismatch(sectorIndex);
 				matched = false;
+				input.seekg(static_cast<std::streamoff>(bytesPerSector), std::ios::cur);
 				continue;
 			}
 

@@ -42,6 +42,7 @@ namespace GuiSink {
     // Replace the cout/wcout/cerr/wcerr buffers so anything written to those
     // streams is appended to the bound output control. Safe to call once.
     void InstallStreamRedirect();
+    void UninstallStreamRedirect();
 
     // Direct append entry points (used by Console:: helpers).
     void AppendUtf8(const char* utf8, size_t len);

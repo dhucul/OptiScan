@@ -193,9 +193,10 @@ static bool TryMMCStructureScan(ScsiDrive& drive, DiscInfo& disc,
 //   2. If startLBA is already INDEX 01, scans backward to find the EARLIEST
 //      INDEX 00 sector (the true pregap start).
 // ═════════════════════════════════════════════════════════════════════════════
-static void ProbePregap(ScsiDrive& drive, TrackInfo& ti)
+static bool ProbePregap(ScsiDrive& drive, TrackInfo& ti)
 {
-	if (ti.startLBA == 0) return;
+	if (ti.startLBA == 0) return true;
+	if (g_interrupt.IsInterrupted()) return false;
 
 	int qt = 0, qi = 0;
 
@@ -217,6 +218,7 @@ static void ProbePregap(ScsiDrive& drive, TrackInfo& ti)
 			for (DWORD probe = ti.startLBA + 1;
 				probe < ti.startLBA + 600; probe++)
 			{
+				if (g_interrupt.IsInterrupted()) return false;
 				int ft = 0, fi = 0;
 				if (drive.ReadSectorQAnyType(probe, ft, fi)
 					|| drive.ReadSectorQSingle(probe, ft, fi))
@@ -224,14 +226,14 @@ static void ProbePregap(ScsiDrive& drive, TrackInfo& ti)
 					if (ft == ti.trackNumber && fi >= 1) {
 						ti.index01LBA = probe;
 						ti.startLBA = probe;
-						return;
+						return true;
 					}
 					// Different track before INDEX 01 — shouldn't happen,
 					// but stop to avoid scanning into the next track.
-					if (ft != ti.trackNumber) return;
+					if (ft != ti.trackNumber) return true;
 				}
 			}
-			return;
+			return true;
 		}
 	}
 
@@ -241,6 +243,7 @@ static void ProbePregap(ScsiDrive& drive, TrackInfo& ti)
 	DWORD probeLimit = (ti.startLBA > 225) ? (ti.startLBA - 225) : 0;
 
 	for (DWORD probe = ti.startLBA - 1; probe >= probeLimit; probe--) {
+		if (g_interrupt.IsInterrupted()) return false;
 		qt = 0; qi = 0;
 		if (drive.ReadSectorQAnyType(probe, qt, qi)
 			|| drive.ReadSectorQSingle(probe, qt, qi))
@@ -252,7 +255,7 @@ static void ProbePregap(ScsiDrive& drive, TrackInfo& ti)
 			else {
 				// Hit a different track or INDEX 01 of same track — stop.
 				// pregapLBA is already set to the earliest INDEX 00 found.
-				return;
+				return true;
 			}
 		}
 		// Read failed — if we've already found INDEX 00, keep scanning
@@ -261,6 +264,7 @@ static void ProbePregap(ScsiDrive& drive, TrackInfo& ti)
 		// DWORD wraparound guard: probe-- would underflow if probe == 0
 		if (probe == 0) break;
 	}
+	return true;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -387,6 +391,7 @@ static void PrintSlowdownReport(const std::vector<SlowdownEvent>& slowdowns,
 bool OpticalDrive::ScanDiscWithoutTOC(DiscInfo& disc, int scanSpeed)
 {
 	Console::Heading("\n=== TOC-less Disc Scan ===\n\n");
+	ScopedDriveSpeed restoreSpeed(m_drive);
 
 	// ── Phase 0: instant firmware query ─────────────────────────────────
 	DWORD discCapacity = 0;
@@ -407,14 +412,16 @@ bool OpticalDrive::ScanDiscWithoutTOC(DiscInfo& disc, int scanSpeed)
 		int current = 0;
 		for (auto& t : disc.tracks) {
 			if (!t.isAudio) continue;
-			ProbePregap(m_drive, t);
+			if (!ProbePregap(m_drive, t)) {
+				pregapProgress.Finish(false);
+				return false;
+			}
 			current++;
 			pregapProgress.Update(current, audioCount > 0 ? audioCount : 1);
 		}
 		pregapProgress.Finish(true);
 
 		Console::Success("\nDisc scan complete (firmware query).\n");
-		m_drive.SetSpeed(0);
 		return true;
 	}
 
@@ -792,7 +799,10 @@ bool OpticalDrive::ScanDiscWithoutTOC(DiscInfo& disc, int scanSpeed)
 		ti.index01LBA = ti.startLBA;
 
 		if (!isData && !gapBefore)
-			ProbePregap(m_drive, ti);
+			if (!ProbePregap(m_drive, ti)) {
+				refineProgress.Finish(false);
+				return false;
+			}
 
 		refineCurrent++;
 		refineProgress.Update(refineCurrent, refineTotal);
@@ -841,6 +851,5 @@ bool OpticalDrive::ScanDiscWithoutTOC(DiscInfo& disc, int scanSpeed)
 	// ── Slowdown / C2 diagnostic report ─────────────────────────────────
 	PrintSlowdownReport(slowdowns, c2Supported);
 
-	m_drive.SetSpeed(0);
 	return !disc.tracks.empty();
 }

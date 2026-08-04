@@ -276,7 +276,8 @@ bool ScsiDrive::ReadSectorWithC2Ex(DWORD lba, BYTE* audio, BYTE* subchannel,
 	}
 
 	BYTE cdb[12] = {};
-	int bufferSize = subchannel ? FULL_SECTOR_WITH_C2 : SECTOR_WITH_C2_SIZE;
+	int c2Bytes = (m_c2Mode == C2Mode::ErrorBlock) ? C2_POINTER_BYTES : C2_ERROR_SIZE;
+	int bufferSize = AUDIO_SECTOR_SIZE + c2Bytes + (subchannel ? SUBCHANNEL_SIZE : 0);
 	std::vector<BYTE> buffer(bufferSize);
 
 	cdb[0] = SCSI_READ_CD;
@@ -371,6 +372,9 @@ bool ScsiDrive::ReadSectorWithC2Ex(DWORD lba, BYTE* audio, BYTE* subchannel,
 		if (!ok && senseKey != 0x01) {
 			// First mode failed — try fallback
 			c2Bits = 0x02;
+			c2Bytes = C2_POINTER_BYTES;
+			bufferSize = AUDIO_SECTOR_SIZE + c2Bytes + (subchannel ? SUBCHANNEL_SIZE : 0);
+			buffer.assign(bufferSize, 0);
 			cdb[9] = m_cddaMainChannelFlags | c2Bits;
 			cdb[10] = subchannel ? 0x01 : 0x00;
 
@@ -401,7 +405,7 @@ bool ScsiDrive::ReadSectorWithC2Ex(DWORD lba, BYTE* audio, BYTE* subchannel,
 	memcpy(audio, buffer.data(), AUDIO_SECTOR_SIZE);
 
 	const BYTE* c2Data = buffer.data() + AUDIO_SECTOR_SIZE;
-	const BYTE* subData = buffer.data() + AUDIO_SECTOR_SIZE + C2_ERROR_SIZE;
+	const BYTE* subData = buffer.data() + AUDIO_SECTOR_SIZE + c2Bytes;
 	if (subchannel && m_rawSectorLayout == RawSectorLayout::DataSubC2) {
 		subData = buffer.data() + AUDIO_SECTOR_SIZE;
 		c2Data = subData + SUBCHANNEL_SIZE;
@@ -619,19 +623,18 @@ bool ScsiDrive::ValidateC2Accuracy(DWORD testLBA) {
 
 	C2ReadOptions opts;
 	opts.countBytes = false;
+	ScopedDriveSpeed restoreSpeed(*this);
 
 	// PHASE 1: Verify this is a clean sector (no C2 errors at baseline speed)
 	SetSpeed(8); // Use medium speed for initial scan
 	int preTestErrors = 0;
 	if (!ReadSectorWithC2Ex(testLBA, audio.data(), nullptr, preTestErrors, nullptr, opts)) {
-		SetSpeed(0);
 		return false; // Read failure
 	}
 
 	// If sector has C2 errors, we can't validate C2 accuracy here
 	// (errors might be real, so variation is expected)
 	if (preTestErrors > 0) {
-		SetSpeed(0);
 		return false; // Inconclusive is not proof that C2 is reliable
 	}
 	std::vector<BYTE> reference = audio;
@@ -651,7 +654,6 @@ bool ScsiDrive::ValidateC2Accuracy(DWORD testLBA) {
 
 		int c2Errors = 0;
 		if (!ReadSectorWithC2Ex(testLBA, audio.data(), nullptr, c2Errors, nullptr, opts)) {
-			SetSpeed(0);
 			return false; // Read failure
 		}
 
@@ -659,12 +661,10 @@ bool ScsiDrive::ValidateC2Accuracy(DWORD testLBA) {
 		// unsuitable as a single-pass trust signal.
 		if (c2Errors > 0 ||
 			memcmp(audio.data(), reference.data(), AUDIO_SECTOR_SIZE) != 0) {
-			SetSpeed(0);
 			return false;
 		}
 	}
 
-	SetSpeed(0);
 	return true; // PASS - sector stayed clean at all speeds
 }
 
@@ -740,6 +740,7 @@ bool ScsiDrive::ReadSectorQRaw(DWORD lba, int& qTrack, int& qIndex) {
 // an ADR=1 position frame (control only accompanies position frames).
 bool ScsiDrive::ReadSectorQControl(DWORD lba, int& control) {
 	control = 0;
+	EnsureCddaReadForm(lba);
 	BYTE buffer[RAW_SECTOR_SIZE];
 
 	BYTE cdb[12] = {};
@@ -915,7 +916,8 @@ bool ScsiDrive::ReadSectorQAdaptive(DWORD lba, int& qTrack, int& qIndex,
 
 // Read multiple consecutive sectors at once
 bool ScsiDrive::ReadSectorsAudioOnly(DWORD startLBA, DWORD count, BYTE* audio) {
-	if (count == 0 || count > 32) return false;
+	constexpr DWORD MAX_BATCH_SECTORS = 0xFFFEu / AUDIO_SECTOR_SIZE;
+	if (count == 0 || count > MAX_BATCH_SECTORS) return false;
 	return ReadCdAudio(startLBA, count, 0x00, audio, AUDIO_SECTOR_SIZE * count);
 }
 

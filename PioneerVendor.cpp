@@ -90,6 +90,8 @@ bool PioneerVendor::ReadCapabilities(PioneerCapabilities& caps) {
     if (!ReadBuffer(PioneerBufId::Capabilities, 0, caps.raw, sizeof(caps.raw))) {
         return false;
     }
+	if (std::all_of(std::begin(caps.raw), std::end(caps.raw),
+		[](BYTE value) { return value == 0; })) return false;
 
     const BYTE* r = caps.raw;
     caps.valid = true;
@@ -167,16 +169,18 @@ bool PioneerVendor::GetSerialNumber(std::string& serial) {
     if (!IsPioneerDrive()) return false;
 
     // GET CONFIGURATION (0x46) starting at feature 0x0108 (Logical Unit
-    // Serial Number). RT=0 matches the Pioneer utility's request.
+    // Serial Number). Ask for only that descriptor so offset 12 is unambiguous.
     BYTE cdb[10] = {};
     cdb[0] = 0x46;
-    cdb[1] = 0x00;          // RT=0 (all supported features from start number)
+    cdb[1] = 0x02;          // RT=2 (specified feature only)
     cdb[2] = 0x01;          // feature high
     cdb[3] = 0x08;          // feature low
     BYTE buf[32] = {};
     cdb[7] = 0;
     cdb[8] = sizeof(buf);
     if (!m_drive.SendSCSI(cdb, 10, buf, sizeof(buf), true)) return false;
+	if ((static_cast<WORD>(buf[8]) << 8 | buf[9]) != 0x0108 || buf[11] < 12)
+		return false;
 
     // Per Pioneer utility: copy 12 bytes starting at offset 12.
     char s[13] = {};
@@ -236,9 +240,91 @@ bool PioneerVendor::SetPureReadMode(PureReadMode mode, bool realTimeEnabled,
     return WriteBuffer(PioneerBufId::FeatureSet, 0, payload, sizeof(payload), 1);
 }
 
+PioneerPureReadModeGuard::PioneerPureReadModeGuard(ScsiDrive& drive,
+    bool active, PureReadMode requestedMode, bool requestRealTime)
+    : m_pioneer(drive), m_active(active), m_requestedMode(requestedMode) {
+    if (!m_active) return;
+
+    if (!m_pioneer.GetPureReadMode(m_previousMode, m_previousRealTime))
+        return;
+    m_haveSnapshot = true;
+
+    const auto& caps = m_pioneer.Capabilities();
+    m_requestedRealTime = requestRealTime && caps.valid &&
+        caps.realTimePureReadSupport;
+    Reapply();
+}
+
+bool PioneerPureReadModeGuard::Reapply() {
+    m_engaged = false;
+    if (!m_active || !m_haveSnapshot) return false;
+
+    PureReadMode currentMode = PureReadMode::Off;
+    bool currentRealTime = false;
+    if (m_pioneer.GetPureReadMode(currentMode, currentRealTime) &&
+        currentMode == m_requestedMode &&
+        currentRealTime == m_requestedRealTime) {
+        if (currentMode != m_previousMode ||
+            currentRealTime != m_previousRealTime) {
+            m_restore = true;
+        }
+        m_engaged = true;
+        return true;
+    }
+
+    if (!m_pioneer.SetPureReadMode(m_requestedMode, m_requestedRealTime,
+        /*eepSave=*/false)) {
+        return false;
+    }
+    m_restore = true;
+
+    if (m_pioneer.GetPureReadMode(currentMode, currentRealTime) &&
+        currentMode == m_requestedMode &&
+        currentRealTime == m_requestedRealTime) {
+        m_engaged = true;
+    }
+    return m_engaged;
+}
+
+bool PioneerPureReadModeGuard::Restore() {
+    m_engaged = false;
+    if (!m_restore) return true;
+
+    if (!m_pioneer.SetPureReadMode(m_previousMode, m_previousRealTime,
+        /*eepSave=*/false)) {
+        return false;
+    }
+
+    PureReadMode restoredMode = PureReadMode::Off;
+    bool restoredRealTime = false;
+    if (!m_pioneer.GetPureReadMode(restoredMode, restoredRealTime) ||
+        restoredMode != m_previousMode ||
+        restoredRealTime != m_previousRealTime) {
+        return false;
+    }
+
+    m_restore = false;
+    return true;
+}
+
+PioneerPureReadModeGuard::~PioneerPureReadModeGuard() {
+    if (!Restore()) {
+        Console::Warning("Pioneer PureRead state could not be restored; "
+            "power-cycle the drive before relying on another read.\n");
+    }
+}
+
 PioneerPureReadOffGuard::PioneerPureReadOffGuard(ScsiDrive& drive, bool active)
     : m_pioneer(drive), m_active(active) {
     if (!m_active) return;
+
+    PioneerCapabilities capabilities;
+    if (!m_pioneer.ReadCapabilities(capabilities))
+        return;
+    if (!capabilities.pureReadSupport) {
+        m_engaged = true;
+        return;
+    }
 
     if (!m_pioneer.GetPureReadMode(m_previousMode, m_previousRealTime))
         return;
@@ -246,8 +332,10 @@ PioneerPureReadOffGuard::PioneerPureReadOffGuard(ScsiDrive& drive, bool active)
     // Nothing to change (and nothing to restore) if both the PureRead mode and
     // the Real-Time PureRead flag are already off. This is also what makes the
     // guard nest correctly: an inner guard reads back Off/off and no-ops.
-    if (m_previousMode == PureReadMode::Off && !m_previousRealTime)
+    if (m_previousMode == PureReadMode::Off && !m_previousRealTime) {
+        m_engaged = true;
         return;
+    }
 
     // Force both error-hiding features off for the scan. Only arm the restore
     // if the write actually took, so a failed Set doesn't leave us "restoring"
@@ -255,13 +343,40 @@ PioneerPureReadOffGuard::PioneerPureReadOffGuard(ScsiDrive& drive, bool active)
     if (m_pioneer.SetPureReadMode(PureReadMode::Off, /*realTimeEnabled=*/false,
                                   /*eepSave=*/false)) {
         m_restore = true;
+        PureReadMode currentMode = PureReadMode::Master;
+        bool currentRealTime = true;
+        if (m_pioneer.GetPureReadMode(currentMode, currentRealTime) &&
+            currentMode == PureReadMode::Off && !currentRealTime) {
+            m_engaged = true;
+        }
     }
 }
 
+bool PioneerPureReadOffGuard::Restore() {
+    m_engaged = false;
+    if (!m_restore) return true;
+
+    if (!m_pioneer.SetPureReadMode(m_previousMode, m_previousRealTime,
+        /*eepSave=*/false)) {
+        return false;
+    }
+
+    PureReadMode restoredMode = PureReadMode::Off;
+    bool restoredRealTime = false;
+    if (!m_pioneer.GetPureReadMode(restoredMode, restoredRealTime) ||
+        restoredMode != m_previousMode ||
+        restoredRealTime != m_previousRealTime) {
+        return false;
+    }
+
+    m_restore = false;
+    return true;
+}
+
 PioneerPureReadOffGuard::~PioneerPureReadOffGuard() {
-    if (m_restore) {
-        m_pioneer.SetPureReadMode(m_previousMode, m_previousRealTime,
-                                  /*eepSave=*/false);
+    if (!Restore()) {
+        Console::Warning("Pioneer PureRead state could not be restored after the diagnostic; "
+            "power-cycle the drive before relying on another read.\n");
     }
 }
 
@@ -509,6 +624,8 @@ bool PioneerPureReadSession::Finish(PioneerPureReadSummary& summary) {
 
 void PrintPioneerPureReadSummary(const PioneerPureReadSummary& summary) {
     if (!summary.valid) return;
+	const std::ios::fmtflags savedFlags = std::cout.flags();
+	const std::streamsize savedPrecision = std::cout.precision();
 
     Console::Heading("\n=== Pioneer Real-Time PureRead Summary ===\n");
     std::cout << "  Error sectors:       " << summary.errorSectors << "\n";
@@ -527,6 +644,8 @@ void PrintPioneerPureReadSummary(const PioneerPureReadSummary& summary) {
         << PioneerPureReadAssessmentName(summary.assessment) << "\n";
     std::cout << "  Last transfer:       LBA " << summary.lastLBA << "  ("
         << FormatPioneerPureReadMsf(summary.lastLBA) << ")\n";
+	std::cout.flags(savedFlags);
+	std::cout.precision(savedPrecision);
 
     if (summary.transferredSectors == 0) {
         Console::Warning("  PureRead returned no transferred-sector count; no clean/error verdict was assigned.\n");

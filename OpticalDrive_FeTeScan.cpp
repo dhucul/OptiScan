@@ -28,6 +28,7 @@ bool OpticalDrive::RunFeTeScan(const DiscInfo& disc, FeTeResult& result, int sca
 		return false;
 	}
 	result.supported = true;
+	ScopedDriveSpeed speedRestore(m_drive);
 
 	// Scan range — audio tracks only, matches the C1/C2 and jitter scans.
 	DWORD firstLBA = 0, lastLBA = 0;
@@ -57,6 +58,7 @@ bool OpticalDrive::RunFeTeScan(const DiscInfo& disc, FeTeResult& result, int sca
 	}
 
 	auto startTime = std::chrono::steady_clock::now();
+	auto lastProgress = startTime;
 	bool scanDone = false;
 	int sampleIndex = 0;
 	DWORD lastReportedLBA = DWORD(-1);
@@ -81,9 +83,21 @@ bool OpticalDrive::RunFeTeScan(const DiscInfo& disc, FeTeResult& result, int sca
 			m_drive.SetSpeed(0);
 			return false;
 		}
+		auto pollNow = std::chrono::steady_clock::now();
+		if (currentLBA != lastReportedLBA) lastProgress = pollNow;
+		else if (!scanDone && pollNow - lastProgress > std::chrono::seconds(30)) {
+			m_drive.LiteOnFeTeStop();
+			std::cout << "\nERROR: FE/TE scan stalled for 30 seconds.\n";
+			return false;
+		}
+		if (pollNow - startTime > std::chrono::minutes(90)) {
+			m_drive.LiteOnFeTeStop();
+			std::cout << "\nERROR: FE/TE scan exceeded the 90-minute safety limit.\n";
+			return false;
+		}
 
-		if (currentLBA == 0 && fe == 0 && te == 0 && !scanDone) continue;
-		if (currentLBA == lastReportedLBA && !scanDone) continue;
+		if (currentLBA == 0 && fe == 0 && te == 0 && !scanDone) { Sleep(10); continue; }
+		if (currentLBA == lastReportedLBA && !scanDone) { Sleep(10); continue; }
 		lastReportedLBA = currentLBA;
 		if (sampleIndex < 3) { sampleIndex++; continue; }   // discard startup artefacts
 		if (currentLBA >= lastLBA) scanDone = true;
@@ -151,7 +165,8 @@ bool OpticalDrive::SaveFeTeLog(const FeTeResult& result, const std::wstring& fil
 	f << "lba,focus_error,tracking_error\n";
 	for (const auto& s : result.samples)
 		f << s.lba << "," << s.fe << "," << s.te << "\n";
-	return true;
+	f.close();
+	return f.good();
 }
 
 void OpticalDrive::PrintFeTeReport(const FeTeResult& result) {

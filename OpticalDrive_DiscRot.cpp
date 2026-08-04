@@ -103,6 +103,7 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 	}
 
 	result = DiscRotAnalysis{};
+	ScopedDriveSpeed restoreSpeed(m_drive);
 	std::vector<DWORD> errorLBAs;
 	std::vector<DWORD> inconsistentLBAs;
 
@@ -174,18 +175,21 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 
 				int c1 = 0, c2 = 0, cu = 0;
 				DWORD currentLBA = 0;
+				bool pioneerSampleValid = true;
 
 				bool pollOk = usePlextor
 					? m_drive.PlextorQCheckPoll(c1, c2, cu, currentLBA, scanDone)
 					: usePioneer
-					? m_drive.PioneerScanPoll(c1, c2, cu, currentLBA, scanDone)
+					? m_drive.PioneerScanPoll(c1, c2, cu, currentLBA, scanDone,
+						&pioneerSampleValid)
 					: m_drive.LiteOnScanPoll(c1, c2, cu, currentLBA, scanDone);
 
 				if (!pollOk && (usePlextor || usePioneer)) {
 					std::this_thread::sleep_for(std::chrono::milliseconds(200));
 					pollOk = usePlextor
 						? m_drive.PlextorQCheckPoll(c1, c2, cu, currentLBA, scanDone)
-						: m_drive.PioneerScanPoll(c1, c2, cu, currentLBA, scanDone);
+						: m_drive.PioneerScanPoll(c1, c2, cu, currentLBA, scanDone,
+							&pioneerSampleValid);
 				}
 				if (!pollOk) {
 					c1Failed = true;
@@ -210,6 +214,8 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 				// end marker before filtering empty, duplicate, or startup samples.
 				if (useLiteOn && currentLBA >= lastLBA)
 					scanDone = true;
+				if (usePioneer && !pioneerSampleValid)
+					continue;
 
 				auto pollTime = std::chrono::steady_clock::now();
 				if (scanDone || currentLBA != progressLBA) {
@@ -329,6 +335,10 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 					result.pioneerE22Peak);
 			}
 		}
+		else {
+			std::cout << "  C1 quality scan could not start; continuing with "
+				"the independent C2 and consistency phases.\n";
+		}
 	}
 	else {
 		std::cout << "  (C1 scan not available - drive lacks quality scan support)\n";
@@ -377,6 +387,8 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 	std::vector<int> discRotReadFailuresPerSecond(c2BucketCount, 0);
 	int pioneerTransientC2 = 0;
 	int pioneerRecoveredReadFailures = 0;
+	std::vector<BYTE> audioBuffer(AUDIO_SECTOR_SIZE);
+	std::vector<BYTE> verifyBuffer(AUDIO_SECTOR_SIZE);
 	if (isPioneerDrive) {
 		std::cout << "  [Pioneer] C2-positive sectors will be verified with a second read.\n";
 	}
@@ -390,23 +402,21 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 				return false;
 			}
 
-			std::vector<BYTE> buf(AUDIO_SECTOR_SIZE);
 			size_t secIdx = std::min<size_t>(
 				static_cast<size_t>(scannedSectors / 75), discRotC2PerSecond.size() - 1);
 			int c2Errors = 0;
-			bool readOk = m_drive.ReadSectorWithC2Ex(lba, buf.data(), nullptr, c2Errors, nullptr, c2Opts);
+			bool readOk = m_drive.ReadSectorWithC2Ex(lba, audioBuffer.data(), nullptr, c2Errors, nullptr, c2Opts);
 			if (!readOk && isPioneerDrive) {
 				DefeatDriveCache(lba, lastLBA);
-				readOk = m_drive.ReadSectorWithC2Ex(lba, buf.data(), nullptr, c2Errors, nullptr, c2Opts);
+				readOk = m_drive.ReadSectorWithC2Ex(lba, audioBuffer.data(), nullptr, c2Errors, nullptr, c2Opts);
 				if (readOk)
 					pioneerRecoveredReadFailures++;
 			}
 			if (readOk) {
 				if (isPioneerDrive && c2Errors > 0) {
 					DefeatDriveCache(lba, lastLBA);
-					std::vector<BYTE> verifyBuf(AUDIO_SECTOR_SIZE);
 					int verifyC2 = 0;
-					if (m_drive.ReadSectorWithC2Ex(lba, verifyBuf.data(), nullptr, verifyC2, nullptr, c2Opts)) {
+					if (m_drive.ReadSectorWithC2Ex(lba, verifyBuffer.data(), nullptr, verifyC2, nullptr, c2Opts)) {
 						if (verifyC2 == 0) {
 							c2Errors = 0;
 							pioneerTransientC2++;
@@ -452,6 +462,7 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 
 	// Adaptive Zone-Based Sampling
 	std::cout << "\nPhase 2: Adaptive read consistency check...\n";
+	m_drive.SetSpeed(scanSpeed);
 
 	double innerRate = result.zones.InnerErrorRate();
 	double middleRate = result.zones.MiddleErrorRate();
@@ -496,7 +507,9 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 
 		for (DWORD lba = start; lba <= t.endLBA; lba++) {
 			if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
-				break;
+				progress.Finish(false);
+				std::cout << "\n*** Disc rot scan cancelled during consistency check ***\n";
+				return false;
 			}
 
 			DWORD range = lastLBA - firstLBA;
@@ -511,12 +524,11 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 			if ((lba - start) % sampleInterval != 0) continue;
 
 			int inconsistent = 0;
-			if (TestReadConsistency(lba, 3, inconsistent, scanSpeed)) {
-				samplesChecked++;
-				if (inconsistent > 0) {
-					inconsistentSamples++;
-					inconsistentLBAs.push_back(lba);
-				}
+			const bool readable = TestReadConsistency(lba, 3, inconsistent, scanSpeed);
+			samplesChecked++;
+			if (!readable || inconsistent > 0) {
+				inconsistentSamples++;
+				inconsistentLBAs.push_back(lba);
 			}
 
 			progress.Update(samplesChecked, expectedSamples);
@@ -528,8 +540,6 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 	result.inconsistentSectors = inconsistentSamples;
 	result.inconsistencyRate = samplesChecked > 0
 		? static_cast<double>(inconsistentSamples) / samplesChecked * 100.0 : 0;
-
-	m_drive.SetSpeed(0);
 
 	AnalyzeErrorPatterns(errorLBAs, result);
 
@@ -622,10 +632,6 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 					static_cast<DWORD>(c1Result.samples.size()));
 			}
 		}
-		else {
-			std::cout << "  C1 quality scan could not start; continuing with "
-				"the independent C2 and consistency phases.\n";
-		}
 	}
 
 	// Phase 1 distribution: show retained positive C2 activity (Pioneer
@@ -681,19 +687,15 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 // Helper Functions
 // ============================================================================
 
-bool OpticalDrive::TestReadConsistency(DWORD lba, int passes, int& mismatchCount, int readSpeed) {
+bool OpticalDrive::TestReadConsistency(DWORD lba, int passes, int& mismatchCount, int /*readSpeed*/) {
 	mismatchCount = 0;
 	if (passes < 2) return true;
 
-	// Set consistent read speed for all consistency checks to ensure
-	// reproducible results; speed variations can affect read stability.
-	m_drive.SetSpeed(readSpeed);
-
-	std::vector<BYTE> reference(AUDIO_SECTOR_SIZE);
-	if (!m_drive.ReadSectorAudioOnly(lba, reference.data()))
+	BYTE reference[AUDIO_SECTOR_SIZE] = {};
+	if (!m_drive.ReadSectorAudioOnly(lba, reference))
 		return false;
 
-	std::vector<BYTE> compare(AUDIO_SECTOR_SIZE);
+	BYTE compare[AUDIO_SECTOR_SIZE] = {};
 	for (int i = 1; i < passes; i++) {
 		// Without Accurate Stream, the drive may return cached data instead
 		// of re-reading from the disc, hiding genuine read inconsistencies
@@ -701,9 +703,9 @@ bool OpticalDrive::TestReadConsistency(DWORD lba, int passes, int& mismatchCount
 			DefeatDriveCache(lba, 0);
 		}
 
-		if (!m_drive.ReadSectorAudioOnly(lba, compare.data()))
+		if (!m_drive.ReadSectorAudioOnly(lba, compare))
 			return false;
-		if (memcmp(reference.data(), compare.data(), AUDIO_SECTOR_SIZE) != 0)
+		if (memcmp(reference, compare, AUDIO_SECTOR_SIZE) != 0)
 			mismatchCount++;
 	}
 	return true;
@@ -789,8 +791,9 @@ void OpticalDrive::DetectErrorClusters(const std::vector<DWORD>& errorLBAs,
 
 void OpticalDrive::AnalyzeErrorPatterns(const std::vector<DWORD>& errorLBAs,
 	DiscRotAnalysis& analysis) {
+	analysis.readInstability = analysis.inconsistencyRate > 5.0;
 	if (errorLBAs.empty()) {
-		analysis.rotRiskLevel = "NONE";
+		analysis.rotRiskLevel = AssessRotRisk(analysis);
 		return;
 	}
 
@@ -813,8 +816,6 @@ void OpticalDrive::AnalyzeErrorPatterns(const std::vector<DWORD>& errorLBAs,
 	}
 	analysis.pinholePattern = (smallClusters > 10) &&
 		(smallClusters > static_cast<int>(analysis.clusters.size()) / 2);
-
-	analysis.readInstability = analysis.inconsistencyRate > 5.0;
 
 	analysis.rotRiskLevel = AssessRotRisk(analysis);
 }
@@ -1011,11 +1012,11 @@ bool OpticalDrive::SaveDiscRotLog(const DiscRotAnalysis& analysis, const std::ws
 	fprintf(f, "#\n");
 
 	fprintf(f, "# --- Zone Error Rates ---\n");
-	fprintf(f, "# Inner  (0-33%%%%):       %.2f%% (%d/%d)\n",
+	fprintf(f, "# Inner  (0-33%%):         %.2f%% (%d/%d)\n",
 		analysis.zones.InnerErrorRate(), analysis.zones.innerErrors, analysis.zones.innerSectors);
-	fprintf(f, "# Middle (33-66%%%%):      %.2f%% (%d/%d)\n",
+	fprintf(f, "# Middle (33-66%%):        %.2f%% (%d/%d)\n",
 		analysis.zones.MiddleErrorRate(), analysis.zones.middleErrors, analysis.zones.middleSectors);
-	fprintf(f, "# Outer  (66-100%%%%):     %.2f%% (%d/%d)\n",
+	fprintf(f, "# Outer  (66-100%%):       %.2f%% (%d/%d)\n",
 		analysis.zones.OuterErrorRate(), analysis.zones.outerErrors, analysis.zones.outerSectors);
 	fprintf(f, "#\n");
 
@@ -1112,8 +1113,10 @@ void OpticalDrive::AnalyzeC1RotPatterns(const QCheckResult& c1Result,
 	std::cout << "  Outer  avg C1/sec: " << avgOuter << "\n";
 
 	// C1-based rot indicators (these fire BEFORE C2 errors appear)
-	bool c1EdgeElevated = (avgOuter > avgInner * 3.0) && (avgOuter > 10.0);
-	bool c1Progressive = (avgInner < avgMiddle) && (avgMiddle < avgOuter) && (avgOuter > 10.0);
+	const bool zonesComparable = innerN > 0 && middleN > 0 && outerN > 0;
+	bool c1EdgeElevated = zonesComparable && (avgOuter > avgInner * 3.0) && (avgOuter > 10.0);
+	bool c1Progressive = zonesComparable && (avgInner < avgMiddle) &&
+		(avgMiddle < avgOuter) && (avgOuter > 10.0);
 	bool c1OverallHigh = (c1Result.avgC1PerSecond > 50.0);
 	bool c1RedBookFail = (c1Result.avgC1PerSecond >= 220.0);
 

@@ -654,7 +654,7 @@ bool ScsiDrive::ProbeC2Liveness() {
 	C2ReadOptions opts;
 	opts.countBytes = false;
 
-	WORD savedSpeed = m_currentSpeed;  // Save current speed
+	ScopedDriveSpeed restoreSpeed(*this);
 	SetSpeed(0);  // Max speed — best chance of seeing C2
 
 	int totalBytesChecked = 0;
@@ -677,8 +677,6 @@ bool ScsiDrive::ProbeC2Liveness() {
 			}
 		}
 	}
-
-	SetSpeed(savedSpeed);  // Restore previous speed
 
 	char dbg[128];
 	snprintf(dbg, sizeof(dbg), "ProbeC2Liveness: checked %d bytes, %d non-zero\n",

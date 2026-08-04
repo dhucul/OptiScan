@@ -132,9 +132,12 @@ bool RecoveryCheckpoint::Open(const std::wstring& basePath, const DiscInfo& disc
 	if (stateError || partialError) return false;
 
 	if (stateExists || partialExists) {
+		std::error_code stateTypeError;
+		std::error_code partialTypeError;
 		if (stateExists && partialExists &&
-			std::filesystem::is_regular_file(std::filesystem::path(m_statePath)) &&
-			std::filesystem::is_regular_file(std::filesystem::path(m_partialPath)) &&
+			std::filesystem::is_regular_file(std::filesystem::path(m_statePath), stateTypeError) &&
+			std::filesystem::is_regular_file(std::filesystem::path(m_partialPath), partialTypeError) &&
+			!stateTypeError && !partialTypeError &&
 			LoadExisting(disc, totalSectors, contentFingerprint)) {
 			m_resumed = true;
 			m_open = true;
@@ -393,10 +396,12 @@ bool RecoveryCheckpoint::RemoveFiles() {
 	Close();
 	std::error_code stateError;
 	std::error_code partialError;
-	bool stateRemoved = !std::filesystem::exists(std::filesystem::path(m_statePath)) ||
-		std::filesystem::remove(std::filesystem::path(m_statePath), stateError);
-	bool partialRemoved = !std::filesystem::exists(std::filesystem::path(m_partialPath)) ||
-		std::filesystem::remove(std::filesystem::path(m_partialPath), partialError);
+	const bool stateExists = std::filesystem::exists(std::filesystem::path(m_statePath), stateError);
+	const bool partialExists = std::filesystem::exists(std::filesystem::path(m_partialPath), partialError);
+	bool stateRemoved = !stateError && (!stateExists ||
+		std::filesystem::remove(std::filesystem::path(m_statePath), stateError));
+	bool partialRemoved = !partialError && (!partialExists ||
+		std::filesystem::remove(std::filesystem::path(m_partialPath), partialError));
 	return stateRemoved && partialRemoved && !stateError && !partialError;
 }
 
@@ -405,9 +410,9 @@ bool RemoveRecoveryCheckpointFiles(const std::wstring& basePath) {
 	std::error_code partialError;
 	const std::filesystem::path state(basePath + L".recovery.state");
 	const std::filesystem::path partial(basePath + L".recovery.partial.bin");
-	bool stateRemoved = !std::filesystem::exists(state) ||
-		std::filesystem::remove(state, stateError);
-	bool partialRemoved = !std::filesystem::exists(partial) ||
-		std::filesystem::remove(partial, partialError);
+	const bool stateExists = std::filesystem::exists(state, stateError);
+	const bool partialExists = std::filesystem::exists(partial, partialError);
+	bool stateRemoved = !stateError && (!stateExists || std::filesystem::remove(state, stateError));
+	bool partialRemoved = !partialError && (!partialExists || std::filesystem::remove(partial, partialError));
 	return stateRemoved && partialRemoved && !stateError && !partialError;
 }

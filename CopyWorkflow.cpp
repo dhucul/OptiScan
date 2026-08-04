@@ -90,6 +90,10 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc,
 	CopyVerificationStatus* outVerificationStatus) {
 	CopyVerificationStatus copyVerificationStatus =
 		CopyVerificationStatus::NotPerformed;
+	struct RawSectorRelease {
+		DiscInfo& value;
+		~RawSectorRelease() { value.rawSectors.clear(); value.rawSectors.shrink_to_fit(); }
+	} rawSectorRelease{ disc };
 	if (outVerificationStatus)
 		*outVerificationStatus = copyVerificationStatus;
 	Console::Info("\n(Enter 0 at any prompt to go back to menu)\n");
@@ -124,7 +128,6 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc,
 	}
 
 	int speed = copier.SelectSpeed();
-	if (speed == -1) return false;
 
 	int subch = copier.SelectSubchannel();
 	if (subch == -1) return false;
@@ -201,8 +204,9 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc,
 		}
 	}
 
-	int offset = copier.SelectOffset();
-	if (offset == -1) return false;
+	bool offsetOk = false;
+	int offset = copier.SelectOffset(&offsetOk);
+	if (!offsetOk) return false;
 	disc.driveOffset = offset;
 
 	if (hasAccurateStream) {
@@ -258,7 +262,8 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc,
 
 	// Writability probe — surface permission issues before the long read.
 	{
-		std::wstring testFile = outputDir + L".audiocopy_test_" + std::to_wstring(GetTickCount()) + L".tmp";
+		std::wstring testFile = outputDir + L".audiocopy_test_" +
+			std::to_wstring(GetTickCount64()) + L".tmp";
 		HANDLE hTest = CreateFileW(testFile.c_str(), GENERIC_WRITE, 0, nullptr,
 			CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
 		if (hTest == INVALID_HANDLE_VALUE) {
@@ -296,6 +301,16 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc,
 	Console::Success("Output directory: ");
 	std::wcout << outputDir << L"\n";
 	std::wcout << L"Using filename: " << path << L"\n";
+
+	struct FeatureRestore {
+		ScsiDrive& drive;
+		bool& hide;
+		bool& silent;
+		~FeatureRestore() {
+			if (hide) drive.SetHideCDRMedia(false);
+			if (silent) drive.SetSilentMode(false);
+		}
+	} featureRestore{ copier.GetDriveRef(), hideCDR, silentMode };
 
 	if (hideCDR) {
 		if (copier.GetDriveRef().SetHideCDRMedia(true)) {
@@ -378,16 +393,6 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc,
 		// Use secure path even for Standard (single-pass) to avoid abort-on-first-error
 		readSuccess = copier.ReadDiscSecure(disc, secureConfig, secureResult,
 			MakeProgressCallback(&prog));
-	}
-
-	// Restore drive's normal media reporting before returning, regardless of
-	// read success.  Failure to restore is non-fatal — drive state resets on
-	// power-cycle or media change.
-	if (hideCDR) {
-		copier.GetDriveRef().SetHideCDRMedia(false);
-	}
-	if (silentMode) {
-		copier.GetDriveRef().SetSilentMode(false);
 	}
 
 	if (!readSuccess) {
@@ -791,7 +796,6 @@ void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 
 		bool quickBlank = (choice == 1);
 		eraseSpeed = copier.SelectWriteSpeed();
-		if (eraseSpeed == -1) return;
 		if (!copier.BlankRewritableDisk(eraseSpeed, quickBlank)) {
 			return;
 		}
@@ -829,7 +833,6 @@ void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 				1, 2, 1, &eraseOk);
 			if (!eraseOk) { Console::Info("Cancelled\n"); return; }
 			int speed = copier.SelectWriteSpeed();
-			if (speed == -1) return;
 			const bool erased = copier.BlankRewritableDisk(speed, eraseType == 1);
 			if (outCompleted) *outCompleted = erased;
 			return;
@@ -838,7 +841,6 @@ void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 		if (choice == 2 || choice == 3) {
 			bool quickBlank = (choice == 2);
 			eraseSpeed = copier.SelectWriteSpeed();
-			if (eraseSpeed == -1) return;
 			if (!copier.BlankRewritableDisk(eraseSpeed, quickBlank)) {
 				return;
 			}
@@ -895,16 +897,12 @@ void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 	Console::Success("Detected files:\n");
 	std::wcout << L"  BIN: " << binFile << L"\n";
 	std::wcout << L"  CUE: " << cueFile << L"\n";
-	// Subchannel writing always uses the SAO path: the drive generates the
-	// subchannel from the cue sheet, which is reliable and reproduces pregaps
-	// exactly. Raw P-W subchannel writing was removed because many drives accept
-	// the mode but cannot actually perform it, producing a garbage burn.
 	if (!subFile.empty()) {
 		std::wcout << L"  SUB: " << subFile << L"\n";
-		Console::Info("Using SAO path -- .sub will not be written, pregaps still exact.\n");
+		Console::Info("The raw writer will preserve the supplied P-W subchannel when supported.\n");
 	}
 	else {
-		Console::Warning("No .sub file found - writing without subchannel data\n");
+		Console::Info("No .sub file found; cue MCN/ISRC will be synthesized when present.\n");
 	}
 
 	// ── FIX #2: Reuse erase speed if already selected, else prompt ──
@@ -916,16 +914,20 @@ void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 	}
 	else {
 		speed = copier.SelectWriteSpeed();
-		if (speed == -1) return;
 	}
 
 	// Ask about power calibration
 	Console::Info("\nUse power calibration?\n1. Yes (recommended)\n2. No\nChoice: ");
+	bool calibrationOk = false;
 	int calibChoice = GetMenuChoice("Use power calibration?",
 		"Optical Power Calibration tunes laser power to the loaded disc.\n\n"
 		"1. Yes (recommended)\n"
 		"2. No",
-		1, 2, 1);
+		1, 2, 1, &calibrationOk);
+	if (!calibrationOk) {
+		Console::Info("Write cancelled.\n");
+		return;
+	}
 	bool useCal = (calibChoice == 1);
 
 	// Plextor-only: optional test-write + VariRec tuning
@@ -957,8 +959,8 @@ void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 		}
 	}
 
-	// Perform write. Subchannel is always drive-generated via the SAO path; the
-	// .sub file is no longer written (raw P-W subchannel writing was removed).
+	// Perform the write. WriteDisc selects compatible SAO for plain audio and
+	// raw P-W when a valid .sub or cue MCN/ISRC requires exact Q data.
 	bool writeOk = copier.WriteDisc(binFile, cueFile, subFile, speed, useCal,
 		wasBlanked);
 

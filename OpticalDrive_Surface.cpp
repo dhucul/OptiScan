@@ -112,7 +112,7 @@ bool OpticalDrive::CheckLeadAreas(DiscInfo& disc, int scanSpeed) {
 	if (leadInErrors > 0 || leadOutErrors > 0) {
 		std::cout << "\n  Note: Lead area errors can cause disc recognition problems\n";
 		std::cout << "        and indicate edge-region physical damage.\n";
-		return false;
+		return true;
 	}
 	else {
 		std::cout << "\n  Lead areas are intact. Disc structure is healthy.\n";

@@ -78,7 +78,7 @@ namespace {
             view.find(L"\x2192") != std::wstring::npos) {
             return LogGraphFrame;
         }
-        if (view.rfind(L"  ", 0) == 0) return LogDim;
+        if (first >= 2) return LogDim;
         return LogDefault;
     }
 
@@ -88,8 +88,8 @@ namespace {
     // ------------------------------------------------------------------------
     struct Segment {
         std::wstring text;
-        COLORREF color;
-        bool isExplicit;
+        COLORREF color = LogDefault;
+        bool isExplicit = false;
     };
     struct Line {
         std::vector<Segment> segments;
@@ -343,10 +343,10 @@ namespace {
             if (runLen <= 0) return;
             HFONT toUse = (runFont == -1) ? primary : fallbacks[runFont];
             if (!toUse) toUse = primary;
-            HFONT prev = (HFONT)SelectObject(hdc, toUse);
+			HFONT prev = toUse ? (HFONT)SelectObject(hdc, toUse) : nullptr;
             ExtTextOutW(hdc, x + runStart * cellWidth, y, 0, nullptr,
                         text + runStart, runLen, dx.data());
-            if (prev) SelectObject(hdc, prev);
+			if (prev && prev != HGDI_ERROR) SelectObject(hdc, prev);
         };
         for (int i = 1; i < len; ++i) {
             if (fontIndex[i] != runFont) {
@@ -388,7 +388,11 @@ namespace {
         // Solid themed dark surface for the log text (the procedural artwork
         // lives on the main window; the log panel stays clean for legibility).
         // A faint grid keeps a hint of texture.
-        Gdiplus::SolidBrush baseBrush(Gdiplus::Color(255,
+        const COLORREF backdrop = ActiveTheme().backdropTop;
+        Gdiplus::SolidBrush backdropBrush(Gdiplus::Color(255,
+            GetRValue(backdrop), GetGValue(backdrop), GetBValue(backdrop)));
+        graphics.FillRectangle(&backdropBrush, 0, 0, width, height);
+        Gdiplus::SolidBrush baseBrush(Gdiplus::Color(s.backgroundToneAlpha,
             GetRValue(PanelDark), GetGValue(PanelDark), GetBValue(PanelDark)));
         graphics.FillRectangle(&baseBrush, 0, 0, width, height);
 
@@ -400,7 +404,8 @@ namespace {
     }
 
     void EnsureCaches(State& s, HDC referenceDc, int width, int height) {
-        if (s.cacheWidth == width && s.cacheHeight == height && s.bgDc && s.backDc) {
+        if (s.cacheWidth == width && s.cacheHeight == height &&
+            s.bgDc && s.bgBitmap && s.backDc && s.backBitmap) {
             return;
         }
         ReleaseCaches(s);
@@ -587,7 +592,7 @@ namespace {
 
         EnsureCaches(s, hdc, width, height);
 
-        HDC paintDc = s.backDc ? s.backDc : hdc;
+        HDC paintDc = (s.backDc && s.backBitmap && s.backOldBitmap) ? s.backDc : hdc;
 
         if (s.bgDc && paintDc != hdc) {
             BitBlt(paintDc, 0, 0, width, height, s.bgDc, 0, 0, SRCCOPY);
@@ -711,12 +716,12 @@ namespace {
         const int page  = ViewportLineCapacity(s);
         const int maxTop = std::max(0, total - page);
         newTop = std::clamp(newTop, 0, maxTop);
+        s.followBottom = (newTop >= maxTop);
         if (newTop == s.topLine) {
             UpdateScrollbar(s);
             return;
         }
         s.topLine = newTop;
-        s.followBottom = (newTop >= maxTop);
         UpdateScrollbar(s);
         Repaint(s);
     }
@@ -834,6 +839,30 @@ namespace {
         }
         totalDelta += newCurrentContribution - oldCurrentContribution;
         s.totalVisualLines += totalDelta;
+
+        constexpr size_t kMaxClosedLines = 200000;
+        constexpr size_t kTrimToClosedLines = 190000;
+        if (s.closedLines.size() > kMaxClosedLines) {
+            const size_t removeCount = s.closedLines.size() - kTrimToClosedLines;
+            int removedVisual = 0;
+            for (size_t line = 0; line < removeCount; ++line)
+                removedVisual += s.closedLines[line].visualLines;
+            s.closedLines.erase(s.closedLines.begin(),
+                s.closedLines.begin() + static_cast<std::ptrdiff_t>(removeCount));
+            s.totalVisualLines = std::max(0, s.totalVisualLines - removedVisual);
+            s.topLine = std::max(0, s.topLine - removedVisual);
+            auto adjustSelection = [&](int& index) {
+                if (index < 0) return;
+                index = index < static_cast<int>(removeCount)
+                    ? -1 : index - static_cast<int>(removeCount);
+            };
+            adjustSelection(s.selectionAnchor);
+            adjustSelection(s.selectionCaret);
+            if (s.selectionAnchor < 0 || s.selectionCaret < 0) {
+                s.selectionAnchor = s.selectionCaret = -1;
+                s.selecting = false;
+            }
+        }
 
         if (s.followBottom) ScrollToBottom(s);
         else                ClampScroll(s);

@@ -103,9 +103,11 @@ static DWORD PioneerSliceCount(DWORD lba, DWORD endLBA) {
 // cmd_cd_errc_read + cmd_cd_errc_getdata, performed back-to-back.  Returns
 // true if both transports succeeded; fills c1/e22 with the parsed counters
 // (already passed through the >300 firmware-garbage guard).
-bool ScsiDrive::PioneerScanReadSlice(DWORD lba, DWORD count, int& c1, int& e22) {
+bool ScsiDrive::PioneerScanReadSlice(DWORD lba, DWORD count, int& c1, int& e22,
+	bool* outValid) {
 	c1 = 0;
 	e22 = 0;
+	if (outValid) *outValid = false;
 
 	// Phase 1: WRITE BUFFER — request a scan of this slice.
 	BYTE writeCdb[10] = {};
@@ -150,6 +152,7 @@ bool ScsiDrive::PioneerScanReadSlice(DWORD lba, DWORD count, int& c1, int& e22) 
 	else {
 		c1 = rawC1;
 		e22 = rawE22;
+		if (outValid) *outValid = true;
 	}
 
 	return true;
@@ -196,7 +199,8 @@ bool ScsiDrive::SupportsPioneerScan() {
 	std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
 	int c1 = 0, e22 = 0;
-	bool ok = PioneerScanReadSlice(0, PIONEER_CD_SECTORS_PER_SLICE, c1, e22);
+	bool valid = false;
+	bool ok = PioneerScanReadSlice(0, PIONEER_CD_SECTORS_PER_SLICE, c1, e22, &valid);
 
 	char dbg[256];
 	snprintf(dbg, sizeof(dbg),
@@ -250,12 +254,13 @@ bool ScsiDrive::PioneerScanStart(DWORD startLBA, DWORD endLBA) {
 }
 
 bool ScsiDrive::PioneerScanPoll(int& c1, int& e22, int& cu,
-	DWORD& currentLBA, bool& scanDone) {
+	DWORD& currentLBA, bool& scanDone, bool* outValid) {
 
 	c1 = 0;
 	e22 = 0;
 	cu = 0;            // Pioneer doesn't report CU separately in CD mode
 	scanDone = false;
+	if (outValid) *outValid = false;
 
 	DWORD count = PioneerSliceCount(s_pioneerLBA, s_pioneerEndLBA);
 	if (count == 0) {
@@ -263,25 +268,26 @@ bool ScsiDrive::PioneerScanPoll(int& c1, int& e22, int& cu,
 		return true;
 	}
 
-	// One slice = WRITE request + READ result, then advance — exactly QPxTool's
-	// cmd_cd_errc_block ordering.
-	bool ok = PioneerScanReadSlice(s_pioneerLBA, count, c1, e22);
-	if (!ok) {
-		scanDone = true;
-		return false;
+	// Skip firmware-garbage slices instead of returning them as pristine 0/0
+	// measurements. Keep advancing until a valid slice or the end of the scan.
+	bool valid = false;
+	while (count != 0) {
+		const DWORD sliceLBA = s_pioneerLBA;
+		if (!PioneerScanReadSlice(sliceLBA, count, c1, e22, &valid)) {
+			scanDone = true;
+			return false;
+		}
+
+		currentLBA = sliceLBA;
+		const bool finalSlice = static_cast<unsigned long long>(sliceLBA) + count - 1 >=
+			s_pioneerEndLBA;
+		if (finalSlice) scanDone = true;
+		else s_pioneerLBA += count;
+		if (valid || finalSlice) break;
+		count = PioneerSliceCount(s_pioneerLBA, s_pioneerEndLBA);
 	}
 
-	currentLBA = s_pioneerLBA;
-
-	// The final slice still contains valid counters. Return them together with
-	// scanDone=true; callers record this sample and then stop polling.
-	if (static_cast<unsigned long long>(s_pioneerLBA) + count - 1 >= s_pioneerEndLBA) {
-		scanDone = true;
-	}
-	else {
-		s_pioneerLBA += count;
-	}
-
+	if (outValid) *outValid = valid;
 	return true;
 }
 

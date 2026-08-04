@@ -7,12 +7,16 @@
 // ============================================================================
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 namespace GuiInput {
 
     // Owner window used as parent for modal dialogs. Set once at startup.
     void SetOwnerWindow(void* hwnd);
+
+    // Dispatch the private prompt-invocation message on the owner/UI thread.
+    bool HandleOwnerMessage(unsigned int message, intptr_t lParam, intptr_t* result);
 
     // Prompt for an integer in [minVal, maxVal]; returns defaultVal if the
     // user cancels or enters something invalid. If `outOk` is non-null it
@@ -54,4 +58,8 @@ namespace GuiInput {
     // Re-seed the prompt-dialog colours from the active theme and drop cached
     // brushes so the next prompt is drawn in the new theme.
     void ApplyTheme();
+
+    // Release process-lifetime prompt fonts and brushes before bundled fonts
+    // and the windowing subsystem are torn down.
+    void Shutdown();
 }

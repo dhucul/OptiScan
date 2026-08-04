@@ -29,6 +29,7 @@
 #include "GuiInput.h"
 #include "InterruptHandler.h"
 #include "MenuHelpers.h"
+#include "PioneerVendor.h"
 #include <algorithm>
 #include <cctype>
 #include <climits>
@@ -176,12 +177,36 @@ bool DecodeFlacToWav(const std::wstring& flacPath, const std::wstring& outWavPat
         CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
         return false;
     }
-    WaitForSingleObject(pi.hProcess, INFINITE);
+    bool cancelled = false;
+    DWORD waitResult = WAIT_TIMEOUT;
+    while ((waitResult = WaitForSingleObject(pi.hProcess, 100)) == WAIT_TIMEOUT) {
+        if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
+            cancelled = true;
+            // TerminateProcess is asynchronous. Keep the process handle and
+            // wait until it is signalled so CleanupSources cannot delete the
+            // output WAV while flac.exe is still writing it. This blocks only
+            // the workflow worker; the GUI message loop remains responsive.
+            const BOOL terminateIssued =
+                TerminateProcess(pi.hProcess, ERROR_CANCELLED);
+            if (terminateIssued) {
+                waitResult = WaitForSingleObject(pi.hProcess, INFINITE);
+            }
+            else {
+                // The process may have exited between the polling wait and
+                // TerminateProcess. Waiting on the valid handle covers that
+                // race and also prevents cleanup from overtaking a decoder
+                // that Windows refused to terminate.
+                waitResult = WaitForSingleObject(pi.hProcess, INFINITE);
+            }
+            break;
+        }
+    }
     DWORD exitCode = 1;
-    GetExitCodeProcess(pi.hProcess, &exitCode);
+    const bool processExited = waitResult == WAIT_OBJECT_0 &&
+        GetExitCodeProcess(pi.hProcess, &exitCode) && exitCode != STILL_ACTIVE;
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
-    return exitCode == 0;
+    return !cancelled && processExited && exitCode == 0;
 }
 
 // Collect .wav / .flac files from a folder, sorted alphabetically (case-insensitive).
@@ -284,6 +309,7 @@ bool ReadBoundaryOverlap(OpticalDrive& copier, DWORD pregapStart,
 
     auto& drive = copier.GetDriveRef();
     for (DWORD j = 0; j < readCount; j++) {
+        if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) return false;
         if (!drive.ReadSectorAudioOnly(readStart + j, readBuf[j].data())) {
             if (j < marginSectors) {
                 // A boundary-overlap sector itself is unreadable — give up;
@@ -336,6 +362,7 @@ bool ReadPregapAudio(OpticalDrive& copier, DWORD pregapStart, DWORD pregapEnd,
         std::vector<BYTE>(AUDIO_SECTOR_SIZE, 0));
     auto& drive = copier.GetDriveRef();
     for (DWORD j = 0; j < readCount; j++) {
+        if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) return false;
         if (!drive.ReadSectorAudioOnly(readStart + j, readBuf[j].data())) {
             return false;
         }
@@ -362,30 +389,141 @@ bool ReadPregapAudio(OpticalDrive& copier, DWORD pregapStart, DWORD pregapEnd,
     return true;
 }
 
-bool WriteSectorsToBin(const std::wstring& binPath, const std::vector<std::vector<BYTE>>& sectors) {
+bool WriteSourcesToBin(const std::wstring& binPath, std::vector<TrackSource>& sources) {
     std::ofstream bin(binPath, std::ios::binary | std::ios::trunc);
     if (!bin) return false;
-    constexpr size_t WRITE_BATCH = 64;  // sectors per write call
-    std::vector<BYTE> buf(WRITE_BATCH * AUDIO_SECTOR_SIZE);
-    size_t buffered = 0;
-    for (const auto& s : sectors) {
-        size_t copyLen = std::min<size_t>(s.size(), AUDIO_SECTOR_SIZE);
-        memcpy(buf.data() + buffered * AUDIO_SECTOR_SIZE, s.data(), copyLen);
-        if (copyLen < AUDIO_SECTOR_SIZE) {
-            memset(buf.data() + buffered * AUDIO_SECTOR_SIZE + copyLen, 0,
-                AUDIO_SECTOR_SIZE - copyLen);
+
+    std::vector<BYTE> sector(AUDIO_SECTOR_SIZE, 0);
+    auto writeSector = [&](const std::vector<BYTE>* source) {
+        std::fill(sector.begin(), sector.end(), 0);
+        if (source && !source->empty()) {
+            memcpy(sector.data(), source->data(),
+                std::min<size_t>(source->size(), AUDIO_SECTOR_SIZE));
         }
-        buffered++;
-        if (buffered == WRITE_BATCH) {
-            bin.write(reinterpret_cast<const char*>(buf.data()),
-                buffered * AUDIO_SECTOR_SIZE);
+        bin.write(reinterpret_cast<const char*>(sector.data()), sector.size());
+        return bin.good();
+    };
+
+    for (auto& source : sources) {
+        if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) return false;
+
+        const bool hasPregapAudio =
+            source.pregapAudio.size() == source.pregapSectors;
+        for (DWORD i = 0; i < source.pregapSectors; ++i) {
+            if ((i & 63u) == 0 &&
+                (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey())) return false;
+            if (!writeSector(hasPregapAudio ? &source.pregapAudio[i] : nullptr)) return false;
+        }
+        source.pregapAudio.clear();
+        source.pregapAudio.shrink_to_fit();
+
+        std::ifstream wav(source.wavPath, std::ios::binary);
+        if (!wav) return false;
+        wav.seekg(source.dataOffset);
+        DWORD remaining = source.dataBytes;
+        for (DWORD i = 0; i < source.sectorCount; ++i) {
+            if ((i & 63u) == 0 &&
+                (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey())) return false;
+            std::fill(sector.begin(), sector.end(), 0);
+            const DWORD request = (std::min)(remaining, static_cast<DWORD>(AUDIO_SECTOR_SIZE));
+            if (request > 0) {
+                wav.read(reinterpret_cast<char*>(sector.data()), request);
+                if (static_cast<DWORD>(wav.gcount()) != request) return false;
+                remaining -= request;
+            }
+            bin.write(reinterpret_cast<const char*>(sector.data()), sector.size());
             if (!bin) return false;
-            buffered = 0;
         }
     }
-    if (buffered > 0) {
-        bin.write(reinterpret_cast<const char*>(buf.data()), buffered * AUDIO_SECTOR_SIZE);
+
+    bin.close();
+    return bin.good();
+}
+
+bool PatchBoundaryOverlaps(const std::wstring& binPath,
+    std::vector<TrackSource>& sources, int& repaired) {
+    repaired = 0;
+    std::fstream bin(binPath, std::ios::binary | std::ios::in | std::ios::out);
+    if (!bin) return false;
+    std::vector<BYTE> sector(AUDIO_SECTOR_SIZE, 0);
+
+    for (size_t i = 1; i < sources.size(); ++i) {
+        auto& overlap = sources[i].headOverlap;
+        if (overlap.empty()) continue;
+        const DWORD pos = sources[i].binPregapLBA;
+        const DWORD count = static_cast<DWORD>(overlap.size());
+        if (pos < count) { overlap.clear(); continue; }
+
+        const uint64_t bytePos = static_cast<uint64_t>(pos - count) * AUDIO_SECTOR_SIZE;
+        bin.seekp(static_cast<std::streamoff>(bytePos));
         if (!bin) return false;
+        for (const auto& source : overlap) {
+            std::fill(sector.begin(), sector.end(), 0);
+            if (!source.empty()) {
+                memcpy(sector.data(), source.data(),
+                    std::min<size_t>(source.size(), AUDIO_SECTOR_SIZE));
+            }
+            bin.write(reinterpret_cast<const char*>(sector.data()), sector.size());
+            if (!bin) return false;
+        }
+        overlap.clear();
+        ++repaired;
+    }
+    bin.close();
+    return bin.good();
+}
+
+bool ApplyFileSampleOffset(const std::wstring& binPath, int offsetSamples,
+    uint64_t totalBytes) {
+    if (offsetSamples == 0) return true;
+    const int64_t signedOffset = static_cast<int64_t>(offsetSamples) * 4;
+    const uint64_t shift = static_cast<uint64_t>(signedOffset < 0 ? -signedOffset : signedOffset);
+    if (shift >= totalBytes) return false;
+
+    const std::wstring shiftedPath = binPath + L".offset";
+    std::ifstream input(binPath, std::ios::binary);
+    std::ofstream output(shiftedPath, std::ios::binary | std::ios::trunc);
+    if (!input || !output) return false;
+
+    std::vector<char> buffer(1024 * 1024, 0);
+    auto writeZeros = [&](uint64_t count) {
+        while (count > 0) {
+            const size_t chunk = static_cast<size_t>((std::min<uint64_t>)(count, buffer.size()));
+            std::fill(buffer.begin(), buffer.begin() + chunk, 0);
+            output.write(buffer.data(), chunk);
+            if (!output) return false;
+            count -= chunk;
+        }
+        return true;
+    };
+    auto copyBytes = [&](uint64_t count) {
+        while (count > 0) {
+            if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) return false;
+            const size_t chunk = static_cast<size_t>((std::min<uint64_t>)(count, buffer.size()));
+            input.read(buffer.data(), chunk);
+            if (static_cast<size_t>(input.gcount()) != chunk) return false;
+            output.write(buffer.data(), chunk);
+            if (!output) return false;
+            count -= chunk;
+        }
+        return true;
+    };
+
+    bool ok = false;
+    if (signedOffset > 0) {
+        input.seekg(static_cast<std::streamoff>(shift));
+        ok = input.good() && copyBytes(totalBytes - shift) && writeZeros(shift);
+    }
+    else {
+        ok = writeZeros(shift) && copyBytes(totalBytes - shift);
+    }
+    input.close();
+    output.close();
+    ok = ok && output.good();
+    if (!ok || !MoveFileExW(shiftedPath.c_str(), binPath.c_str(),
+        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(shiftedPath.c_str());
+        return false;
     }
     return true;
 }
@@ -394,47 +532,92 @@ bool WriteSectorsToBin(const std::wstring& binPath, const std::vector<std::vecto
 // Picked far outside any plausible drive offset (typically ±1000 samples max).
 constexpr int WRITE_OFFSET_BACK = INT_MIN;
 
+bool LookupDriveReadOffset(wchar_t driveLetter, int& readOffset,
+    std::string& source) {
+    readOffset = 0;
+    source.clear();
+
+    ScsiDrive probe;
+    if (!probe.Open(driveLetter)) return false;
+
+    DriveOffsetInfo info;
+    if (!probe.LookupAccurateRipOffset(info)) return false;
+
+    readOffset = info.readOffset;
+    source = info.source;
+    return true;
+}
+
 // Prompt for the write-offset compensation value to apply before burning.
-// Returns WRITE_OFFSET_BACK for back, otherwise the sample offset.
-int SelectWriteOffset(int driveReadOffset) {
+// `burnerReadOffsetKnown` is deliberately separate from the source-disc read
+// offset: a cross-drive burn must never derive its recommendation from the
+// reader. Returns WRITE_OFFSET_BACK for back/cancel, otherwise the sample shift.
+int SelectWriteOffset(int burnerReadOffset, bool burnerReadOffsetKnown) {
     std::cout << "\n=== Write-Offset Compensation ===\n";
     std::cout << "AccurateRip-correct burns require pre-shifting the audio by the\n";
     std::cout << "burner's write offset. Without this, the burned disc's track CRCs\n";
     std::cout << "will be shifted and AccurateRip verification will fail.\n";
-    if (driveReadOffset != 0) {
-        std::cout << "\n  Drive's read offset:  " << driveReadOffset << " samples\n";
-    }
-    std::cout << "\n";
-    std::cout << "0. Back to menu\n";
-    std::cout << "1. Apply -(read offset) = " << (-driveReadOffset)
-              << " samples (typical for drives where write offset = -read offset)\n";
-    std::cout << "2. Apply +(read offset) = " << driveReadOffset << " samples\n";
-    std::cout << "3. Enter manual offset (samples)\n";
-    std::cout << "4. No compensation (offset = 0)\n";
-    std::cout << "Choice: ";
 
-    std::string offsetMsg =
-        "0. Back to menu\n"
-        "1. Apply -(read offset) = " + std::to_string(-driveReadOffset) +
-        " samples (typical: write offset = -read offset)\n"
-        "2. Apply +(read offset) = " + std::to_string(driveReadOffset) + " samples\n"
-        "3. Enter manual offset (samples)\n"
-        "4. No compensation (offset = 0)";
-    int c = GetMenuChoice("Write Offset Compensation", offsetMsg.c_str(), 0, 4, 4);
+    auto promptManualOffset = []() {
+        bool manualOk = false;
+        const int value = GuiInput::PromptInt("Write offset",
+            "Enter the selected burner's write offset in samples "
+            "(positive or negative):",
+            -10000, 10000, 0, &manualOk);
+        return manualOk ? value : WRITE_OFFSET_BACK;
+    };
 
     int chosen = 0;
-    switch (c) {
-    case 0: return WRITE_OFFSET_BACK;
-    case 1: chosen = -driveReadOffset; break;
-    case 2: chosen = driveReadOffset; break;
-    case 3: {
-        chosen = GuiInput::PromptInt("Write offset",
-            "Enter write offset in samples (positive or negative):",
-            -10000, 10000, 0);
-        break;
+    if (burnerReadOffsetKnown) {
+        std::cout << "\n  Selected burner's read offset: "
+            << burnerReadOffset << " samples\n\n";
+        std::cout << "0. Back to menu\n";
+        std::cout << "1. Apply -(burner read offset) = " << (-burnerReadOffset)
+            << " samples (typical where write offset = -read offset)\n";
+        std::cout << "2. Apply +(burner read offset) = " << burnerReadOffset << " samples\n";
+        std::cout << "3. Enter burner write offset manually (samples)\n";
+        std::cout << "4. No compensation (offset = 0)\n";
+        std::cout << "Choice: ";
+
+        std::string offsetMsg =
+            "0. Back to menu\n"
+            "1. Apply -(burner read offset) = " + std::to_string(-burnerReadOffset) +
+            " samples (typical: write offset = -read offset)\n"
+            "2. Apply +(burner read offset) = " + std::to_string(burnerReadOffset) +
+            " samples\n"
+            "3. Enter burner write offset manually (samples)\n"
+            "4. No compensation (offset = 0)";
+        bool choiceOk = false;
+        const int c = GetMenuChoice("Write Offset Compensation", offsetMsg.c_str(),
+            0, 4, 4, &choiceOk);
+        if (!choiceOk || c == 0) return WRITE_OFFSET_BACK;
+        switch (c) {
+        case 1: chosen = -burnerReadOffset; break;
+        case 2: chosen = burnerReadOffset; break;
+        case 3: chosen = promptManualOffset(); break;
+        case 4: chosen = 0; break;
+        default: return WRITE_OFFSET_BACK;
+        }
     }
-    case 4: chosen = 0; break;
+    else {
+        Console::Warning("The selected burner's read offset is unknown. "
+            "No automatic write-offset recommendation is safe.\n");
+        std::cout << "\n0. Back to menu\n";
+        std::cout << "1. Enter burner write offset manually (samples)\n";
+        std::cout << "2. No compensation (offset = 0)\n";
+        std::cout << "Choice: ";
+        bool choiceOk = false;
+        const int c = GetMenuChoice("Write Offset Compensation",
+            "The selected burner's offset is unknown.\n\n"
+            "0. Back to menu\n"
+            "1. Enter burner write offset manually (samples)\n"
+            "2. No compensation (offset = 0)",
+            0, 2, 2, &choiceOk);
+        if (!choiceOk || c == 0) return WRITE_OFFSET_BACK;
+        chosen = (c == 1) ? promptManualOffset() : 0;
     }
+
+    if (chosen == WRITE_OFFSET_BACK) return WRITE_OFFSET_BACK;
     std::cout << "Will apply " << chosen << " samples ("
               << (chosen * 4) << " bytes) before burning.\n";
     if (chosen == 0) {
@@ -539,8 +722,10 @@ void CleanupSources(std::vector<TrackSource>& sources) {
 }  // namespace
 
 void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
-	const std::wstring& workDir, wchar_t& audioDrive, bool* outCompleted) {
+	const std::wstring& workDir, wchar_t& audioDrive, bool* outCompleted,
+	bool* outDriveOrMediaChanged) {
 	if (outCompleted) *outCompleted = false;
+	if (outDriveOrMediaChanged) *outDriveOrMediaChanged = false;
 
     Console::Info("\n(Enter 0 at any prompt to go back to menu)\n");
     Console::BoxHeading("How this workflow uses discs");
@@ -711,13 +896,13 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
             size_t slash = files[i].find_last_of(L"\\/");
             std::wcout << (slash == std::wstring::npos ? files[i] : files[i].substr(slash + 1));
             std::cout << "...\n";
+            ts.tempWavPath = tempWav;
             if (!DecodeFlacToWav(files[i], tempWav)) {
                 Console::Error("FLAC decode failed (is flac.exe on PATH?). Aborting.\n");
                 CleanupSources(sources);
                 return;
             }
             ts.wavPath = tempWav;
-            ts.tempWavPath = tempWav;
         }
         else {
             ts.wavPath = files[i];
@@ -770,8 +955,38 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
     // which includes track i+1's pregap.  We capture that audio fresh from
     // the source disc here, with read-offset correction so it aligns with
     // the WAV samples (which were also offset-corrected at rip time).
+    int sourceReadOffset = 0;
+    bool sourceReadOffsetKnown = false;
+    {
+    PioneerVendor pioneerProbe(copier.GetDriveRef());
+    const bool isPioneer = pioneerProbe.IsPioneerDrive();
+    PioneerPureReadModeGuard sourceReadPureRead(copier.GetDriveRef(), isPioneer,
+        PureReadMode::Perfect, /*requestRealTime=*/true);
+    if (isPioneer) {
+        if (sourceReadPureRead.engaged())
+            Console::Success("Pioneer PureRead Perfect confirmed for source pregap reads.\n");
+        else
+            Console::Warning("Pioneer PureRead Perfect could not be enabled for source pregap reads.\n");
+    }
+
     Console::Info("\nDetecting drive read offset...\n");
-    int driveReadOffset = copier.DetectDriveOffset();
+    OffsetDetectionResult sourceOffsetResult;
+    sourceReadOffsetKnown = copier.DetectDriveOffset(sourceOffsetResult);
+    sourceReadOffset = sourceOffsetResult.offset;
+    if (sourceReadOffsetKnown) {
+        Console::Success("Source-drive read offset detected: ");
+        std::cout << sourceReadOffset << " samples ("
+            << sourceOffsetResult.details << ")\n";
+    }
+    else {
+        Console::Warning("Source-drive read offset is unknown; using 0 samples "
+            "for pregap alignment.\n");
+    }
+    if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
+        Console::Warning("\n*** Cancelled by user ***\n");
+        CleanupSources(sources);
+        return;
+    }
 
     int pregapTracks = 0;
     for (size_t i = 1; i < sources.size(); i++) {
@@ -779,7 +994,7 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
         if (tr.pregapLBA > 0 && tr.pregapLBA < tr.startLBA) pregapTracks++;
     }
 
-    DWORD marginSectors = ComputeMarginSectors(driveReadOffset);
+    DWORD marginSectors = ComputeMarginSectors(sourceReadOffset);
     int boundaryReadFallbacks = 0;
     int boundaryReadFailures = 0;
     if (pregapTracks > 0) {
@@ -796,24 +1011,35 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
                 << " sectors)... " << std::flush;
 
             bool pregapOk = ReadPregapAudio(copier, tr.pregapLBA, tr.startLBA - 1,
-                driveReadOffset, marginSectors,
+                sourceReadOffset, marginSectors,
                 sources[i].pregapAudio, sources[i].headOverlap);
             if (pregapOk) {
                 std::cout << "ok\n";
             }
             else {
+                if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
+                    std::cout << "cancelled\n";
+                    Console::Warning("\n*** Cancelled by user ***\n");
+                    CleanupSources(sources);
+                    return;
+                }
                 // Pregap audio itself unreadable (some drives refuse INDEX 00
                 // sectors) — fall back to silence pregap, but still try to grab
                 // just the boundary-overlap sectors so we can repair the
                 // previous track's gap-corrupted last WAV sector.
                 sources[i].pregapAudio.clear();
-                if (ReadBoundaryOverlap(copier, tr.pregapLBA, driveReadOffset,
+                if (ReadBoundaryOverlap(copier, tr.pregapLBA, sourceReadOffset,
                     marginSectors, sources[i].headOverlap)) {
                     Console::Warning("pregap read failed - silence pregap, "
                         "boundary repair OK\n");
                     boundaryReadFallbacks++;
                 }
                 else {
+                    if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
+                        Console::Warning("\n*** Cancelled by user ***\n");
+                        CleanupSources(sources);
+                        return;
+                    }
                     Console::Error("pregap + boundary read failed\n");
                     boundaryReadFailures++;
                 }
@@ -834,7 +1060,36 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
     }
 
     // ── 7. Write-offset compensation ───────────────────────────────────
-    int writeOffsetCompensation = SelectWriteOffset(driveReadOffset);
+    if (isPioneer && !sourceReadPureRead.Restore()) {
+        Console::Error("Failed to restore the source drive's previous PureRead "
+            "state. Burn aborted.\n");
+        CleanupSources(sources);
+        return;
+    }
+    } // Source-drive PureRead is restored before querying or opening the burner.
+
+    int burnerReadOffset = 0;
+    bool burnerReadOffsetKnown = false;
+    if (burnerDrive == audioDrive) {
+        burnerReadOffset = sourceReadOffset;
+        burnerReadOffsetKnown = sourceReadOffsetKnown;
+    }
+    else {
+        Console::Info("Looking up the selected burner's AccurateRip read offset...\n");
+        std::string burnerOffsetSource;
+        burnerReadOffsetKnown = LookupDriveReadOffset(burnerDrive,
+            burnerReadOffset, burnerOffsetSource);
+        if (burnerReadOffsetKnown) {
+            Console::Success("Selected-burner read offset: ");
+            std::cout << burnerReadOffset << " samples (" << burnerOffsetSource << ")\n";
+        }
+        else {
+            Console::Warning("No AccurateRip offset entry was found for the selected burner.\n");
+        }
+    }
+
+    int writeOffsetCompensation = SelectWriteOffset(burnerReadOffset,
+        burnerReadOffsetKnown);
     if (writeOffsetCompensation == WRITE_OFFSET_BACK) {
         CleanupSources(sources);
         return;
@@ -869,6 +1124,39 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
     std::wstring binPath = workDir + L"\\_writetracks_temp.bin";
     std::wstring cuePath = workDir + L"\\_writetracks_temp.cue";
 
+    if (!WriteSourcesToBin(binPath, sources)) {
+        Console::Error("Failed writing temp BIN file.\n");
+        DeleteFileW(binPath.c_str());
+        CleanupSources(sources);
+        return;
+    }
+
+    int streamedBoundaryRepairs = 0;
+    if (!PatchBoundaryOverlaps(binPath, sources, streamedBoundaryRepairs)) {
+        Console::Error("Failed repairing track boundaries in temp BIN.\n");
+        DeleteFileW(binPath.c_str());
+        CleanupSources(sources);
+        return;
+    }
+    if (streamedBoundaryRepairs > 0) {
+        std::cout << "Repaired " << streamedBoundaryRepairs
+            << " track boundary(ies) (offset-correction gap fix).\n";
+    }
+
+    if (writeOffsetCompensation != 0) {
+        Console::Info("Applying write-offset compensation: ");
+        std::cout << writeOffsetCompensation << " samples ("
+            << (writeOffsetCompensation * 4) << " bytes)...\n";
+        const uint64_t totalBytes = static_cast<uint64_t>(totalBinSectors) * AUDIO_SECTOR_SIZE;
+        if (!ApplyFileSampleOffset(binPath, writeOffsetCompensation, totalBytes)) {
+            Console::Error("Failed applying write-offset compensation.\n");
+            DeleteFileW(binPath.c_str());
+            CleanupSources(sources);
+            return;
+        }
+    }
+
+#if 0 // Replaced by bounded file streaming above.
     {
         std::vector<std::vector<BYTE>> binSectors;
         binSectors.reserve(totalBinSectors);
@@ -947,6 +1235,7 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
             return;
         }
     }  // binSectors freed here
+#endif
 
     if (!WriteTempCue(cuePath, L"_writetracks_temp.bin", sources, disc, audioTrackIdx)) {
         Console::Error("Failed writing temp CUE file.\n");
@@ -977,7 +1266,10 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
             "CD-R or CD-RW into the same drive, then click Yes.\n",
             static_cast<char>(audioDrive));
         Console::Info(info);
-        copier.Eject();
+        const bool sourceEjected = copier.Eject();
+        if (sourceEjected && outDriveOrMediaChanged) {
+            *outDriveOrMediaChanged = true;
+        }
 
         char prompt[200];
         std::snprintf(prompt, sizeof(prompt),
@@ -989,6 +1281,7 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
             removeTemps();
             return;
         }
+        if (outDriveOrMediaChanged) *outDriveOrMediaChanged = true;
 
         // Reopen so the drive re-detects the new media.
         copier.Close();
@@ -1022,10 +1315,13 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
         if (!copier.Open(burnerDrive)) {
             Console::Error("Failed to open burner drive.\n");
             // Reopen the original audio drive so the rest of the program still has one.
-            copier.Open(audioDrive);
+            if (!copier.Open(audioDrive) && outDriveOrMediaChanged) {
+                *outDriveOrMediaChanged = true;
+            }
             removeTemps();
             return;
         }
+        if (outDriveOrMediaChanged) *outDriveOrMediaChanged = true;
         audioDrive = burnerDrive;
         PrintDriveIdentity(audioDrive, "Using burner drive");
 
@@ -1086,9 +1382,8 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
             "3. Cancel",
             1, 3, 1, &ok);
         if (!ok || c == 3) { Console::Info("Cancelled.\n"); removeTemps(); return; }
-        eraseSpeed = copier.SelectWriteSpeed();
-        if (eraseSpeed == -1) { removeTemps(); return; }
-        if (!copier.BlankRewritableDisk(eraseSpeed, c == 1)) { removeTemps(); return; }
+		eraseSpeed = copier.SelectWriteSpeed();
+		if (!copier.BlankRewritableDisk(eraseSpeed, c == 1)) { removeTemps(); return; }
         wasBlanked = true;
     }
     else if (isRewritable && !isFull) {
@@ -1102,9 +1397,8 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
             1, 3, 1, &ok);
         if (!ok) { Console::Info("Cancelled.\n"); removeTemps(); return; }
         if (c == 2 || c == 3) {
-            eraseSpeed = copier.SelectWriteSpeed();
-            if (eraseSpeed == -1) { removeTemps(); return; }
-            if (!copier.BlankRewritableDisk(eraseSpeed, c == 2)) { removeTemps(); return; }
+			eraseSpeed = copier.SelectWriteSpeed();
+			if (!copier.BlankRewritableDisk(eraseSpeed, c == 2)) { removeTemps(); return; }
             wasBlanked = true;
         }
     }
@@ -1117,15 +1411,20 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
     }
     else {
         speed = copier.SelectWriteSpeed();
-        if (speed == -1) { removeTemps(); return; }
     }
 
     Console::Info("\nUse power calibration?\n1. Yes (recommended)\n2. No\nChoice: ");
+    bool calibrationOk = false;
     int calibChoice = GetMenuChoice("Use power calibration?",
         "Optical Power Calibration tunes laser power to the loaded disc.\n\n"
         "1. Yes (recommended)\n"
         "2. No",
-        1, 2, 1);
+        1, 2, 1, &calibrationOk);
+    if (!calibrationOk) {
+        Console::Info("Write cancelled.\n");
+        removeTemps();
+        return;
+    }
     bool useCal = (calibChoice == 1);
 
     // ── 12. Burn ───────────────────────────────────────────────────────

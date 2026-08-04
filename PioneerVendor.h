@@ -379,17 +379,41 @@ bool SavePioneerPureReadSummary(const std::wstring& filename,
     const PioneerPureReadSummary& summary, const std::string& workflow,
     const std::string& readOutcome);
 
+// ── RAII: temporarily select Pioneer PureRead for a content read ────────────
+// Temporarily request a specific PureRead mode for a content-reading workflow,
+// then restore the exact previous mode and Real-Time flag. Perfect retries
+// reads but never interpolates an unreadable sample, making it appropriate for
+// CRC comparison and other strict content operations. Reapply after reopening
+// the drive or swapping media.
+class PioneerPureReadModeGuard {
+public:
+    PioneerPureReadModeGuard(ScsiDrive& drive, bool active,
+        PureReadMode requestedMode, bool requestRealTime);
+    ~PioneerPureReadModeGuard();
+
+    PioneerPureReadModeGuard(const PioneerPureReadModeGuard&) = delete;
+    PioneerPureReadModeGuard& operator=(const PioneerPureReadModeGuard&) = delete;
+
+    bool engaged() const { return m_engaged; }
+    bool Reapply();
+    bool Restore();
+
+private:
+    PioneerVendor m_pioneer;
+    bool m_active = false;
+    bool m_haveSnapshot = false;
+    bool m_restore = false;
+    bool m_engaged = false;
+    PureReadMode m_requestedMode = PureReadMode::Off;
+    bool m_requestedRealTime = false;
+    PureReadMode m_previousMode = PureReadMode::Off;
+    bool m_previousRealTime = false;
+};
+
 // ── RAII: temporarily disable Pioneer PureRead for a measurement scan ───────
-// PureRead interpolates after retries on audio reads, which would mask the
-// raw C1/C2 error counts a quality scan is trying to measure. The guard
-// snapshots the current PureRead mode AND the Real-Time PureRead flag at
-// construction, forces both Off, and restores the full snapshot on
-// destruction. Real-Time PureRead is a separate error-hiding flag, so it must
-// be turned off and put back too — otherwise a disc left with mode=Off but
-// Real-Time PureRead=On would scan unguarded, and any scan would silently drop
-// the user's real-time setting. Volatile (eepSave=false) — changes do not
-// persist across power-cycles and never touch the drive's saved setting. Pass
-// `active=false` (e.g. on non-Pioneer drives) to no-op the whole thing.
+// PureRead can mask the raw instability or error evidence a diagnostic is
+// trying to measure. This guard snapshots mode + Real-Time state, forces both
+// Off, and restores the snapshot on destruction. Changes are session-only.
 class PioneerPureReadOffGuard {
 public:
     explicit PioneerPureReadOffGuard(ScsiDrive& drive, bool active);
@@ -398,10 +422,14 @@ public:
     PioneerPureReadOffGuard(const PioneerPureReadOffGuard&) = delete;
     PioneerPureReadOffGuard& operator=(const PioneerPureReadOffGuard&) = delete;
 
+    bool engaged() const { return m_engaged; }
+    bool Restore();
+
 private:
     PioneerVendor m_pioneer;
     bool m_active = false;
     bool m_restore = false;
+    bool m_engaged = false;
     PureReadMode m_previousMode = PureReadMode::Off;
     bool m_previousRealTime = false;
 };

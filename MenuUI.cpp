@@ -390,6 +390,12 @@ void PrintHelpMenu() {
 		"   A final confirmation is required before anything is erased.",
 		"Reusing a CD-RW, or fully wiping one before disposal." });
 
+	PrintEntry({ "32. FE/TE Servo Scan",
+		"Measures focus-error and tracking-error servo signals across the disc.\n"
+		"   Requires a compatible LiteOn drive and writes a diagnostic scan log.\n"
+		"   Cancel remains available if the drive stalls or the media is unreadable.",
+		"Diagnosing tracking, focus, or mechanical readability problems." });
+
 	PrintEntry({ "33. Batch Run (multiple ops, 1 prescan)",
 		"Runs several menu items in succession with a single shared pre-scan\n"
 		"   (TOC + CD-Text + ISRC) at the start, so the disc only spins up once\n"

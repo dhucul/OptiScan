@@ -7,6 +7,7 @@
 #include <mutex>
 #include <thread>
 #include <utility>
+#include <windows.h>
 
 namespace {
     std::atomic<bool> g_running{ false };
@@ -17,18 +18,19 @@ namespace {
 
 namespace GuiWorker {
 
-    bool RunAsync(Job job) {
+    bool RunAsync(Job job, Job afterCompletion) {
         // Reject if another workflow is in progress.
         if (g_running.exchange(true)) return false;
 
         // Reset interrupt flag for the new workflow.
         InterruptHandler::Instance().SetInterrupted(false);
 
-        {
+        try {
             std::lock_guard<std::mutex> lock(g_threadMutex);
             if (g_thread.joinable()) g_thread.join();
             g_done.store(false);
-            g_thread = std::thread([j = std::move(job)]() {
+            g_thread = std::thread([j = std::move(job),
+                completion = std::move(afterCompletion)]() {
                 try {
                     j();
                 } catch (...) {
@@ -36,7 +38,13 @@ namespace GuiWorker {
                 }
                 g_done.store(true);
                 g_running.store(false);
+                if (completion) completion();
             });
+        }
+        catch (...) {
+            g_done.store(false);
+            g_running.store(false);
+            return false;
         }
         return true;
     }
@@ -61,7 +69,17 @@ namespace GuiWorker {
             + std::chrono::milliseconds(timeoutMs);
         while (g_running.load()) {
             if (std::chrono::steady_clock::now() >= deadline) break;
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE | MWMO_ALERTABLE);
+            MSG msg{};
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                if (msg.message == WM_QUIT) {
+                    PostQuitMessage(static_cast<int>(msg.wParam));
+                    break;
+                }
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
         }
         std::lock_guard<std::mutex> lock(g_threadMutex);
         if (g_running.load()) return false;   // timed out — job still executing

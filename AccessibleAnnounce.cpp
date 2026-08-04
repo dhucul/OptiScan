@@ -141,6 +141,7 @@ void Announce(const std::wstring& text) {
 
 void Shutdown() {
     if (g_provider) {
+        UiaDisconnectProvider(g_provider);
         g_provider->Release();
         g_provider = nullptr;
     }

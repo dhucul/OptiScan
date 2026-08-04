@@ -52,7 +52,7 @@ bool OpticalDrive::VerifyWriteCompletion(const std::wstring& /*binFile*/) {
 
 	std::cout << "\n";
 	Console::Warning("Finalization timeout -- disc may still be usable\n");
-	return true;
+	return false;
 }
 
 // ============================================================================

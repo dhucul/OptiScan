@@ -265,6 +265,7 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 	// For LiteOn drives, set the spindle speed before starting — the drive
 	// scans at whatever speed is currently configured.  Plextor Q-Check
 	// and Pioneer ignore the speed setting and scan internally.
+	ScopedDriveSpeed speedRestore(m_drive);
 	if (useLiteOn) {
 		m_drive.SetSpeed(scanSpeed);
 		if (scanSpeed == 0)
@@ -293,6 +294,10 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		else m_drive.LiteOnScanStop();
 		primaryScanStopped = true;
 		};
+	struct ScanSessionGuard {
+		std::function<void()> stop;
+		~ScanSessionGuard() { stop(); }
+	} scanSession{ stopPrimaryScan };
 
 	// ── Poll for results ─────────────────────────────────────
 	// The drive scans asynchronously.  We poll periodically to retrieve
@@ -311,6 +316,7 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 	constexpr int BAR_WIDTH = 25;        // Width of the UTF-8 progress bar in columns
 	constexpr auto PROGRESS_PAINT_INTERVAL = std::chrono::milliseconds(250);
 	constexpr auto QCHECK_STALL_TIMEOUT = std::chrono::seconds(30);
+	constexpr auto QCHECK_TOTAL_TIMEOUT = std::chrono::minutes(90);
 
 	while (!scanDone) {
 		// ── Check for user cancellation ──────────────────────
@@ -331,13 +337,15 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 
 		int c1 = 0, c2 = 0, cu = 0;
 		DWORD currentLBA = 0;
+		bool pioneerSampleValid = true;
 
 		// Poll the drive for the next time-slice of error statistics.
 		// Returns false on communication failure, true otherwise.
 		// `scanDone` is set to true by the driver when it reaches lastLBA.
 		bool pollOk = usePlextor
 			? m_drive.PlextorQCheckPoll(c1, c2, cu, currentLBA, scanDone)
-			: (usePioneer ? m_drive.PioneerScanPoll(c1, c2, cu, currentLBA, scanDone)
+			: (usePioneer ? m_drive.PioneerScanPoll(c1, c2, cu, currentLBA, scanDone,
+				&pioneerSampleValid)
 				: m_drive.LiteOnScanPoll(c1, c2, cu, currentLBA, scanDone));
 
 		if (!pollOk) {
@@ -348,7 +356,8 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 				std::this_thread::sleep_for(std::chrono::milliseconds(200));
 				pollOk = usePlextor
 					? m_drive.PlextorQCheckPoll(c1, c2, cu, currentLBA, scanDone)
-					: m_drive.PioneerScanPoll(c1, c2, cu, currentLBA, scanDone);
+					: m_drive.PioneerScanPoll(c1, c2, cu, currentLBA, scanDone,
+						&pioneerSampleValid);
 			}
 			if (!pollOk) {
 				// Communication lost.  Stop the scan if possible.
@@ -384,7 +393,7 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		// Empty and duplicate responses are normal briefly, but a drive that
 		// never advances must not leave the workflow polling forever.
 		auto primaryPollTime = std::chrono::steady_clock::now();
-		if (scanDone || currentLBA != primaryProgressLBA) {
+		if (scanDone || primaryProgressLBA == DWORD(-1) || currentLBA > primaryProgressLBA) {
 			primaryProgressLBA = currentLBA;
 			lastPrimaryLBAProgress = primaryPollTime;
 		}
@@ -394,6 +403,13 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 				<< currentLBA << "; partial data will not be rated.\n";
 			return false;
 		}
+		if (primaryPollTime - scanStartTime >= QCHECK_TOTAL_TIMEOUT) {
+			stopPrimaryScan();
+			std::cout << "\nERROR: Quality scan exceeded its 90-minute budget.\n";
+			return false;
+		}
+		if (usePioneer && !pioneerSampleValid)
+			continue;
 
 		// Skip empty responses — the drive hasn't produced data yet
 		// (still seeking to the start position or spinning up).
@@ -633,8 +649,7 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		// Start a second complete scan over the same LBA range.
 		bool recheckStarted = usePlextor
 			? m_drive.PlextorQCheckStart(firstLBA, lastLBA)
-			: (usePioneer ? m_drive.PioneerScanStart(firstLBA, lastLBA)
-				: m_drive.LiteOnScanStart(firstLBA, lastLBA));
+			: m_drive.LiteOnScanStart(firstLBA, lastLBA);
 
 		if (recheckStarted) {
 			bool recheckDone = false;
@@ -652,7 +667,6 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 			while (!recheckDone) {
 				if (InterruptHandler::Instance().IsInterrupted() || InterruptHandler::Instance().CheckEscapeKey()) {
 					if (usePlextor) m_drive.PlextorQCheckStop();
-					else if (usePioneer) m_drive.PioneerScanStop();
 					else m_drive.LiteOnScanStop();
 					recheckStopped = true;
 					std::cout << "\n  *** Recheck cancelled - keeping original C2 results ***\n";
@@ -660,8 +674,7 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 				}
 
 				// Same async delay as the primary loop.  Only Plextor needs
-				// pacing; Pioneer and LiteOn block on their SCSI command
-				// sequence.
+				// pacing; LiteOn blocks on its SCSI command sequence.
 				if (usePlextor)
 					std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
@@ -670,21 +683,18 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 
 				bool rpoll = usePlextor
 					? m_drive.PlextorQCheckPoll(rc1, rc2, rcu, rLBA, recheckDone)
-					: (usePioneer ? m_drive.PioneerScanPoll(rc1, rc2, rcu, rLBA, recheckDone)
-						: m_drive.LiteOnScanPoll(rc1, rc2, rcu, rLBA, recheckDone));
+					: m_drive.LiteOnScanPoll(rc1, rc2, rcu, rLBA, recheckDone);
 
 				if (!rpoll) {
 					// Same retry logic as the primary scan — async scans
-					// (Plextor / Pioneer) get one retry on transient failure.
-					if (usePlextor || usePioneer) {
+					// Plextor's asynchronous poll gets one retry on transient failure.
+					if (usePlextor) {
 						std::this_thread::sleep_for(std::chrono::milliseconds(200));
-						rpoll = usePlextor
-							? m_drive.PlextorQCheckPoll(rc1, rc2, rcu, rLBA, recheckDone)
-							: m_drive.PioneerScanPoll(rc1, rc2, rcu, rLBA, recheckDone);
+						rpoll = m_drive.PlextorQCheckPoll(
+							rc1, rc2, rcu, rLBA, recheckDone);
 					}
 					if (!rpoll) {
 						if (usePlextor) m_drive.PlextorQCheckStop();
-						else if (usePioneer) m_drive.PioneerScanStop();
 						else m_drive.LiteOnScanStop();
 						recheckStopped = true;
 						std::cout << "\n  Recheck communication lost - keeping original C2 results.\n";
@@ -696,17 +706,24 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 					recheckDone = true;
 
 				auto recheckPollTime = std::chrono::steady_clock::now();
-				if (recheckDone || rLBA != recheckProgressLBA) {
+				if (recheckDone || recheckProgressLBA == DWORD(-1) || rLBA > recheckProgressLBA) {
 					recheckProgressLBA = rLBA;
 					lastRecheckLBAProgress = recheckPollTime;
 				}
 				else if (recheckPollTime - lastRecheckLBAProgress >= QCHECK_STALL_TIMEOUT) {
 					if (usePlextor) m_drive.PlextorQCheckStop();
-					else if (usePioneer) m_drive.PioneerScanStop();
 					else m_drive.LiteOnScanStop();
 					recheckStopped = true;
 					std::cout << "\n  Verification pass stalled for 30 seconds at LBA "
 						<< rLBA << "; keeping partial evidence.\n";
+					break;
+				}
+				if (recheckPollTime - recheckStart >= QCHECK_TOTAL_TIMEOUT) {
+					if (usePlextor) m_drive.PlextorQCheckStop();
+					else m_drive.LiteOnScanStop();
+					recheckStopped = true;
+					std::cout << "\n  Verification pass exceeded its 90-minute budget; "
+						"keeping partial evidence.\n";
 					break;
 				}
 
@@ -1292,6 +1309,11 @@ bool OpticalDrive::RunPioneerCdCheckMeasurement(const DiscInfo& disc,
 				++measurementAttempt) {
 				if (!startMeasurement(targetFrame)) {
 					pv.CdCheckStop();
+					if (interrupted()) {
+						summary.cancelled = true;
+						summary.failureReason = "cancelled";
+						break;
+					}
 					continue;
 				}
 
@@ -1428,10 +1450,10 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 	// Warn if recent samples (near end of disc) show a large C1 spike —
 	// this pattern is common in disc rot that starts at the outer edge.
 	if (result.samples.size() >= 10 && result.avgC1PerSecond > 50.0) {
-		int warningMargin = 5;
-		for (int i = static_cast<int>(result.samples.size()) - 1; i >= 0; i--) {
-			if (result.samples[i].lba < result.samples.back().lba - warningMargin)
-				break;
+		const int tailCount = 5;
+		const int firstTail = (std::max)(0,
+			static_cast<int>(result.samples.size()) - tailCount);
+		for (int i = static_cast<int>(result.samples.size()) - 1; i >= firstTail; i--) {
 			if (result.samples[i].c1 > result.avgC1PerSecond * 10) {
 				std::cout << "  WARNING: Recent C1 spike detected (LBA "
 					<< result.samples[i].lba << ", C1=" << result.samples[i].c1 << ")\n";
@@ -2268,13 +2290,14 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 
 	for (size_t i = 0; i < result.samples.size(); i++) {
 		const auto& s = result.samples[i];
-		int minutes = static_cast<int>(i) / 60;
-		int seconds = static_cast<int>(i) % 60;
+		const DWORD elapsedSeconds = s.lba / 75;
+		int minutes = static_cast<int>(elapsedSeconds / 60);
+		int seconds = static_cast<int>(elapsedSeconds % 60);
 
 		if (!pioneerScan) log << "Primary,";
 		log << minutes << ":" << std::setfill('0') << std::setw(2) << seconds
 			<< std::setfill(' ')
-			<< "," << i
+			<< "," << elapsedSeconds
 			<< "," << s.lba
 			<< "," << s.c1;
 		if (pioneerScan) {
@@ -2290,11 +2313,12 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 	if (!pioneerScan) {
 		for (size_t i = 0; i < result.c2RecheckSamples.size(); i++) {
 			const auto& s = result.c2RecheckSamples[i];
-			int minutes = static_cast<int>(i) / 60;
-			int seconds = static_cast<int>(i) % 60;
+			const DWORD elapsedSeconds = s.lba / 75;
+			int minutes = static_cast<int>(elapsedSeconds / 60);
+			int seconds = static_cast<int>(elapsedSeconds % 60);
 			log << "Verification," << minutes << ":" << std::setfill('0')
 				<< std::setw(2) << seconds << std::setfill(' ')
-				<< "," << i << "," << s.lba << "," << s.c1 << ","
+				<< "," << elapsedSeconds << "," << s.lba << "," << s.c1 << ","
 				<< s.c2 << "," << s.cu << "\n";
 		}
 	}

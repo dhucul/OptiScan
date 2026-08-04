@@ -394,6 +394,7 @@ bool OpticalDrive::ReadDiscRecovery(DiscInfo& disc, const RecoveryRipConfig& con
 
 	// Lock the tray for the duration of the recovery rip (auto-unlocked on return).
 	DriveDoorLockGuard doorLock(m_drive);
+	ScopedDriveSpeed restoreSpeed(m_drive);
 
 	if (config.maxSpeed > 0) m_drive.SetSpeed(config.maxSpeed);
 
@@ -458,7 +459,7 @@ bool OpticalDrive::ReadDiscRecovery(DiscInfo& disc, const RecoveryRipConfig& con
 			std::cout << "  Existing incompatible or corrupt checkpoint was "
 				"preserved with an .invalid suffix.\n";
 		}
-		if (checkpoint.WasResumed()) {
+		if (checkpoint.WasResumed() && checkpoint.LoadedSectorCount() > 0) {
 			const int currentDriveOffset = disc.driveOffset;
 			result.resumedFromCheckpoint = true;
 			result.resumedSectors = checkpoint.LoadedSectorCount();
@@ -702,8 +703,11 @@ bool OpticalDrive::ReadDiscRecovery(DiscInfo& disc, const RecoveryRipConfig& con
 
 		if (pr.isAudio) {
 			// Audio sectors are rebuilt by aligned per-byte consensus.
+			std::vector<BYTE> preRescue(audio, audio + AUDIO_SECTOR_SIZE);
 			RescueSectorConsensus(pr.lba, audio, config, disc.leadOutLBA,
 				c2TieBreak, sr, coordinateOffsetSamples);
+			if (sr.status == RecoverySectorStatus::Unrecovered)
+				std::memcpy(audio, preRescue.data(), AUDIO_SECTOR_SIZE);
 		}
 		else {
 			// Data sectors (mixed-mode discs) have no audio consensus path —

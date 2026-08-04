@@ -8,12 +8,12 @@ bool OpticalDrive::DetectHiddenTrack(DiscInfo& disc) {
 	if (disc.tracks.empty() || !disc.tracks[0].isAudio) return false;
 
 	DWORD track1Start = disc.tracks[0].startLBA;
-	if (track1Start <= 150) return false;
+	if (track1Start == 0) return false;
 
 	std::cout << "\nChecking for hidden track audio...\n";
 	m_drive.SetSpeed(4);
 
-	DWORD htStart = 150;
+	DWORD htStart = 0;
 	bool hasAudio = false;
 
 	for (DWORD lba = htStart; lba < track1Start && lba < htStart + 75; lba++) {
@@ -37,7 +37,7 @@ bool OpticalDrive::DetectHiddenTrack(DiscInfo& disc) {
 	m_drive.SetSpeed(0);
 
 	if (hasAudio) {
-		int frames = static_cast<int>(track1Start - 150);
+		int frames = static_cast<int>(track1Start);
 		int seconds = frames / 75;
 		Console::SetColor(Console::Color::Yellow);
 		std::cout << "  Hidden track detected! Length: " << seconds / 60 << ":"

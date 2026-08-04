@@ -51,10 +51,11 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 	}
 	DWORD totalSectors = static_cast<DWORD>(sectorCount);
 
-	// Subchannel is always drive-generated via the SAO path (reliable, and
-	// pregaps are still reproduced exactly). Raw P-W subchannel writing from the
-	// .sub file was removed, so hasSubchannel stays false here; we still validate
-	// the .sub purely to give the user feedback about the file they supplied.
+	// Subchannel is drive-generated via the SAO path.  Raw P-W writes are not
+	// portable: some recorders accept MODE SELECT and SEND CUE SHEET, then reject
+	// the first 2448-byte WRITE at LBA -150 with INVALID ADDRESS FOR WRITE.
+	// Validate a supplied .sub file for user feedback, but do not let its presence
+	// silently switch the recording mode.
 	bool hasSubchannel = false;
 	bool needsDeinterleave = false;
 	if (!subFile.empty()) {
@@ -68,7 +69,7 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 			if (subSize >= expectedSubSize) {
 				Console::Success("Subchannel file validated (");
 				std::cout << (subSize / 1024) << " KB, " << totalSectors << " sectors)\n";
-				Console::Info("Using SAO (drive-generated subchannel; pregaps still exact)\n");
+				Console::Info("Using SAO (drive-generated subchannel; pregaps remain exact)\n");
 			}
 			else {
 				Console::Warning("Subchannel file size mismatch (expected ");
@@ -104,7 +105,6 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 		std::cout << audioSectors << " of " << totalSectors << " sectors\n";
 		totalSectors = audioSectors;
 	}
-
 	// Validate every range after any enhanced-CD trim. This also catches
 	// unsigned underflow produced by a malformed INDEX 00 before any writer can
 	// turn it into a huge stream or silently pad a short BIN read with zeroes.
@@ -246,10 +246,10 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 		}
 
 		const DWORD freeBlocks =
-			(static_cast<DWORD>(trackInfoResp[24]) << 24) |
-			(static_cast<DWORD>(trackInfoResp[25]) << 16) |
-			(static_cast<DWORD>(trackInfoResp[26]) << 8) |
-			static_cast<DWORD>(trackInfoResp[27]);
+			(static_cast<DWORD>(trackInfoResp[16]) << 24) |
+			(static_cast<DWORD>(trackInfoResp[17]) << 16) |
+			(static_cast<DWORD>(trackInfoResp[18]) << 8) |
+			static_cast<DWORD>(trackInfoResp[19]);
 		if (freeBlocks == 0) {
 			Console::Error("Drive reports no writable program sectors on this disc\n");
 			return false;
@@ -389,12 +389,9 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 		}
 	}
 
-	// Audio cue-sheet writing always uses SAO (write type 02h): 2352-byte blocks
-	// with drive-generated subchannel. This is the only supported path -- raw P-W
-	// subchannel writing was removed (drives that "accept" it often cannot perform
-	// it). subchannelMode is therefore always 0; hasSubchannel/needsDeinterleave
-	// stay false and are passed through to WriteAudioSectors only for signature
-	// compatibility.
+	// Audio cue-sheet writing uses SAO (write type 02h): 2352-byte blocks with
+	// drive-generated subchannel.  Do not auto-promote metadata-bearing CUEs to
+	// raw P-W; accepting the layout does not prove the drive can write that mode.
 	int subchannelMode = 0;
 
 	// ── CD-Text: choose a delivery method BEFORE sending the cue sheet ───
@@ -435,21 +432,25 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 	// ── Send the disc layout (cue sheet) once, flagged for a CD-Text lead-in
 	// only when we will write that lead-in ourselves ───────────────────
 	bool layoutAccepted = false;
-	if (WriteDiscInternal::PrepareDriveForWrite(m_drive, 0)) {
+	if (WriteDiscInternal::PrepareDriveForWrite(m_drive, subchannelMode)) {
 		Console::Info("\nSending disc layout to drive...\n");
 		if (WriteDiscInternal::BuildAndSendCueSheet(
-				m_drive, tracks, totalSectors, 0, true, false, cdTextViaLeadIn)) {
+				m_drive, tracks, totalSectors, subchannelMode, true, false, cdTextViaLeadIn)) {
 			layoutAccepted = true;
-			Console::Success("Using SAO mode (drive-generated subchannel)\n");
+			Console::Success(subchannelMode == 2
+				? "Using raw P-W mode (preserved/synthesized subchannel)\n"
+				: "Using SAO mode (drive-generated subchannel)\n");
 		}
 		else if (cdTextViaLeadIn) {
 			// The CD-Text lead-in flag may be what the drive rejected; retry the
 			// cue sheet plain and burn audio without CD-Text.
 			Console::Warning("Cue sheet with CD-Text lead-in flag rejected - retrying without CD-Text\n");
 			cdTextViaLeadIn = false;
-			if (WriteDiscInternal::BuildAndSendCueSheet(m_drive, tracks, totalSectors, 0)) {
+			if (WriteDiscInternal::BuildAndSendCueSheet(m_drive, tracks, totalSectors, subchannelMode)) {
 				layoutAccepted = true;
-				Console::Success("Using SAO mode (drive-generated subchannel)\n");
+				Console::Success(subchannelMode == 2
+					? "Using raw P-W mode (preserved/synthesized subchannel)\n"
+					: "Using SAO mode (drive-generated subchannel)\n");
 			}
 		}
 	}
@@ -509,8 +510,8 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 				return false;
 			}
 			m_drive.SetSpeed(speed, speed);  // re-apply speed dropped with the handle
-			if (!WriteDiscInternal::PrepareDriveForWrite(m_drive, 0) ||
-				!WriteDiscInternal::BuildAndSendCueSheet(m_drive, tracks, totalSectors, 0)) {
+			if (!WriteDiscInternal::PrepareDriveForWrite(m_drive, subchannelMode) ||
+				!WriteDiscInternal::BuildAndSendCueSheet(m_drive, tracks, totalSectors, subchannelMode)) {
 				Console::Error("Failed to restore normal write layout\n");
 				return false;
 			}

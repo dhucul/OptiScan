@@ -26,7 +26,7 @@ int ScalePx(int value);
 double ComputeUiScale(UINT dpi, const RECT& workArea);
 HMONITOR GetNearestMonitor(HWND hWnd);
 
-void InitializeUiResources();
+bool InitializeUiResources();
 void DestroyUiResources();
 void RegisterUiClasses(HINSTANCE hInstance);
 

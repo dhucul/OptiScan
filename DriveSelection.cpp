@@ -6,6 +6,7 @@
 #include <windows.h>
 
 wchar_t SelectAudioDrive(const std::vector<wchar_t>& audioDrives) {
+	if (audioDrives.empty()) return 0;
 	Console::Warning("\nMultiple audio CDs detected. Select drive:\n");
 	std::string msg;  // plain-text mirror of the list for the modal box
 	for (size_t i = 0; i < audioDrives.size(); i++) {

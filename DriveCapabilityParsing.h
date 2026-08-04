@@ -247,7 +247,8 @@ inline bool ParseModePage2A(const BYTE* data, size_t size, DriveCapabilities& ca
 	if (pageBytes >= 30) {
 		// MMC-3+ adds a newer selected-write-speed field but retains the legacy
 		// maximum at bytes 18-19.
-		caps.currentWriteSpeedKB = legacySpeed(data + 28);
+		const int selected = legacySpeed(data + 28);
+		if (selected > 0) caps.currentWriteSpeedKB = selected;
 	}
 
 	if (pageBytes >= 32) {

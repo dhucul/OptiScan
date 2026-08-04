@@ -1,6 +1,7 @@
 ﻿#include "UpdateChecker.h"
 #include "ConsoleFormat.h"
 #include "GuiInput.h"
+#include "InterruptHandler.h"
 #include <windows.h>
 #include <winhttp.h>
 #include <wininet.h>
@@ -14,7 +15,7 @@
 
 // Current application version — update this with each release.
 // Used by MainMenu.cpp via CheckForUpdates(APP_VERSION).
-const VersionInfo APP_VERSION = { 3, 29, 0 };
+const VersionInfo APP_VERSION = { 3, 31, 0 };
 
 static const wchar_t* GITHUB_HOST = L"api.github.com";
 static const wchar_t* RELEASE_PATH = L"/repos/dhucul/OptiScan/releases/latest";
@@ -110,6 +111,7 @@ struct WinHttpHandle
 bool CheckForUpdates(const VersionInfo& currentVersion)
 {
     Console::Info("\nChecking for updates...\n");
+	if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) return false;
 
     // Quick connectivity pre-check — avoids a long WinHTTP timeout
     // when the system has no internet at all.
@@ -219,9 +221,21 @@ bool CheckForUpdates(const VersionInfo& currentVersion)
 
     while (WinHttpQueryDataAvailable(hRequest, &bytesAvailable) && bytesAvailable > 0)
     {
+		if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) return false;
+		constexpr size_t kMaxResponseBytes = 1024 * 1024;
+		if (responseBody.size() >= kMaxResponseBytes ||
+			bytesAvailable > kMaxResponseBytes - responseBody.size()) {
+			Console::Error("GitHub response exceeded the 1 MB safety limit.\n");
+			return false;
+		}
         std::vector<char> buffer(bytesAvailable);
-        if (WinHttpReadData(hRequest, buffer.data(), bytesAvailable, &bytesRead))
-            responseBody.insert(responseBody.end(), buffer.begin(), buffer.begin() + bytesRead);
+		bytesRead = 0;
+        if (!WinHttpReadData(hRequest, buffer.data(), bytesAvailable, &bytesRead) ||
+			bytesRead == 0) {
+			Console::Error("GitHub response body could not be read completely.\n");
+			return false;
+		}
+		responseBody.insert(responseBody.end(), buffer.begin(), buffer.begin() + bytesRead);
     }
 
     if (responseBody.empty())
@@ -235,11 +249,8 @@ bool CheckForUpdates(const VersionInfo& currentVersion)
     std::wstring json(wideLen, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, responseBody.data(), (int)responseBody.size(), &json[0], wideLen);
 
-    // Parse tag_name first, then search for html_url *after* tag_name's position
-    // to avoid matching the author object's html_url which appears earlier in the JSON.
     std::wstring tagName = ExtractJsonString(json, L"tag_name");
-    size_t tagPos = json.find(L"\"tag_name\"");
-    std::wstring htmlUrl = ExtractJsonString(json, L"html_url", tagPos);
+    std::wstring htmlUrl = ExtractJsonString(json, L"html_url");
 
     if (tagName.empty())
     {

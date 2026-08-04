@@ -39,6 +39,7 @@ public:
         m_retryCount = 0;
         m_stallCount = 0;
         m_lastLineLength = 0;
+        m_lastProgressUnit = 0;
 
         auto now = std::chrono::steady_clock::now();
         m_startTime = now;
@@ -59,11 +60,15 @@ public:
         auto now = std::chrono::steady_clock::now();
         auto sectorElapsedMs = GetElapsedMs(m_lastSectorTime, now);
         m_lastSectorTime = now;
+		const int unitsDone = std::max(0, m_current - m_lastProgressUnit);
+		m_lastProgressUnit = m_current;
+		const int64_t perUnitElapsedMs = unitsDone > 0
+			? sectorElapsedMs / unitsDone : 0;
 
-        bool isStalled = sectorElapsedMs > kStallThresholdMs;
+        bool isStalled = unitsDone > 0 && perUnitElapsedMs > kStallThresholdMs;
         if (isStalled) m_stallCount++;
 
-        UpdateSpeeds(sectorElapsedMs, now);
+        UpdateSpeeds(sectorElapsedMs, unitsDone, now);
 
         if (!ShouldUpdateDisplay(now, isStalled)) return;
 
@@ -116,10 +121,12 @@ private:
         return std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count();
     }
 
-    void UpdateSpeeds(int64_t sectorElapsedMs,
+    void UpdateSpeeds(int64_t sectorElapsedMs, int unitsDone,
                       const std::chrono::steady_clock::time_point& now) {
-        if (sectorElapsedMs > 0 && sectorElapsedMs < kMaxSectorTimeMs) {
-            m_instantSpeed = static_cast<double>(m_unitBytes) / (sectorElapsedMs / 1000.0);
+        if (unitsDone > 0 && sectorElapsedMs > 0 &&
+            sectorElapsedMs / unitsDone < kMaxSectorTimeMs) {
+            m_instantSpeed = static_cast<double>(unitsDone) * m_unitBytes /
+                (sectorElapsedMs / 1000.0);
         }
 
         auto totalElapsedMs = GetElapsedMs(m_startTime, now);
@@ -239,6 +246,7 @@ private:
     int m_total = 0;
     int m_current = 0;
     int m_lastPercent = -1;
+    int m_lastProgressUnit = 0;
 
     // Speed tracking
     double m_smoothedSpeed = 0;

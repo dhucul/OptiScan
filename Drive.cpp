@@ -322,13 +322,14 @@ wchar_t WaitForDisc(const std::vector<wchar_t>& cdDrives, int timeoutSeconds) {
 	}
 	std::cout << "\n";
 
-	const DWORD startTime = GetTickCount();
-	const DWORD timeoutMs = (timeoutSeconds > 0) ? static_cast<DWORD>(timeoutSeconds) * 1000 : 0;
+	const ULONGLONG startTime = GetTickCount64();
+	const ULONGLONG timeoutMs = (timeoutSeconds > 0)
+		? static_cast<ULONGLONG>(timeoutSeconds) * 1000 : 0;
 	int lastSecondsRemaining = -1;
 
 	while (true) {
 		if (timeoutMs > 0) {
-			DWORD elapsed = GetTickCount() - startTime;
+			const ULONGLONG elapsed = GetTickCount64() - startTime;
 			if (elapsed >= timeoutMs) {
 				Console::Warning("\nTimeout waiting for disc.\n");
 				return 0;

@@ -216,23 +216,24 @@ bool ScsiDrive::DetectChipset(ChipsetInfo& info) {
 		if (DeviceIoControl(m_handle, IOCTL_STORAGE_QUERY_PROPERTY,
 			&devQuery, sizeof(devQuery), devBuf, sizeof(devBuf), &ret, nullptr)) {
 			auto* devDesc = reinterpret_cast<STORAGE_DEVICE_DESCRIPTOR*>(devBuf);
+			ret = (std::min)(ret, static_cast<DWORD>(sizeof(devBuf)));
 
-			std::string busVendor, busProduct;
-			if (devDesc->VendorIdOffset && devBuf[devDesc->VendorIdOffset]) {
-				busVendor = reinterpret_cast<char*>(devBuf + devDesc->VendorIdOffset);
-				trimStr(busVendor);
-			}
-			if (devDesc->ProductIdOffset && devBuf[devDesc->ProductIdOffset]) {
-				busProduct = reinterpret_cast<char*>(devBuf + devDesc->ProductIdOffset);
-				trimStr(busProduct);
-			}
+			auto readField = [&](ULONG offset) -> std::string {
+				if (offset == 0 || offset >= ret) return {};
+				const char* field = reinterpret_cast<const char*>(devBuf + offset);
+				return std::string(field, strnlen_s(field, ret - offset));
+			};
+			std::string busVendor = readField(devDesc->VendorIdOffset);
+			std::string busProduct = readField(devDesc->ProductIdOffset);
+			trimStr(busVendor);
+			trimStr(busProduct);
 
 			for (const auto& bridge : knownUSBBridges) {
-				bool vendorMatch = bridge.vendorHint[0] != '\0' &&
-					ContainsCI(busVendor, bridge.vendorHint);
-				bool modelMatch = bridge.modelHint[0] != '\0' &&
-					ContainsCI(busProduct, bridge.modelHint);
-				if (vendorMatch || modelMatch) {
+				const bool hasVendorHint = bridge.vendorHint[0] != '\0';
+				const bool hasModelHint = bridge.modelHint[0] != '\0';
+				const bool vendorMatch = !hasVendorHint || ContainsCI(busVendor, bridge.vendorHint);
+				const bool modelMatch = !hasModelHint || ContainsCI(busProduct, bridge.modelHint);
+				if ((hasVendorHint || hasModelHint) && vendorMatch && modelMatch) {
 					info.usbBridge = bridge.bridgeName;
 					break;
 				}
@@ -278,7 +279,7 @@ bool ScsiDrive::DetectChipset(ChipsetInfo& info) {
 		// was validated on the PLEXTOR PX-891SAF PLUS (PLDS/MediaTek): its 0xDF
 		// scan opcodes answer asc=24 to a probe with unfilled fields.
 		auto opcodeRecognized = [](bool ok, BYTE sk, BYTE asc) {
-			return ok || sk <= 0x01 || (sk == 0x05 && asc == 0x24);
+			return ok || (sk == 0x05 && asc == 0x24);
 		};
 
 		// ── Probe Plextor 0xD8 (vendor read) ──

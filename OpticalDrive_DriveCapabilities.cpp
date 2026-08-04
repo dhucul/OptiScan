@@ -334,6 +334,9 @@ void OpticalDrive::PrintDriveCapabilities(const DriveCapabilities& caps) {
 	else if (!caps.activeCDReadProbesPerformed) {
 		std::cout << "  [ --] Formatted Q-channel read NOT TESTED (load audio CD)\n";
 	}
+	else {
+		std::cout << "  [  0] Formatted Q-channel read NOT supported\n";
+	}
 
 	// Buffer size bonus: larger cache reduces re-read overhead (up to 4 pts)
 	if (caps.bufferSizeKB >= 2048) {
@@ -555,7 +558,8 @@ void OpticalDrive::ProbeCDTextWritePaths() {
 		<< std::dec << std::setfill(' ') << ")\n\n";
 
 	bool saoR96r = false, rawR96r = false, saoR96p = false, rawR96p = false;
-	int acceptedCount = 0, notAppliedCount = 0, downgradedCount = 0, rejectedCount = 0;
+	int acceptedCount = 0, notAppliedCount = 0, downgradedCount = 0;
+	int rejectedCount = 0, unverifiableCount = 0;
 
 	for (const auto& mode : modes) {
 		std::cout << "  " << mode.label << "  : ";
@@ -571,10 +575,16 @@ void OpticalDrive::ProbeCDTextWritePaths() {
 		BYTE gotWrite = 0, gotBlock = 0;
 		if (!ReadWriteParamsPage(drive, gotWrite, gotBlock)) {
 			Console::Warning("UNVERIFIABLE (readback failed)\n");
+			unverifiableCount++;
 			continue;
 		}
 
-		if (gotWrite == mode.expectWrite && gotBlock == mode.expectBlock) {
+		if (mode.expectWrite == defWrite && mode.expectBlock == defBlock) {
+			Console::Warning("NOT APPLIED");
+			std::cout << " (requested mode equals the drive default; indistinguishable)\n";
+			notAppliedCount++;
+		}
+		else if (gotWrite == mode.expectWrite && gotBlock == mode.expectBlock) {
 			Console::Success("ACCEPTED\n");
 			acceptedCount++;
 			if (mode.carriesRW) {
@@ -624,6 +634,10 @@ void OpticalDrive::ProbeCDTextWritePaths() {
 			<< "    which usually means it is not write-ready. Load a BLANK CD-R (not a pressed\n"
 			<< "    or finalized disc) and run this again -- write parameters often only stick\n"
 			<< "    when writable media is present.\n";
+	}
+	else if (acceptedCount == 0 && downgradedCount == 0 && rejectedCount == 0 &&
+		unverifiableCount > 0) {
+		Console::Warning("INCONCLUSIVE -- no probe could be verified\n");
 	}
 	else {
 		Console::Error("host-side CD-Text does NOT look possible on this drive\n");

@@ -64,10 +64,6 @@ bool OpticalDrive::GenerateDiscFingerprint(const DiscInfo& disc, DiscFingerprint
 	// The fingerprint is valid if at least one ID was successfully computed.
 	fingerprint.isValid = cddbOk || mbOk || arOk;
 
-	if (fingerprint.isValid) {
-		PrintDiscFingerprint(fingerprint);
-	}
-
 	return fingerprint.isValid;
 }
 
@@ -103,7 +99,7 @@ bool OpticalDrive::CalculateCDDBId(const DiscInfo& disc, CDDBFingerprint& cddb) 
 	// Total disc length in seconds = (lead-out − first track) / 75.
 	int leadOutFrames = static_cast<int>(disc.leadOutLBA) + 150;
 	int firstTrackFrames = static_cast<int>(disc.tracks[0].startLBA) + 150;
-	cddb.totalSeconds = (leadOutFrames - firstTrackFrames) / 75;
+	cddb.totalSeconds = (leadOutFrames / 75) - (firstTrackFrames / 75);
 
 	// Pack the three fields into one 32-bit disc ID.
 	uint32_t checksum = static_cast<uint32_t>(checksumTotal % 255);
@@ -116,7 +112,6 @@ bool OpticalDrive::CalculateCDDBId(const DiscInfo& disc, CDDBFingerprint& cddb) 
 	snprintf(hexBuf, sizeof(hexBuf), "%08x", cddb.discId);
 	cddb.discIdHex = hexBuf;
 
-	std::cout << "  CDDB ID: " << cddb.discIdHex << "\n";
 	return true;
 }
 
@@ -193,7 +188,6 @@ bool OpticalDrive::CalculateMusicBrainzId(const DiscInfo& disc, MusicBrainzFinge
 	}
 	mb.discId += '-';                // MusicBrainz convention: trailing dash
 
-	std::cout << "  MusicBrainz ID: " << mb.discId << "\n";
 	return true;
 }
 
@@ -209,30 +203,28 @@ bool OpticalDrive::CalculateMusicBrainzId(const DiscInfo& disc, MusicBrainzFinge
 bool OpticalDrive::CalculateAccurateRipId(const DiscInfo& disc, AccurateRipFingerprint& ar) {
 	if (disc.tracks.empty()) return false;
 
-	ar.trackCount = static_cast<int>(disc.tracks.size());
-	ar.discId1 = 0;
+	ar.trackCount = 0;
+	const uint32_t leadOut = static_cast<uint32_t>(disc.leadOutLBA);
+	ar.discId1 = leadOut;
 	ar.discId2 = 0;
 
-	int trackNum = 1;
+	int trackNum = 0;
 	for (const auto& track : disc.tracks) {
-		int offset = static_cast<int>(track.startLBA) + 150;
-		ar.discId1 += static_cast<uint32_t>(offset);              // Simple sum
-		ar.discId2 += static_cast<uint32_t>(offset) * trackNum;   // Weighted sum
-		trackNum++;
+		if (!track.isAudio) continue;
+		++trackNum;
+		const uint32_t lba = static_cast<uint32_t>(track.startLBA);
+		ar.discId1 += lba;
+		ar.discId2 += (lba ? lba : 1u) * static_cast<uint32_t>(trackNum);
 	}
 
 	// Lead-out contributes to discId2 with the next track number.
-	ar.discId2 += static_cast<uint32_t>(disc.leadOutLBA + 150) * (trackNum);
+	ar.discId2 += leadOut * static_cast<uint32_t>(trackNum + 1);
+	ar.trackCount = trackNum;
 
 	// Compute the CDDB ID for cross-reference (needed in the AccurateRip URL).
 	CDDBFingerprint cddbTemp;
 	CalculateCDDBId(disc, cddbTemp);
 	ar.cddbDiscId = cddbTemp.discId;
-
-	std::cout << "  AccurateRip ID1: " << std::hex << std::setfill('0')
-		<< std::setw(8) << ar.discId1 << std::dec << "\n";
-	std::cout << "  AccurateRip ID2: " << std::hex << std::setfill('0')
-		<< std::setw(8) << ar.discId2 << std::dec << std::setfill(' ') << "\n";
 
 	return true;
 }
@@ -263,10 +255,13 @@ bool OpticalDrive::CalculateAudioFingerprint(const DiscInfo& disc, AudioFingerpr
 	size_t sectorIdx = 0;
 	for (size_t trackIdx = 0; trackIdx < disc.tracks.size(); trackIdx++) {
 		const auto& track = disc.tracks[trackIdx];
-		if (!track.isAudio) continue;  // Skip data tracks
+		DWORD trackSectors = track.endLBA - track.pregapLBA + 1;
+		if (!track.isAudio) {
+			sectorIdx += trackSectors;
+			continue;
+		}
 
 		uint32_t trackHash = 2166136261u;
-		DWORD trackSectors = track.endLBA - track.pregapLBA + 1;
 
 		// Sample roughly 100 evenly-spaced sectors per track (~1%).
 		int sampleInterval = std::max(1, static_cast<int>(trackSectors / 100));
@@ -305,10 +300,6 @@ bool OpticalDrive::CalculateAudioFingerprint(const DiscInfo& disc, AudioFingerpr
 	audio.silenceProfile = silenceHash;
 	audio.sampleCount = sampleCount;
 
-	std::cout << "  Audio Hash: " << std::hex << std::setfill('0')
-		<< std::setw(8) << audio.audioHash << std::dec << std::setfill(' ') << "\n";
-	std::cout << "  Samples analyzed: " << audio.sampleCount << "\n";
-
 	return true;
 }
 
@@ -320,47 +311,68 @@ bool OpticalDrive::CalculateAudioFingerprint(const DiscInfo& disc, AudioFingerpr
 // a TOC summary with generation timestamp.
 // ============================================================================
 void OpticalDrive::PrintDiscFingerprint(const DiscFingerprint& fingerprint) {
+	const auto originalFlags = std::cout.flags();
+	const char originalFill = std::cout.fill();
+	auto hex8 = [](uint32_t value) {
+		std::ostringstream out;
+		out << std::hex << std::setfill('0') << std::setw(8) << value;
+		return out.str();
+	};
+	auto field = [](const char* label, const std::string& value) {
+		std::cout << "  " << std::left << std::setw(16)
+			<< (std::string(label) + ":") << value << "\n";
+	};
+	auto decimal = [](auto value) { return std::to_string(value); };
+
 	std::cout << "\n" << std::string(50, '=') << "\n";
 	std::cout << "         DISC FINGERPRINT REPORT\n";
 	std::cout << std::string(50, '=') << "\n\n";
 
 	// ── CDDB / FreeDB section ───────────────────────────────────────────
 	std::cout << "=== CDDB/FreeDB ===\n";
-	std::cout << "  Disc ID:      " << fingerprint.cddb.discIdHex << "\n";
-	std::cout << "  Track Count:  " << fingerprint.cddb.trackCount << "\n";
-	std::cout << "  Total Length: " << fingerprint.cddb.totalSeconds / 60 << ":"
-		<< std::setfill('0') << std::setw(2) << fingerprint.cddb.totalSeconds % 60 << std::setfill(' ') << "\n";
-	std::cout << "  Lookup URL:   " << fingerprint.GetCDDBUrl() << "\n";
+	std::ostringstream duration;
+	duration << fingerprint.cddb.totalSeconds / 60 << ":" << std::setfill('0')
+		<< std::setw(2) << fingerprint.cddb.totalSeconds % 60;
+	field("Disc ID", fingerprint.cddb.discIdHex);
+	field("Track Count", decimal(fingerprint.cddb.trackCount));
+	field("Total Length", duration.str());
+	field("Lookup URL", fingerprint.GetCDDBUrl());
 
 	// ── MusicBrainz section ─────────────────────────────────────────────
 	std::cout << "\n=== MusicBrainz ===\n";
-	std::cout << "  Disc ID:      " << fingerprint.musicBrainz.discId << "\n";
-	std::cout << "  Tracks:       " << fingerprint.musicBrainz.firstTrack << "-"
-		<< fingerprint.musicBrainz.lastTrack << "\n";
-	std::cout << "  Lead-out:     " << fingerprint.musicBrainz.leadOutOffset << " frames\n";
-	std::cout << "  Lookup URL:   " << fingerprint.GetMusicBrainzUrl() << "\n";
+	field("Disc ID", fingerprint.musicBrainz.discId);
+	field("Tracks", decimal(fingerprint.musicBrainz.firstTrack) + "-" +
+		decimal(fingerprint.musicBrainz.lastTrack));
+	field("Lead-out", decimal(fingerprint.musicBrainz.leadOutOffset) + " frames");
+	field("Lookup URL", fingerprint.GetMusicBrainzUrl());
 
 	// ── AccurateRip section ─────────────────────────────────────────────
 	std::cout << "\n=== AccurateRip ===\n";
-	std::cout << "  Disc ID 1:    " << std::hex << std::setfill('0')
-		<< std::setw(8) << fingerprint.accurateRip.discId1 << std::dec << "\n";
-	std::cout << "  Disc ID 2:    " << std::hex << std::setfill('0')
-		<< std::setw(8) << fingerprint.accurateRip.discId2 << std::dec << std::setfill(' ') << "\n";
-	std::cout << "  Database URL: " << fingerprint.GetAccurateRipUrl() << "\n";
+	field("Disc ID 1", hex8(fingerprint.accurateRip.discId1));
+	field("Disc ID 2", hex8(fingerprint.accurateRip.discId2));
+	field("Database URL", fingerprint.GetAccurateRipUrl());
 
 	// ── Audio content section (only if samples were analysed) ───────────
 	if (fingerprint.audio.sampleCount > 0) {
 		std::cout << "\n=== Audio Content ===\n";
-		std::cout << "  Audio Hash:   " << std::hex << std::setfill('0')
-			<< std::setw(8) << fingerprint.audio.audioHash << std::dec << std::setfill(' ') << "\n";
-		std::cout << "  Samples:      " << fingerprint.audio.sampleCount << "\n";
+		field("Audio Hash", hex8(fingerprint.audio.audioHash));
+		field("Samples", decimal(fingerprint.audio.sampleCount));
 	}
 
 	// ── TOC summary and timestamp ───────────────────────────────────────
 	std::cout << "\n=== TOC Summary ===\n";
-	std::cout << "  " << fingerprint.tocString << "\n";
-	std::cout << "  Generated:    " << fingerprint.generationTime << "\n";
+	std::ostringstream offsets;
+	for (size_t i = 0; i < fingerprint.musicBrainz.trackOffsets.size(); ++i) {
+		if (i > 0) offsets << ", ";
+		offsets << fingerprint.musicBrainz.trackOffsets[i] - 150;
+	}
+	field("Track Count", decimal(fingerprint.cddb.trackCount));
+	field("Track LBAs", offsets.str());
+	field("Lead-out LBA", decimal(fingerprint.musicBrainz.leadOutOffset - 150));
+	field("Generated", fingerprint.generationTime);
 	std::cout << std::string(50, '=') << "\n";
+	std::cout.flags(originalFlags);
+	std::cout.fill(originalFill);
 }
 
 // ============================================================================
@@ -382,7 +394,7 @@ bool OpticalDrive::SaveDiscFingerprint(const DiscFingerprint& fingerprint, const
 	file << "[AccurateRip]\nDiscID1=" << std::hex << fingerprint.accurateRip.discId1 << "\n";
 	file << "DiscID2=" << fingerprint.accurateRip.discId2 << std::dec << "\n";
 	file.close();
-	return true;
+	return file.good();
 }
 
 // ============================================================================

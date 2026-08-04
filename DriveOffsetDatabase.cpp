@@ -30,11 +30,19 @@ std::string DriveOffsetDatabase::ToUpper(const std::string& s) {
 std::string DriveOffsetDatabase::GetCachePath() const {
 	wchar_t* appDataPath = nullptr;
 	if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &appDataPath))) {
-		char narrow[MAX_PATH];
-		WideCharToMultiByte(CP_UTF8, 0, appDataPath, -1, narrow, MAX_PATH, nullptr, nullptr);
+		const int wideLength = static_cast<int>(wcslen(appDataPath));
+		const int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+			appDataPath, wideLength, nullptr, 0, nullptr, nullptr);
+		if (length <= 0) { CoTaskMemFree(appDataPath); return "driveoffsets.csv"; }
+		std::string narrow(static_cast<size_t>(length), '\0');
+		if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, appDataPath, wideLength,
+			narrow.data(), length, nullptr, nullptr) != length) {
+			CoTaskMemFree(appDataPath);
+			return "driveoffsets.csv";
+		}
 		CoTaskMemFree(appDataPath);
 
-		std::string dir = std::string(narrow) + "\\OptiScan";
+		std::string dir = narrow + "\\OptiScan";
 		std::filesystem::create_directories(dir);
 		return dir + "\\driveoffsets.csv";
 	}
@@ -83,7 +91,9 @@ bool DriveOffsetDatabase::Load() {
 		rec.submissions = 0;
 		m_entries.push_back(std::move(rec));
 	}
-	m_loaded = true;
+	// Keep retrying cache/download on later lookups; the built-in table remains
+	// available in m_entries in the meantime.
+	m_loaded = false;
 	return true;
 }
 
@@ -363,7 +373,12 @@ bool DriveOffsetDatabase::SaveCache(const std::string& path) const {
 	file << "# OptiScan Drive Offset Cache\n";
 	file << "# vendor\tmodel\toffset\tsubmissions\n";
 	for (const auto& e : m_entries) {
-		file << e.vendor << "\t" << e.model << "\t" << e.offset << "\t" << e.submissions << "\n";
+		auto flatten = [](std::string value) {
+			for (char& ch : value) if (ch == '\t' || ch == '\r' || ch == '\n') ch = ' ';
+			return value;
+		};
+		file << flatten(e.vendor) << "\t" << flatten(e.model) << "\t"
+			<< e.offset << "\t" << e.submissions << "\n";
 	}
 	return true;
 }

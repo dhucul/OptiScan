@@ -153,7 +153,7 @@ bool OpticalDrive::ReadCDText(DiscInfo& disc) {
 // Mirrors ReadISRC's parsing: the MCNValid flag is bit 7 of buf[8] and the
 // 13 ASCII digits follow at buf[9].
 bool OpticalDrive::ReadMCN(DiscInfo& disc) {
-	BYTE cdb[10] = { 0x42, 0x02, 0x02, 0, 0, 0, 0, 0, 24, 0 };
+	BYTE cdb[10] = { 0x42, 0x00, 0x40, 0x02, 0, 0, 0, 0, 24, 0 };
 	std::vector<BYTE> buf(24);
 
 	if (!m_drive.SendSCSI(cdb, 10, buf.data(), 24))
@@ -179,15 +179,27 @@ bool OpticalDrive::ReadMCN(DiscInfo& disc) {
 
 bool OpticalDrive::ReadISRC(DiscInfo& disc) {
 	std::cout << "\nReading ISRC codes...\n";
+	struct IsrcRow {
+		int trackNumber = 0;
+		std::string value;
+	};
+	std::vector<IsrcRow> rows;
+	int validCount = 0;
+	int zeroPlaceholderCount = 0;
 
 	for (auto& track : disc.tracks) {
 		if (!track.isAudio) continue;
+		track.isrc.clear();
+		IsrcRow row{ track.trackNumber, "Not present" };
 
-		BYTE cdb[10] = { 0x42, 0x02, 0x03, 0, 0, 0, static_cast<BYTE>(track.trackNumber), 0, 24, 0 };
+		BYTE cdb[10] = { 0x42, 0x00, 0x40, 0x03, 0, 0,
+			static_cast<BYTE>(track.trackNumber), 0, 24, 0 };
 		std::vector<BYTE> buf(24);
 
-		if (m_drive.SendSCSI(cdb, 10, buf.data(), 24)) {
-			if (buf[8] & 0x80) {
+		if (!m_drive.SendSCSI(cdb, 10, buf.data(), 24)) {
+			row.value = "Read unavailable";
+		}
+		else if (buf[8] & 0x80) {
 				std::string isrc;
 				for (int i = 0; i < 12; i++) {
 					char c = buf[9 + i];
@@ -195,13 +207,42 @@ bool OpticalDrive::ReadISRC(DiscInfo& disc) {
 					else if (c >= 'A' && c <= 'Z') isrc += c;
 					else if (c >= 'a' && c <= 'z') isrc += static_cast<char>(c - 'a' + 'A');
 				}
-				if (isrc.length() == 12) {
-					track.isrc = isrc;
-					std::cout << "  Track " << track.trackNumber << ": " << isrc << "\n";
+				if (isrc == "000000000000") {
+					// Some drives assert TCValid while returning an empty firmware
+					// placeholder. It is not an ISRC and must not be persisted or
+					// written back to a copied disc.
+					++zeroPlaceholderCount;
 				}
-			}
+				else if (isrc.length() == 12) {
+					track.isrc = isrc;
+					row.value = isrc;
+					++validCount;
+				}
+				else {
+					row.value = "Invalid drive response";
+				}
 		}
+		rows.push_back(std::move(row));
 	}
 
+	if (validCount == 0) {
+		std::cout << "  No valid ISRC codes found (" << rows.size()
+			<< " audio tracks checked).\n";
+		if (zeroPlaceholderCount > 0) {
+			std::cout << "  The drive returned " << zeroPlaceholderCount
+				<< " all-zero placeholder" << (zeroPlaceholderCount == 1 ? "" : "s")
+				<< "; ignored.\n";
+		}
+		return false;
+	}
+
+	std::cout << "\n  Track  ISRC / Status\n"
+		<< "  -----  ----------------------\n";
+	const auto originalFlags = std::cout.flags();
+	for (const auto& row : rows) {
+		std::cout << "  " << std::right << std::setw(5) << row.trackNumber
+			<< "  " << row.value << "\n";
+	}
+	std::cout.flags(originalFlags);
 	return true;
 }

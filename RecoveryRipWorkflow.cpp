@@ -11,6 +11,10 @@
 
 bool RunRecoveryRipWorkflow(OpticalDrive& copier, DiscInfo& disc,
 	const std::wstring& /*workDir*/) {
+	struct RawSectorRelease {
+		DiscInfo& value;
+		~RawSectorRelease() { value.rawSectors.clear(); value.rawSectors.shrink_to_fit(); }
+	} rawSectorRelease{ disc };
 
 	Console::Heading("\n=== Recovery Rip (drive-independent) ===\n");
 	Console::Info("Rebuilds hard sectors from cross-read consensus rather than\n");
@@ -38,7 +42,6 @@ bool RunRecoveryRipWorkflow(OpticalDrive& copier, DiscInfo& disc,
 	// Speed: low speeds read marginal media more reliably. This doubles as the
 	// engine's per-pass speed cap.
 	int speed = copier.SelectScanSpeed();
-	if (speed == -1) return false;
 
 	int subch = copier.SelectSubchannel();
 	if (subch == -1) return false;
@@ -48,8 +51,9 @@ bool RunRecoveryRipWorkflow(OpticalDrive& copier, DiscInfo& disc,
 	if (pregapMode == -1) return false;
 	disc.pregapMode = static_cast<PregapMode>(pregapMode);
 
-	int offset = copier.SelectOffset();
-	if (offset == -1) return false;
+	bool offsetOk = false;
+	int offset = copier.SelectOffset(&offsetOk);
+	if (!offsetOk) return false;
 	disc.driveOffset = offset;
 
 	// The hybrid C2 tie-break can only engage if the drive reports C2 at all.

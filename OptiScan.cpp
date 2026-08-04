@@ -38,6 +38,7 @@ HINSTANCE hInst;                                // current instance
 WCHAR szTitle[MAX_LOADSTRING];                  // The title bar text
 WCHAR szWindowClass[MAX_LOADSTRING];            // the main window class name
 static bool          g_isClosing = false;
+static constexpr UINT_PTR kDeferredExitTimer = 0x4F50;
 
 static void RequestCleanShutdown(HWND hWnd);
 
@@ -177,7 +178,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     InitCommonControlsEx(&commonControls);
     LoadLibraryW(L"Msftedit.dll");
 
-    InitializeUiResources();
+    if (!InitializeUiResources()) {
+        MessageBoxW(nullptr, L"GDI+ could not be initialized. OptiScan cannot render its interface.",
+            L"OptiScan", MB_OK | MB_ICONERROR);
+        return FALSE;
+    }
 
     // Load the bundled Inter + JetBrains Mono fonts into this process (GDI +
     // GDI+) now that GDI+ is up and before any control fonts are created or the
@@ -206,8 +211,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     MSG msg;
 
     // Main message loop:
-    while (GetMessage(&msg, nullptr, 0, 0))
+    BOOL messageResult = 0;
+    while ((messageResult = GetMessage(&msg, nullptr, 0, 0)) != 0)
     {
+        if (messageResult == -1) break;
         // Accelerators win first, then the dialog manager so Tab / Shift+Tab
         // move keyboard focus between the buttons and the output controls.
         // Without IsDialogMessage a plain window does no tab navigation, so
@@ -511,6 +518,9 @@ static void ResetThemeFromMenu(HWND hWnd)
 //
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    intptr_t promptResult = 0;
+    if (GuiInput::HandleOwnerMessage(message, lParam, &promptResult))
+        return static_cast<LRESULT>(promptResult);
     switch (message)
     {
     case WM_CREATE:
@@ -596,7 +606,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             if (wmId >= IDM_SOUND_FIRST && wmId < IDM_SOUND_FIRST + soundCount)
             {
                 ApplyClickStyleFromMenu(hWnd,
-                    static_cast<UiSound::ClickStyle>(wmId - IDM_SOUND_FIRST));
+                    UiSound::ClickStyleTable()[wmId - IDM_SOUND_FIRST].id);
                 return 0;
             }
 
@@ -661,8 +671,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                     }
                     else if (commandIndex == kExitButtonIndex)
                     {
-                        Sleep(90); // let the click sound finish before teardown
-                        RequestCleanShutdown(hWnd);
+                        SetTimer(hWnd, kDeferredExitTimer, 90, nullptr);
                     }
                     else if (commandIndex == kBatchButtonIndex)
                     {
@@ -687,18 +696,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                             SetMenuButtonsEnabled(false);
                             bool started = GuiWorker::RunAsync(
                                 [hWndCopy]() {
-                                    struct PostDone {
-                                        HWND h;
-                                        ~PostDone() {
-                                            PostMessageW(h, WM_APP_WORKER_DONE, 0, 0);
-                                        }
-                                    } guard{ hWndCopy };
-
                                     bool ok = false;
                                     std::string raw = GuiInput::PromptString(
                                         "Batch run",
                                         "Enter menu numbers to run, separated by spaces or commas\n"
-                                        "(valid range: 1-30; duplicates ignored; example: 6 7 8 9)",
+                                        "(valid range: 1-32; duplicates ignored; example: 6 7 8 9)",
                                         std::string(), &ok);
                                     if (!ok) {
                                         Console::Info("Batch cancelled.\n");
@@ -730,7 +732,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                     }
                                     bool freshlyScanned = false;
                                     if (needsDrive) {
-                                        if (!EnsureDriveOpen(hWndCopy, &freshlyScanned, needsAudio)) {
+                                        // If the batch only contains file-based writing/erase
+                                        // operations, opening the drive is sufficient.  Trying to
+                                        // read a TOC from the blank destination makes a successful
+                                        // fresh open look stale and duplicates the drive announcement.
+                                        if (!EnsureDriveOpen(hWndCopy, &freshlyScanned,
+                                                             needsAudio, needsAudio)) {
                                             return;
                                         }
                                         // Single shared prescan up front — workflows in the loop
@@ -749,7 +756,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                                     Console::Info("Batch cancelled during drive selection.\n");
                                                     return;
                                                 }
-                                                RefreshDisc();
+                                                if (!RefreshDisc()) {
+                                                    Console::Error("The drive could not be refreshed — batch stopped.\n");
+                                                    return;
+                                                }
                                             } else {
                                                 Prescan();
                                             }
@@ -801,7 +811,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                         // opened with a fresh TOC (nothing could have changed yet).
                                         if (batchOpId == 1 || batchOpId == 2) {
                                             if (!(i == 0 && freshlyScanned)) {
-                                                RefreshDisc();
+                                                if (!RefreshDisc()) {
+                                                    Console::Error("The drive could not be refreshed — batch stopped.\n");
+                                                    batchEnd = BatchEnd::DiscGone;
+                                                    break;
+                                                }
                                                 if (g_interrupt.IsInterrupted()) {
                                                     Console::Warning("Batch cancelled by user.\n");
                                                     batchEnd = BatchEnd::Cancelled;
@@ -826,8 +840,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 													batchEnd = BatchEnd::Cancelled;
 													break;
 												}
-												RefreshDisc();
-												if (!g_hasTOC) {
+											if (!RefreshDisc()) {
+												batchEnd = BatchEnd::DiscGone;
+												break;
+											}
+											if (!g_hasTOC) {
 													Console::Error("No valid source TOC is available for this batch step.\n");
 													batchEnd = BatchEnd::DiscGone;
 													break;
@@ -874,6 +891,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                         else
                                             Console::Error(("Batch stopped — " + msg).c_str());
                                     }
+                                }, [hWndCopy]() {
+                                    PostMessageW(hWndCopy, WM_APP_WORKER_DONE, 0, 0);
                                 });
                             if (!started) {
                                 SetMenuButtonsEnabled(true);
@@ -910,17 +929,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                             // responsive even if WaitForDisc polls for the full timeout.
                             bool started = GuiWorker::RunAsync(
                                 [hWndCopy, choice, needsPrescan, needsAudioDisc, needsDrive]() {
-                                    // RAII guard: WORKER_DONE is posted on every exit
-                                    // path, including exceptions thrown by the workflow.
-                                    // Without this, an unhandled throw would skip the
-                                    // notification and leave the UI buttons disabled.
-                                    struct PostDone {
-                                        HWND h;
-                                        ~PostDone() {
-                                            PostMessageW(h, WM_APP_WORKER_DONE, 0, 0);
-                                        }
-                                    } guard{ hWndCopy };
-
                                     if (!needsDrive) {
                                         // Help / Check-updates: no drive interaction.
                                         DispatchMenuChoice(g_copier, g_disc, g_workDir,
@@ -950,9 +958,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                     }
 
                                     bool freshlyScanned = false;
-                                    // Erase CD-RW (op id 31) needs no disc contents, so skip the
-                                    // open-time TOC + pre-gap scan — the disc is about to be wiped.
-                                    const bool readTocOnOpen = (choice != 31);
+                                    // File-based writing and erase need a drive, not a source-disc
+                                    // TOC.  On a blank destination a TOC read necessarily fails;
+                                    // treating that as a non-fresh open caused the same drive to be
+                                    // announced once here and once again below.
+                                    const bool readTocOnOpen = needsAudioDisc;
                                     if (EnsureDriveOpen(hWndCopy, &freshlyScanned, needsAudioDisc, readTocOnOpen)) {
                                         // Bail if cancellation was requested (Cancel button or
                                         // window close) during the drive-open + TOC/pregap scan,
@@ -985,7 +995,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                                 // handle never diverge. RefreshDisc has its own
                                                 // interrupt checks during the TOC retry loop.
                                                 if (!ReselectSourceDriveIfMultiple()) return;
-                                                RefreshDisc();
+                                                if (!RefreshDisc()) return;
                                             }
                                             if (g_interrupt.IsInterrupted()) return;
                                         }
@@ -996,6 +1006,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                         DispatchMenuChoice(g_copier, g_disc, g_workDir,
                                                            g_audioDrive, g_hasTOC, choice);
                                     }
+                                }, [hWndCopy]() {
+                                    PostMessageW(hWndCopy, WM_APP_WORKER_DONE, 0, 0);
                                 });
                             if (!started) {
                                 // Couldn't claim the worker (shouldn't happen on the
@@ -1084,6 +1096,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         SetMenuButtonsEnabled(true);
         AccessibleAnnounce::Announce(L"Operation finished.");
         return 0;
+    case WM_TIMER:
+        if (wParam == kDeferredExitTimer) {
+            KillTimer(hWnd, kDeferredExitTimer);
+            RequestCleanShutdown(hWnd);
+            return 0;
+        }
+        break;
     case WM_CLOSE:
         RequestCleanShutdown(hWnd);
         return 0;
@@ -1121,6 +1140,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             GuiWorker::ReapIfDone();   // join an already-finished worker
         }
 
+        GuiInput::Shutdown();
+        UiSound::Shutdown();
+        GuiSink::UninstallStreamRedirect();
         AccessibleAnnounce::Shutdown();
         PostQuitMessage(0);
         break;

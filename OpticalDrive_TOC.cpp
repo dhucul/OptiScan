@@ -220,7 +220,7 @@ bool OpticalDrive::ReadTOC(DiscInfo& disc, bool skipPregapScan) {
 					}
 				}
 
-				if (index01 < 150) index01 = 150;
+				if (!foundIndex1) index01 = 150;
 
 				disc.tracks[0].pregapLBA = 0;
 				disc.tracks[0].index01LBA = index01;
@@ -656,6 +656,9 @@ bool OpticalDrive::ReadFullTOC(DiscInfo& disc) {
 #endif
 
 	std::vector<int> trackSession(100, 1);
+	auto sessionOf = [&](int trackNumber) -> int {
+		return trackNumber >= 1 && trackNumber <= 99 ? trackSession[trackNumber] : 1;
+	};
 	std::map<int, DWORD> sessionLeadOut;    // session number → lead-out LBA
 	std::map<int, DWORD> fullTocTrackStart; // track number → LBA from Full TOC MSF
 	if (hasFullToc) {
@@ -688,8 +691,10 @@ bool OpticalDrive::ReadFullTOC(DiscInfo& disc) {
 				int pmin = p[8];
 				int psec = p[9];
 				int pframe = p[10];
-				DWORD leadOutLBA = static_cast<DWORD>((pmin * 60 + psec) * 75 + pframe) - 150;
-				sessionLeadOut[session] = leadOutLBA;
+				if (pmin < 100 && psec < 60 && pframe < 75) {
+					const DWORD rawMsf = static_cast<DWORD>((pmin * 60 + psec) * 75 + pframe);
+					if (rawMsf >= 150) sessionLeadOut[session] = rawMsf - 150;
+				}
 			}
 
 			p += 11;
@@ -720,7 +725,7 @@ bool OpticalDrive::ReadFullTOC(DiscInfo& disc) {
 		t.isAudio = (td[1] & 0x04) == 0;
 		t.mode = t.isAudio ? 0 : 1;
 		t.hasPreemphasis = (td[1] & 0x01) != 0;
-		t.session = trackSession[t.trackNumber];
+		t.session = sessionOf(t.trackNumber);
 
 		DWORD rawStart = (static_cast<DWORD>(td[4]) << 24) |
 			(static_cast<DWORD>(td[5]) << 16) |
@@ -743,7 +748,7 @@ bool OpticalDrive::ReadFullTOC(DiscInfo& disc) {
 
 			// If next track is in a different session, cap endLBA at this
 			// session's lead-out to avoid scanning the inter-session gap.
-			int nextSession = trackSession[tocBuf[4 + (i + 1) * 8 + 2]]; // next track's session
+			int nextSession = sessionOf(tocBuf[4 + (i + 1) * 8 + 2]);
 			if (nextSession != t.session) {
 				auto it = sessionLeadOut.find(t.session);
 				if (it != sessionLeadOut.end() && it->second - 1 < t.endLBA) {
@@ -871,16 +876,18 @@ bool OpticalDrive::ReadFullTOC(DiscInfo& disc) {
 			// Recalculate endLBAs from recovered starts
 			for (size_t i = 0; i < disc.tracks.size(); i++) {
 				if (i + 1 < disc.tracks.size()) {
-					disc.tracks[i].endLBA = disc.tracks[i + 1].startLBA - 1;
+					disc.tracks[i].endLBA = disc.tracks[i + 1].startLBA > 0
+						? disc.tracks[i + 1].startLBA - 1 : 0;
 					int nextSess = disc.tracks[i + 1].session;
 					if (nextSess != disc.tracks[i].session) {
 						auto sit = sessionLeadOut.find(disc.tracks[i].session);
-						if (sit != sessionLeadOut.end() && sit->second - 1 < disc.tracks[i].endLBA)
+						if (sit != sessionLeadOut.end() && sit->second > 0 &&
+							sit->second - 1 < disc.tracks[i].endLBA)
 							disc.tracks[i].endLBA = sit->second - 1;
 					}
 				}
 				else {
-					disc.tracks[i].endLBA = disc.leadOutLBA - 1;
+					disc.tracks[i].endLBA = disc.leadOutLBA > 0 ? disc.leadOutLBA - 1 : 0;
 				}
 			}
 
@@ -895,6 +902,7 @@ bool OpticalDrive::ReadFullTOC(DiscInfo& disc) {
 			bool valid = true;
 			for (size_t i = 0; i < disc.tracks.size(); i++) {
 				if (disc.tracks[i].startLBA >= MAX_VALID_CD_LBA
+					|| disc.tracks[i].endLBA >= MAX_VALID_CD_LBA
 					|| disc.tracks[i].startLBA > disc.tracks[i].endLBA) {
 					valid = false; break;
 				}

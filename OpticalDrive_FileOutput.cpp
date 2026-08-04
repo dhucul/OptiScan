@@ -9,11 +9,39 @@
 #include <filesystem>
 // ... other includes as needed
 
+namespace {
+bool WideToUtf8(const std::wstring& input, std::string& output) {
+	output.clear();
+	if (input.empty()) return true;
+	const int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+		input.data(), static_cast<int>(input.size()), nullptr, 0, nullptr, nullptr);
+	if (length <= 0) return false;
+	output.resize(length);
+	return WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+		input.data(), static_cast<int>(input.size()), output.data(), length,
+		nullptr, nullptr) == length;
+}
+}
+
 // ============================================================================
 // File Output
 // ============================================================================
 
 bool OpticalDrive::SaveToFile(const DiscInfo& disc, const std::wstring& base) {
+	struct PartialOutputCleanup {
+		std::vector<std::filesystem::path> paths;
+		bool committed = false;
+		~PartialOutputCleanup() {
+			if (committed) return;
+			for (const auto& path : paths) {
+				std::error_code ec;
+				std::filesystem::remove(path, ec);
+			}
+		}
+	} cleanup{ { std::filesystem::path(base + L".bin"),
+		std::filesystem::path(base + L".cue") } };
+	if (disc.includeSubchannel)
+		cleanup.paths.push_back(std::filesystem::path(base + L".sub"));
 	// Calculate and display original disc IDs for verification
 	uint32_t originalDiscID1 = AccurateRip::CalculateDiscID1(disc);
 	uint32_t originalDiscID2 = AccurateRip::CalculateDiscID2(disc);
@@ -58,12 +86,14 @@ bool OpticalDrive::SaveToFile(const DiscInfo& disc, const std::wstring& base) {
 		else if (disc.pregapMode == PregapMode::Separate && t.pregapLBA < t.startLBA) {
 			std::wstring pregapPath = base + L"_track" +
 				std::to_wstring(t.trackNumber) + L"_pregap.bin";
+			cleanup.paths.push_back(std::filesystem::path(pregapPath));
 			std::ofstream pregapFile(std::filesystem::path(pregapPath), std::ios::binary);
 			if (!pregapFile) return false;
 			std::wstring pregapSubPath = base + L"_track" +
 				std::to_wstring(t.trackNumber) + L"_pregap.sub";
 			std::ofstream pregapSub;
 			if (disc.includeSubchannel) {
+				cleanup.paths.push_back(std::filesystem::path(pregapSubPath));
 				pregapSub.open(std::filesystem::path(pregapSubPath), std::ios::binary);
 				if (!pregapSub) return false;
 			}
@@ -118,9 +148,8 @@ bool OpticalDrive::SaveToFile(const DiscInfo& disc, const std::wstring& base) {
 		if (!sub.good()) return false;
 	}
 
-	int fnLen = WideCharToMultiByte(CP_ACP, 0, base.c_str(), -1, nullptr, 0, nullptr, nullptr);
-	std::string fn(fnLen > 0 ? fnLen - 1 : 0, '\0');
-	WideCharToMultiByte(CP_ACP, 0, base.c_str(), -1, fn.data(), fnLen, nullptr, nullptr);
+	std::string fn;
+	if (!WideToUtf8(base, fn)) return false;
 	size_t p = fn.find_last_of("/\\");
 	if (p != std::string::npos) fn = fn.substr(p + 1);
 
@@ -219,6 +248,7 @@ bool OpticalDrive::SaveToFile(const DiscInfo& disc, const std::wstring& base) {
 		std::wcout << L"  " << pf << L"\n";
 	}
 
+	cleanup.committed = true;
 	return true;
 }
 
@@ -313,13 +343,13 @@ bool OpticalDrive::SaveBlerLog(const BlerResult& result, const std::wstring& fil
 		log << "# N/A - verified C2 zone data was not measured.\n#\n";
 	}
 	else {
-	log << "# Inner  (0-33%%):       " << std::fixed << std::setprecision(2)
+	log << "# Inner  (0-33%):        " << std::fixed << std::setprecision(2)
 		<< result.zoneStats.InnerErrorRate() << "% ("
 		<< result.zoneStats.innerErrors << "/" << result.zoneStats.innerSectors << ")\n";
-	log << "# Middle (33-66%%):      " << std::fixed << std::setprecision(2)
+	log << "# Middle (33-66%):       " << std::fixed << std::setprecision(2)
 		<< result.zoneStats.MiddleErrorRate() << "% ("
 		<< result.zoneStats.middleErrors << "/" << result.zoneStats.middleSectors << ")\n";
-	log << "# Outer  (66-100%%):     " << std::fixed << std::setprecision(2)
+	log << "# Outer  (66-100%):      " << std::fixed << std::setprecision(2)
 		<< result.zoneStats.OuterErrorRate() << "% ("
 		<< result.zoneStats.outerErrors << "/" << result.zoneStats.outerSectors << ")\n";
 	log << "#\n";
@@ -438,9 +468,8 @@ bool OpticalDrive::GenerateCueSheet(const DiscInfo& disc, const std::wstring& au
 	std::ofstream cue(std::filesystem::path(cueOutputPath), std::ios::out | std::ios::trunc);
 	if (!cue) return false;
 
-	int fnLen = WideCharToMultiByte(CP_ACP, 0, audioFilePath.c_str(), -1, nullptr, 0, nullptr, nullptr);
-	std::string fn(fnLen > 0 ? fnLen - 1 : 0, '\0');
-	WideCharToMultiByte(CP_ACP, 0, audioFilePath.c_str(), -1, fn.data(), fnLen, nullptr, nullptr);
+	std::string fn;
+	if (!WideToUtf8(audioFilePath, fn)) return false;
 	size_t p = fn.find_last_of("/\\");
 	if (p != std::string::npos) fn = fn.substr(p + 1);
 
@@ -509,7 +538,8 @@ bool OpticalDrive::GenerateCueSheet(const DiscInfo& disc, const std::wstring& au
 		}
 	}
 
-	return true;
+	cue.close();
+	return cue.good();
 }
 
 bool OpticalDrive::SaveSecureRipLog(const SecureRipResult& result, const std::wstring& filename) {

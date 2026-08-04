@@ -43,4 +43,6 @@ private:
     std::vector<uint32_t> FetchAccurateRipChecksums(const std::string& discId);
     std::string CalculateDiscId();
     uint32_t ReadTrackAndCalculateCRC(int trackNumber, int offsetSamples);
+    bool ReadTrackOffsetCRCs(int trackNumber, int minOffset, int maxOffset,
+                             std::vector<uint32_t>& outCRCs);
 };

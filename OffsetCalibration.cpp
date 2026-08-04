@@ -3,10 +3,13 @@
 // ============================================================================
 #define NOMINMAX  // Prevent Windows.h from defining min/max macros
 #include "OffsetCalibration.h"
+#include "InterruptHandler.h"
 #include <cmath>
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
+#include <iterator>
+#include <limits>
 #include <Windows.h>
 #include <winhttp.h>
 #include <map>
@@ -71,41 +74,45 @@ CalibrationResult OffsetCalibration::QuickCalibrate(
 
 	result.totalTracks = static_cast<int>(arChecksums.size());
 
-	// Test offset range (typical CD drive offsets: -1200 to +1200 samples)
-	const int MIN_OFFSET = -1200;
-	const int MAX_OFFSET = 1200;
-	const int STEP = 6;  // Test every 6 samples for speed
-
 	std::map<int, int> offsetScores;  // offset -> matching tracks
 	std::map<int, std::vector<int>> offsetMatchedTracks;  // Track which tracks matched
+	const auto commonBegin = std::begin(CommonOffsets);
+	const auto commonEnd = std::end(CommonOffsets);
+	const auto [minIt, maxIt] = std::minmax_element(commonBegin, commonEnd);
+	const int minOffset = *minIt;
+	const int maxOffset = *maxIt;
+	for (int testOffset : CommonOffsets)
+		offsetScores[testOffset] = 0;
 
-	int testsTotal = (MAX_OFFSET - MIN_OFFSET) / STEP;
-	int testsDone = 0;
-
-	for (int testOffset = MIN_OFFSET; testOffset <= MAX_OFFSET; testOffset += STEP) {
+	// Read each track once with enough padding for the whole candidate range,
+	// then slide the AccurateRip window in memory.  The previous implementation
+	// re-read the entire track for every offset (thousands of full-disc reads).
+	for (size_t i = 0; i < arChecksums.size(); ++i) {
+		if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
+			result.success = false;
+			return result;
+		}
 		if (progressCallback) {
-			int pct = 10 + (testsDone * 80 / testsTotal);
-			progressCallback(pct, "Testing offset: " + std::to_string(testOffset));
+			const int pct = 10 + static_cast<int>((i * 80) / arChecksums.size());
+			progressCallback(pct, "Reading track " + std::to_string(i + 1) +
+				" for common-offset calibration");
 		}
 
-		int matches = 0;
-		std::vector<int> matchedTracks;
+		std::vector<uint32_t> trackCRCs;
+		if (!ReadTrackOffsetCRCs(static_cast<int>(i + 1), minOffset, maxOffset,
+			trackCRCs)) {
+			continue;
+		}
 
-		// Read all tracks with this offset and calculate CRCs
-		for (size_t i = 0; i < arChecksums.size(); i++) {
-			uint32_t calculatedCRC = ReadTrackAndCalculateCRC(static_cast<int>(i + 1), testOffset);
-			if (calculatedCRC == arChecksums[i]) {
-				matches++;
-				matchedTracks.push_back(static_cast<int>(i + 1));
+		for (int testOffset : CommonOffsets) {
+			const uint32_t calculatedCRC = trackCRCs[
+				static_cast<size_t>(testOffset - minOffset)];
+			if (calculatedCRC != 0 && arChecksums[i] != 0 &&
+				calculatedCRC == arChecksums[i]) {
+				++offsetScores[testOffset];
+				offsetMatchedTracks[testOffset].push_back(static_cast<int>(i + 1));
 			}
 		}
-
-		offsetScores[testOffset] = matches;
-		if (matches > 0) {
-			offsetMatchedTracks[testOffset] = matchedTracks;
-		}
-
-		testsDone++;
 	}
 
 	// Find best offset(s)
@@ -374,24 +381,40 @@ CalibrationResult OffsetCalibration::CalibrateWithDisc(
 	int bestMatches = 0;
 	int bestOffset = 0;
 
-	// Test offsets -2000 to +2000 in steps of 1
-	// This is slow but thorough
-	for (int offset = -2000; offset <= 2000; offset++) {
-		if (progressCallback && (offset % 100 == 0)) {
-			int pct = ((offset + 2000) * 100) / 4000;
-			progressCallback(pct, "Testing offset " + std::to_string(offset) + "...");
+	constexpr int minOffset = -2000;
+	constexpr int maxOffset = 2000;
+	std::vector<int> scores(static_cast<size_t>(maxOffset - minOffset + 1), 0);
+
+	// One padded read per track; all 4,001 offsets are evaluated from the same
+	// buffer with a rolling weighted checksum.
+	for (size_t trackIndex = 0; trackIndex < arChecksums.size(); ++trackIndex) {
+		if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
+			result.success = false;
+			return result;
+		}
+		if (progressCallback) {
+			const int pct = static_cast<int>((trackIndex * 100) / arChecksums.size());
+			progressCallback(pct, "Reading track " + std::to_string(trackIndex + 1) +
+				" for full offset sweep...");
 		}
 
-		int matches = 0;
-
-		// Test this offset against AccurateRip checksums
-		for (size_t i = 0; i < arChecksums.size(); i++) {
-			uint32_t calculatedCRC = ReadTrackAndCalculateCRC(static_cast<int>(i + 1), offset);
-			if (calculatedCRC != 0 && calculatedCRC == arChecksums[i]) {
-				matches++;
+		std::vector<uint32_t> trackCRCs;
+		if (!ReadTrackOffsetCRCs(static_cast<int>(trackIndex + 1), minOffset,
+			maxOffset, trackCRCs)) {
+			continue;
+		}
+		if (arChecksums[trackIndex] != 0) {
+			for (size_t offsetIndex = 0; offsetIndex < trackCRCs.size(); ++offsetIndex) {
+				if (trackCRCs[offsetIndex] != 0 &&
+					trackCRCs[offsetIndex] == arChecksums[trackIndex]) {
+					++scores[offsetIndex];
+				}
 			}
 		}
+	}
 
+	for (int offset = minOffset; offset <= maxOffset; ++offset) {
+		const int matches = scores[static_cast<size_t>(offset - minOffset)];
 		if (matches > bestMatches) {
 			bestMatches = matches;
 			bestOffset = offset;
@@ -496,4 +519,92 @@ uint32_t OffsetCalibration::ReadTrackAndCalculateCRC(int trackNumber, int offset
 		allSamples.begin() + windowStart + static_cast<ptrdiff_t>(nominalLength));
 
 	return CalculateAccurateRipCRC(trackSamples, trackNumber, totalTracks);
+}
+
+bool OffsetCalibration::ReadTrackOffsetCRCs(int trackNumber, int minOffset,
+	int maxOffset, std::vector<uint32_t>& outCRCs) {
+	outCRCs.clear();
+	if (minOffset > maxOffset) return false;
+	outCRCs.assign(static_cast<size_t>(maxOffset - minOffset + 1), 0);
+
+	BYTE tocCdb[10] = { 0x43, 0x00, 0, 0, 0, 0, 0, 0x03, 0x24, 0 };
+	std::vector<BYTE> tocBuf(804);
+	if (!m_drive.SendSCSI(tocCdb, 10, tocBuf.data(), 804)) return false;
+
+	const int firstTrack = tocBuf[2];
+	const int lastTrack = tocBuf[3];
+	const int totalTracks = lastTrack - firstTrack + 1;
+	if (trackNumber < 1 || trackNumber > totalTracks) return false;
+
+	auto descriptorLBA = [&](int descriptorIndex) {
+		const BYTE* descriptor = tocBuf.data() + 4 + descriptorIndex * 8;
+		return (static_cast<DWORD>(descriptor[4]) << 24) |
+			(static_cast<DWORD>(descriptor[5]) << 16) |
+			(static_cast<DWORD>(descriptor[6]) << 8) |
+			static_cast<DWORD>(descriptor[7]);
+	};
+	const DWORD startLBA = descriptorLBA(trackNumber - 1);
+	const DWORD endLBA = descriptorLBA(trackNumber);
+	if (endLBA <= startLBA) return false;
+
+	constexpr int framesPerSector = 588;
+	const DWORD beforeSectors = minOffset < 0
+		? static_cast<DWORD>((-minOffset + framesPerSector - 1) / framesPerSector)
+		: 0;
+	const DWORD afterSectors = maxOffset > 0
+		? static_cast<DWORD>((maxOffset + framesPerSector - 1) / framesPerSector)
+		: 0;
+	const DWORD readStart = startLBA > beforeSectors ? startLBA - beforeSectors : 0;
+	if (endLBA > std::numeric_limits<DWORD>::max() - afterSectors) return false;
+	const DWORD readEnd = endLBA + afterSectors;
+
+	std::vector<uint32_t> frames;
+	frames.reserve(static_cast<size_t>(readEnd - readStart) * framesPerSector);
+	BYTE sectorBuf[AUDIO_SECTOR_SIZE] = {};
+	for (DWORD lba = readStart; lba < readEnd; ++lba) {
+		if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) return false;
+		if (!m_drive.ReadSectorAudioOnly(lba, sectorBuf)) {
+			frames.insert(frames.end(), framesPerSector, 0);
+			continue;
+		}
+		for (int byteIndex = 0; byteIndex < AUDIO_SECTOR_SIZE; byteIndex += 4) {
+			const uint32_t left = static_cast<uint16_t>(
+				sectorBuf[byteIndex] | (sectorBuf[byteIndex + 1] << 8));
+			const uint32_t right = static_cast<uint16_t>(
+				sectorBuf[byteIndex + 2] | (sectorBuf[byteIndex + 3] << 8));
+			frames.push_back(left | (right << 16));
+		}
+	}
+
+	const int64_t nominalStart = static_cast<int64_t>(startLBA - readStart) * framesPerSector;
+	const int64_t nominalLength = static_cast<int64_t>(endLBA - startLBA) * framesPerSector;
+	const int64_t skipFront = trackNumber == 1 ? 5 * framesPerSector : 0;
+	const int64_t skipBack = trackNumber == totalTracks ? 5 * framesPerSector : 0;
+	const int64_t windowLength = nominalLength - skipFront - skipBack;
+	if (windowLength <= 0) return false;
+
+	const int64_t firstWindow = nominalStart + minOffset + skipFront;
+	const int64_t lastWindowEnd = nominalStart + maxOffset + skipFront + windowLength;
+	if (firstWindow < 0 || lastWindowEnd > static_cast<int64_t>(frames.size()))
+		return false;
+
+	uint32_t sum = 0;
+	uint32_t weighted = 0;
+	for (int64_t i = 0; i < windowLength; ++i) {
+		const uint32_t frame = frames[static_cast<size_t>(firstWindow + i)];
+		sum += frame;
+		weighted += frame * static_cast<uint32_t>(i + 1);
+	}
+	outCRCs[0] = weighted;
+
+	for (size_t offsetIndex = 1; offsetIndex < outCRCs.size(); ++offsetIndex) {
+		const size_t outgoingIndex = static_cast<size_t>(firstWindow) + offsetIndex - 1;
+		const size_t incomingIndex = outgoingIndex + static_cast<size_t>(windowLength);
+		const uint32_t outgoing = frames[outgoingIndex];
+		const uint32_t incoming = frames[incomingIndex];
+		weighted = weighted - sum + incoming * static_cast<uint32_t>(windowLength);
+		sum = sum - outgoing + incoming;
+		outCRCs[offsetIndex] = weighted;
+	}
+	return true;
 }

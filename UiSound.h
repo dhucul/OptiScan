@@ -295,7 +295,7 @@ struct ClickStyleInfo {
 
 inline const std::vector<ClickStyleInfo>& ClickStyleTable() {
     static const std::vector<ClickStyleInfo> table = {
-        { ClickStyle::WaterDrop,   L"Wooden tock", L"&Wooden tock", &WoodTockSamples   },
+        { ClickStyle::WoodTock,   L"Wooden tock", L"&Wooden tock", &WoodTockSamples   },
         { ClickStyle::SubtleTick, L"Subtle tick", L"Subtle &tick", &SubtleTickSamples },
         { ClickStyle::WaterDrop,  L"Water drop",  L"Water &drop",  &WaterDropSamples  },
         { ClickStyle::SoftPop,    L"Soft pop",    L"&Soft pop",    &SoftPopSamples    },
@@ -479,6 +479,20 @@ inline void PlayMenuClickSound() {
     // Immediately follow the click with looping silence so the session
     // stays warm for the next press.
     detail::StartLoopingSilence();
+}
+
+inline void Shutdown() {
+    HWAVEOUT& device = detail::Device();
+    if (!device) return;
+    waveOutReset(device);
+    detail::StopLoopingSilence();
+    WAVEHDR& click = detail::ClickHeader();
+    if (click.lpData) {
+        waveOutUnprepareHeader(device, &click, sizeof(click));
+        click = {};
+    }
+    waveOutClose(device);
+    device = nullptr;
 }
 
 }  // namespace UiSound

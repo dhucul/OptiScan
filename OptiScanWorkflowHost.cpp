@@ -31,9 +31,10 @@ static HWND ModalOwnerForCurrentThread(HWND hOwner) {
 
 // Lazily open the first audio CD drive on first button press that needs one.
 // Returns true if the drive is open (TOC may or may not be available). When
-// `outFreshlyScanned` is provided, it is set to true if the call performed
-// the initial TOC read (so callers that always re-scan for asterisked ops
-// can skip the duplicate read on the first click). Pass readToc=false to skip
+// `outFreshlyScanned` is provided, it is set to true if the call completed all
+// requested open-time work (opening alone when readToc=false, or a successful
+// initial TOC read). This lets callers skip duplicate preparation and output.
+// Pass readToc=false to skip
 // the open-time TOC/pre-gap scan entirely — used by operations like Erase
 // CD-RW that don't need disc contents (and where scanning pre-gaps on a disc
 // that's about to be wiped is pointless and slow).
@@ -126,7 +127,7 @@ bool EnsureDriveOpen(HWND hOwner, bool* outFreshlyScanned,
         g_hasTOC = false;
     }
 
-    if (outFreshlyScanned) *outFreshlyScanned = true;
+    if (outFreshlyScanned) *outFreshlyScanned = (!readToc || g_hasTOC);
     return true;
 }
 
@@ -206,9 +207,9 @@ void Prescan() {
 // swaps the disc that handle — and the drive's own cache — can keep reporting
 // the previous disc's TOC. Closing and reopening forces a clean re-detect, so
 // Copy disc / Rip tracks always operate on the disc currently in the drive.
-void RefreshDisc() {
+bool RefreshDisc() {
     // No known drive letter to reopen — fall back to a same-handle TOC re-read.
-    if (!g_audioDrive) { Prescan(); return; }
+    if (!g_audioDrive) { Prescan(); return g_driveOpen; }
 
     PrintDriveIdentity(g_audioDrive, "Refreshing disc on drive");
     // Invalidate before changing the handle. Every failure/cancellation path
@@ -221,7 +222,7 @@ void RefreshDisc() {
     if (!g_copier.Open(g_audioDrive)) {
         Console::Error("Failed to reopen the drive for a disc refresh.\n");
         g_driveOpen = false;
-        return;
+        return false;
     }
 
     // The disc may not be ready immediately after reopen (drive spinning up),
@@ -233,7 +234,7 @@ void RefreshDisc() {
             // Abandoning the refresh must not leave the *previous* disc's TOC
             // looking current — the drive was just closed and reopened, so the
             // cached DiscInfo describes a disc we can no longer vouch for.
-            return;
+            return false;
         }
         if (g_copier.ReadTOC(fresh)) { ok = true; break; }
         Console::Info("Waiting for disc to become ready...\n");
@@ -250,6 +251,7 @@ void RefreshDisc() {
         g_disc = DiscInfo{};
         Console::Warning("No TOC found after refresh.\n");
     }
+    return true;
 }
 
 // Source-drive re-selection for the read workflows (Copy disc / Rip tracks /
@@ -323,7 +325,7 @@ std::vector<int> ParseBatchChoices(const std::string& input) {
         if (token.empty()) return;
         try {
             int v = std::stoi(token);
-            if (v >= 1 && v <= 30 &&
+            if (v >= 1 && v <= 32 &&
                 std::find(out.begin(), out.end(), v) == out.end()) {
                 out.push_back(v);
             }

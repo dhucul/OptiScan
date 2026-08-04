@@ -177,9 +177,7 @@ BYTE BackgroundAlpha(BYTE alpha)
     // Lightly relax only the background veils. Scaled layouts need a bit more
     // compensation because down-sampled artwork reads denser; 5K can use the
     // artwork directly without an extra background veil.
-    const double compensation = (gUiScale >= 0.999)
-        ? 0.25
-        : 0.75 + (0.25 * gUiScale);
+    const double compensation = max(0.25, min(1.0, 1.25 - (0.5 * gUiScale)));
     const int adjusted = (int)std::lround((double)alpha * compensation);
     return (BYTE)max(0, min(255, adjusted));
 }

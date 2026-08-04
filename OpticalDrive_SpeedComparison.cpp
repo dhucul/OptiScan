@@ -60,7 +60,15 @@ bool OpticalDrive::RunSpeedComparisonTest(DiscInfo& disc, std::vector<SpeedCompa
 	else                 snprintf(highLabel, sizeof(highLabel), "max");
 
 	int sampleInterval = std::max(1, static_cast<int>(totalSectors / 100));
-	int totalSamples = std::max(1, static_cast<int>(totalSectors / sampleInterval) + 1);
+	int totalSamples = 0;
+	for (const auto& track : disc.tracks) {
+		if (!track.isAudio) continue;
+		const DWORD start = track.trackNumber == 1 ? 0 : track.pregapLBA;
+		if (track.endLBA < start) continue;
+		const DWORD count = track.endLBA - start + 1;
+		totalSamples += static_cast<int>((count + sampleInterval - 1) / sampleInterval);
+	}
+	totalSamples = std::max(1, totalSamples);
 	results.clear();
 	int tested = 0;
 

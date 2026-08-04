@@ -101,6 +101,7 @@ std::vector<BYTE> WriteDiscInternal::BuildCDTextPacks(
 	const std::vector<OpticalDrive::TrackWriteInfo>& tracks) {
 
 	std::vector<BYTE> packs;
+	bool sequenceOverflow = false;
 
 	auto buildPacksForType = [&](BYTE packType,
 		const std::string& discStr,
@@ -120,16 +121,22 @@ std::vector<BYTE> WriteDiscInternal::BuildCDTextPacks(
 				textBuf.push_back(0x00);
 			}
 
-			BYTE seqBase = static_cast<BYTE>(packs.size() / 18);
+			size_t seqBase = packs.size() / 18;
 			size_t offset = 0;
 			int stringIdx = 0;
 			int charInString = 0;
 
 			while (offset < textBuf.size()) {
+				// Three 0x8F size packs are appended below; sequence numbers are
+				// one byte, so reserve 253..255 for them.
+				if (seqBase >= 253) {
+					sequenceOverflow = true;
+					return;
+				}
 				BYTE pack[18] = { 0 };
 				pack[0] = packType;
 				pack[1] = trackNumAtString[stringIdx];
-				pack[2] = seqBase++;
+				pack[2] = static_cast<BYTE>(seqBase++);
 				// Byte 3 high nibble is the language block number.  We only
 				// emit block 0, so cap the character-position nibble at 0x0F
 				// instead of letting long strings spill into the block bits.
@@ -162,6 +169,10 @@ std::vector<BYTE> WriteDiscInternal::BuildCDTextPacks(
 
 	buildPacksForType(0x80, discTitle, trackTitles);
 	buildPacksForType(0x81, discPerformer, trackPerformers);
+	if (sequenceOverflow) {
+		Console::Warning("CD-Text exceeds the 256-pack sequence limit; metadata was not emitted\n");
+		return {};
+	}
 
 	{
 		int totalPacks = static_cast<int>(packs.size() / 18);
@@ -186,12 +197,12 @@ std::vector<BYTE> WriteDiscInternal::BuildCDTextPacks(
 		sizeInfo[20] = static_cast<BYTE>(totalPacks + 2); // block 0 last sequence
 		sizeInfo[28] = 0x09; // block 0 language: English
 
-		BYTE seqBase = static_cast<BYTE>(packs.size() / 18);
+		size_t seqBase = packs.size() / 18;
 		for (int p = 0; p < 3; p++) {
 			BYTE pack[18] = { 0 };
 			pack[0] = 0x8F;
 			pack[1] = static_cast<BYTE>(p);
-			pack[2] = seqBase++;
+			pack[2] = static_cast<BYTE>(seqBase++);
 			pack[3] = 0x00;
 			memcpy(&pack[4], &sizeInfo[p * 12], 12);
 

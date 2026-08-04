@@ -59,7 +59,7 @@ bool ScsiDrive::SupportsLiteOnFeTe() {
 		ok, sk, asc, ascq);
 	OutputDebugStringA(dbg);
 
-	if (!ok && sk > 0x01) {
+	if (!ok) {
 		if (asc == 0x20)
 			std::cout << "  [LiteOnFeTe] asc=0x20: firmware does not implement DF/08\n";
 		else if (asc == 0x24)
@@ -82,7 +82,7 @@ bool ScsiDrive::SupportsLiteOnFeTe() {
 
 	bool hasData = false;
 	for (int i = 1; i < 8; i++) if (buf[i]) { hasData = true; break; }
-	if (hasData || gdOk || sk <= 0x01) {
+	if (hasData || gdOk) {
 		std::cout << "  [LiteOnFeTe] Drive supports DF/08 focus/tracking-error scan\n" << std::flush;
 		m_liteonFeTeProbed = 1;
 		return true;
@@ -106,7 +106,7 @@ bool ScsiDrive::LiteOnFeTeStart(DWORD startLBA, DWORD /*endLBA*/) {
 	std::vector<BYTE> buf(0x10, 0);
 	BYTE sk = 0, asc = 0, ascq = 0;
 	bool ok = SendSCSIWithSense(cdb, 12, buf.data(), 0x10, &sk, &asc, &ascq);
-	return ok || sk <= 0x01;
+	return ok;
 }
 
 bool ScsiDrive::LiteOnFeTePoll(int& fe, int& te, DWORD& currentLBA, bool& scanDone) {
@@ -123,7 +123,7 @@ bool ScsiDrive::LiteOnFeTePoll(int& fe, int& te, DWORD& currentLBA, bool& scanDo
 	std::vector<BYTE> buf(0x10, 0);
 	BYTE sk = 0, asc = 0, ascq = 0;
 	bool ok = SendSCSIWithSense(cdb, 12, buf.data(), 0x10, &sk, &asc, &ascq);
-	if (!ok && sk > 0x01) { scanDone = true; return false; }
+	if (!ok) { scanDone = true; return false; }
 
 	// Tentative slice layout (verify on hardware): bytes[1..3]=MSF position,
 	// bytes[4..5]=focus error, bytes[6..7]=tracking error (big-endian).

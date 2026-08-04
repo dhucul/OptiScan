@@ -90,7 +90,7 @@ bool ScsiDrive::SupportsQCheck() {
 	bool ok = SendSCSIWithSense(cdb, 12, nullptr, 0, &senseKey, &asc, &ascq);
 	PlextorQCheckStop();
 
-	if (ok || (senseKey <= 0x01 && senseKey != 0xFF)) {
+	if (ok) {
 		m_qcheckProbed = 1;
 		return true;
 	}
@@ -101,7 +101,7 @@ bool ScsiDrive::SupportsQCheck() {
 	ok = SendSCSIWithSense(cdb, 12, nullptr, 0, &senseKey, &asc, &ascq);
 	PlextorQCheckStop();
 
-	if (ok || (senseKey <= 0x01 && senseKey != 0xFF)) {
+	if (ok) {
 		m_qcheckProbed = 1;
 		return true;
 	}
@@ -139,7 +139,7 @@ bool ScsiDrive::PlextorQCheckStart(DWORD startLBA, DWORD endLBA) {
 	cdb[1] = 0x00;
 	BYTE senseKey = 0, asc = 0, ascq = 0;
 	bool ok = SendSCSIWithSense(cdb, 12, nullptr, 0, &senseKey, &asc, &ascq);
-	if (ok || senseKey <= 0x01) {
+	if (ok) {
 		std::cout << "  [QCheck] Started with subcommand 0x00 (C1 mode)\n" << std::flush;
 		return true;
 	}
@@ -148,7 +148,7 @@ bool ScsiDrive::PlextorQCheckStart(DWORD startLBA, DWORD endLBA) {
 	cdb[1] = 0x01;
 	senseKey = 0; asc = 0; ascq = 0;
 	ok = SendSCSIWithSense(cdb, 12, nullptr, 0, &senseKey, &asc, &ascq);
-	if (ok || senseKey <= 0x01) {
+	if (ok) {
 		std::cout << "  [QCheck] Started with subcommand 0x01 (C2/combined mode)\n" << std::flush;
 		return true;
 	}
@@ -188,7 +188,7 @@ bool ScsiDrive::PlextorQCheckPoll(int& c1, int& c2, int& cu,
 		s_diagDumpsRemaining--;
 	}
 
-	if (!ok && senseKey > 0x01) {
+	if (!ok) {
 		if (senseKey == 0x05) {
 			c1 = 0; c2 = 0; cu = 0;
 			currentLBA = 0;
@@ -243,5 +243,5 @@ bool ScsiDrive::PlextorQCheckStop() {
 
 	BYTE senseKey = 0, asc = 0, ascq = 0;
 	bool ok = SendSCSIWithSense(cdb, 12, nullptr, 0, &senseKey, &asc, &ascq);
-	return ok || senseKey <= 0x01;
+	return ok;
 }

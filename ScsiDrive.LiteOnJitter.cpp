@@ -58,7 +58,7 @@ bool ScsiDrive::SupportsLiteOnJitter() {
 
 	BYTE firstSk = sk, firstAsc = asc, firstAscq = ascq;   // remember for diagnostic
 
-	if (!ok && sk > 0x01) {
+	if (!ok) {
 		// Try the 0x80 variant some MediaTek firmwares use
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0x1B; cdb[2] = 0x80;
 		ok = SendSCSIWithSense(cdb, 12, buf.data(), 0x0C, &sk, &asc, &ascq);
@@ -66,7 +66,7 @@ bool ScsiDrive::SupportsLiteOnJitter() {
 			ok, sk, asc, ascq);
 		OutputDebugStringA(dbg);
 	}
-	if (!ok && sk > 0x01) {
+	if (!ok) {
 		// Surface the rejection so the user can diagnose without a debugger.
 		std::cout << "  [LiteOnJitter] Drive rejected 0xDF/0x1B init"
 			<< "  (0xA1: sk=0x" << std::hex << (int)firstSk
@@ -99,7 +99,7 @@ bool ScsiDrive::SupportsLiteOnJitter() {
 
 	bool hasData = false;
 	for (int i = 1; i < 8; i++) if (buf[i]) { hasData = true; break; }
-	if (hasData || gdOk || sk <= 0x01) {
+	if (hasData || gdOk) {
 		std::cout << "  [LiteOnJitter] Drive supports 0xDF/0x1B jitter scan\n";
 		m_liteonJitterProbed = 1;
 		return true;
@@ -123,11 +123,11 @@ bool ScsiDrive::LiteOnJitterStart(DWORD startLBA, DWORD /*endLBA*/) {
 	BYTE sk = 0, asc = 0, ascq = 0;
 	bool ok = SendSCSIWithSense(cdb, 12, buf.data(), 0x0C, &sk, &asc, &ascq);
 
-	if (!ok && sk > 0x01) {
+	if (!ok) {
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0x1B; cdb[2] = 0x80;
 		ok = SendSCSIWithSense(cdb, 12, buf.data(), 0x0C, &sk, &asc, &ascq);
 	}
-	return ok || sk <= 0x01;
+	return ok;
 }
 
 bool ScsiDrive::LiteOnJitterPoll(int& jitter, int& beta,
@@ -146,7 +146,7 @@ bool ScsiDrive::LiteOnJitterPoll(int& jitter, int& beta,
 	std::vector<BYTE> buf(0x0C, 0);
 	BYTE sk = 0, asc = 0, ascq = 0;
 	bool ok = SendSCSIWithSense(cdb, 12, buf.data(), 0x0C, &sk, &asc, &ascq);
-	if (!ok && sk > 0x01) { scanDone = true; return false; }
+	if (!ok) { scanDone = true; return false; }
 
 	DWORD msfLBA = static_cast<DWORD>(buf[1]) * 60 * 75
 		+ static_cast<DWORD>(buf[2]) * 75

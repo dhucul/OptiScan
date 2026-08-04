@@ -183,21 +183,23 @@ void LayoutMainControls(HWND hWnd)
     //
     // On the first pass, children were created hidden — fold SWP_SHOWWINDOW
     // into the batch so positioning and reveal happen as one atomic update.
-    static bool s_firstLayoutDone = false;
-    const bool firstPass = !s_firstLayoutDone;
-    const UINT swpFlags = SWP_NOZORDER | SWP_NOACTIVATE
-                        | (firstPass ? SWP_SHOWWINDOW : 0);
+    const UINT swpFlags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW;
+    bool buttonVisible[COMMAND_BUTTON_COUNT]{};
+    HWND priorFocus = GetFocus();
 
     HDWP hdwp = BeginDeferWindowPos(40);
     auto move = [&](HWND h, int x, int y, int w, int hgt) {
         if (!h) return;
+        for (int i = 0; i < COMMAND_BUTTON_COUNT; ++i) {
+            if (hInfoButtons[i] == h) { buttonVisible[i] = true; break; }
+        }
         if (hdwp) {
             hdwp = DeferWindowPos(hdwp, h, nullptr, x, y, w, hgt, swpFlags);
         } else {
             // BeginDeferWindowPos failed or a prior DeferWindowPos failed
             // (which frees the HDWP). Fall back to per-window move + show.
             MoveWindow(h, x, y, w, hgt, TRUE);
-            if (firstPass) ShowWindow(h, SW_SHOWNOACTIVATE);
+            ShowWindow(h, SW_SHOWNOACTIVATE);
         }
     };
 
@@ -210,9 +212,6 @@ void LayoutMainControls(HWND hWnd)
         const int contentLeft = sidebarWidth + ScalePx(60);
         const int contentRight = rc.right - ScalePx(40);
         const int contentWidth = max(ScalePx(900), contentRight - contentLeft);
-        for (int i = 0; i < COMMAND_BUTTON_COUNT; ++i)
-            if (hInfoButtons[i]) ShowWindow(hInfoButtons[i], SW_HIDE);
-
         const int navIndex = GetNavIndex();
         int outputTop = rc.bottom - ScalePx(650);
         if (navIndex == 0)
@@ -228,7 +227,6 @@ void LayoutMainControls(HWND hWnd)
             const int primary[] = { 0, 1, 5 };
             for (int i = 0; i < 3; ++i)
             {
-                ShowWindow(hInfoButtons[primary[i]], SW_SHOWNOACTIVATE);
                 move(hInfoButtons[primary[i]], contentLeft + i * (primaryWidth + primaryGap),
                      primaryTop, primaryWidth, primaryHeight);
             }
@@ -240,7 +238,6 @@ void LayoutMainControls(HWND hWnd)
                 {
                     const int row = i / overviewColumns;
                     const int column = i % overviewColumns;
-                    ShowWindow(hInfoButtons[indices[i]], SW_SHOWNOACTIVATE);
                     move(hInfoButtons[indices[i]],
                          contentLeft + column * (columnWidth + columnGap),
                          buttonTop + row * (buttonHeight + rowGap),
@@ -289,7 +286,6 @@ void LayoutMainControls(HWND hWnd)
             const int buttonTop = ScalePx(170);
             for (int i = 0; i < count; ++i)
             {
-                ShowWindow(hInfoButtons[indices[i]], SW_SHOWNOACTIVATE);
                 move(hInfoButtons[indices[i]],
                      contentLeft + (i % columns) * (buttonWidth + gap),
                      buttonTop + (i / columns) * (buttonHeight + ScalePx(14)),
@@ -297,8 +293,9 @@ void LayoutMainControls(HWND hWnd)
             }
         }
 
-        const int outputBottom = rc.bottom - ScalePx(40);
-        const int outputHeight = max(ScalePx(260), outputBottom - outputTop);
+        const int outputBottom = max(ScalePx(160), rc.bottom - ScalePx(40));
+        outputTop = min(outputTop, max(ScalePx(100), outputBottom - ScalePx(180)));
+        const int outputHeight = max(ScalePx(140), outputBottom - outputTop);
         const int outputInset = ScalePx(22);
         const int progressTop = outputTop + ScalePx(54);
         const int progressHeight = ScalePx(30);
@@ -316,9 +313,29 @@ void LayoutMainControls(HWND hWnd)
         move(hAccessibleLabel, contentLeft + outputInset, outputTop + ScalePx(12), editWidth, ScalePx(32));
         move(hAccessibleEdit, contentLeft + outputInset, editTop, editWidth, editHeight);
 
-        if (hdwp) EndDeferWindowPos(hdwp);
+        if (hdwp) {
+            for (int i = 0; i < COMMAND_BUTTON_COUNT; ++i) {
+                if (!buttonVisible[i] && hInfoButtons[i]) {
+                    hdwp = DeferWindowPos(hdwp, hInfoButtons[i], nullptr, 0, 0, 0, 0,
+                        SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_HIDEWINDOW);
+                    if (!hdwp) break;
+                }
+            }
+        }
+        const bool committed = hdwp && EndDeferWindowPos(hdwp);
+        if (!committed) {
+            for (int i = 0; i < COMMAND_BUTTON_COUNT; ++i) {
+                if (hInfoButtons[i]) ShowWindow(hInfoButtons[i],
+                    buttonVisible[i] ? SW_SHOWNOACTIVATE : SW_HIDE);
+            }
+        }
+        for (int i = 0; i < COMMAND_BUTTON_COUNT; ++i) {
+            if (hInfoButtons[i] == priorFocus && buttonVisible[i]) {
+                SetFocus(priorFocus);
+                break;
+            }
+        }
         ApplyAccessibleVisibility();
-        s_firstLayoutDone = true;
     }
 }
 

@@ -345,5 +345,5 @@ bool OpticalDrive::SaveComprehensiveReport(const ComprehensiveScanResult& result
 	}
 
 	file.close();
-	return true;
+	return file.good();
 }

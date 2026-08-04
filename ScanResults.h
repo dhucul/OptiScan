@@ -254,6 +254,7 @@ struct BlerResult {
 
 	// Per-second time-series data: (LBA, error count) per 75-sector bucket
 	std::vector<std::pair<DWORD, int>> perSecondC2;
+	std::vector<std::pair<DWORD, int>> perSecondReadFailures;
 	std::vector<std::pair<DWORD, int>> perSecondC1;
 	std::vector<std::pair<DWORD, int>> perSecondPioneerE22;
 

@@ -15,7 +15,7 @@ namespace GuiWorker {
 
     // Start `job` on the worker thread. Returns false if a workflow is
     // already running; the caller should ignore the click in that case.
-    bool RunAsync(Job job);
+    bool RunAsync(Job job, Job afterCompletion = Job{});
 
     // True while a workflow is in flight.
     bool IsRunning();

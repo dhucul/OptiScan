@@ -51,6 +51,7 @@ bool RunProtectionCheck(OpticalDrive& copier, DiscInfo& disc,
 
 	Console::Heading("\n=== Copy-Protection Check ===\n\n");
 	Console::Info("Analysing disc for copy-protection mechanisms...\n\n");
+	ScopedDriveSpeed speedRestore(copier.GetDriveRef());
 
 	ProtectionCheckResult result;
 
@@ -550,6 +551,7 @@ static void CheckIntentionalErrors(OpticalDrive& copier, DiscInfo& disc,
 	int failCount = 0;
 	int c2Total = 0;
 	int total = static_cast<int>(samples.size());
+	int processed = 0;
 	std::vector<BYTE> audio(AUDIO_SECTOR_SIZE);
 	std::vector<BYTE> sub(SUBCHANNEL_SIZE);
 
@@ -572,13 +574,14 @@ static void CheckIntentionalErrors(OpticalDrive& copier, DiscInfo& disc,
 		}
 		samples[i].c2 = c2Errors;
 		c2Total += c2Errors;
+		processed++;
 
 		prog.Update(i + 1, total);
 	}
 	prog.Finish(!g_interrupt.IsInterrupted());
 
-	double failRate = total > 0
-		? static_cast<double>(failCount) / total : 0.0;
+	double failRate = processed > 0
+		? static_cast<double>(failCount) / processed : 0.0;
 
 	// Check if hard read failures (not just C2) are concentrated at track
 	// starts.  Minor C2 errors at track boundaries are normal on most discs
@@ -611,7 +614,7 @@ static void CheckIntentionalErrors(OpticalDrive& copier, DiscInfo& disc,
 	if (failRate > 0.10 || (concentrated && failCount >= 5)) {
 		ind.detected = true;
 		std::string msg = std::to_string(failCount) + " of " +
-			std::to_string(total) + " sampled sectors failed to read (" +
+			std::to_string(processed) + " sampled sectors failed to read (" +
 			std::to_string(static_cast<int>(failRate * 100)) + "%).";
 		if (concentrated) {
 			msg += " Errors are concentrated at track boundaries - consistent "
@@ -626,7 +629,7 @@ static void CheckIntentionalErrors(OpticalDrive& copier, DiscInfo& disc,
 	else {
 		ind.detected = false;
 		ind.description = "No intentional read errors detected across " +
-			std::to_string(total) + " sampled sectors.";
+			std::to_string(processed) + " sampled sectors.";
 		if (c2Total > 0) {
 			ind.description += " (minor C2 errors: " + std::to_string(c2Total) +
 				" - normal for disc media)";
@@ -698,7 +701,7 @@ static void CheckSubchannelManipulation(OpticalDrive& copier, DiscInfo& disc,
 
 		uint16_t storedCrc = (static_cast<uint16_t>(qChannel[10]) << 8) | qChannel[11];
 		uint16_t calcCrc = SubchannelCRC16(qChannel, 10);
-		if (storedCrc != static_cast<uint16_t>(~calcCrc))
+		if (storedCrc != calcCrc && storedCrc != static_cast<uint16_t>(~calcCrc))
 			crcFails++;
 
 		// Check absolute MSF progression (bytes 7-9 in Q).

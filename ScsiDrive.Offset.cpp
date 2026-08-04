@@ -8,6 +8,7 @@
 #include <cmath>
 
 bool ScsiDrive::DetectDriveOffset(OffsetDetectionResult& result) {
+	result = {};
 	DriveOffsetInfo dbInfo;
 	if (LookupAccurateRipOffset(dbInfo)) {
 		result.offset = dbInfo.readOffset;
@@ -20,7 +21,7 @@ bool ScsiDrive::DetectDriveOffset(OffsetDetectionResult& result) {
 	DriveCapabilities caps{};
 	bool hasCaps = DetectCapabilities(caps);
 	if (hasCaps && caps.supportsAccurateStream) {
-		result.details += "Drive supports Accurate Stream. ";
+		result.details = "Drive supports Accurate Stream. ";
 	}
 
 	if (hasCaps && caps.mediaPresent) {
@@ -31,18 +32,23 @@ bool ScsiDrive::DetectDriveOffset(OffsetDetectionResult& result) {
 			result.offset = calResult.detectedOffset;
 			result.confidence = calResult.confidence;
 			result.method = OffsetDetectionMethod::AccurateRipCalibration;
-			result.details = "Auto-calibrated using AccurateRip (" +
+			result.details += "Auto-calibrated using AccurateRip (" +
 				std::to_string(calResult.matchingTracks) + "/" +
 				std::to_string(calResult.totalTracks) + " tracks matched)";
 			return true;
 		}
 
+		DWORD track2Start = 0, track2Length = 0;
+		bool track2Audio = false;
+		int track2Session = 0, track2Mode = 0;
 		int pregapOffset = 0;
-		if (DetectOffsetFromPregap(0, pregapOffset)) {
+		if (ReadTrackInfo(2, track2Start, track2Length, track2Audio,
+			track2Session, track2Mode) && track2Audio && track2Start > 20 &&
+			DetectOffsetFromPregap(static_cast<int>(track2Start), pregapOffset)) {
 			result.offset = pregapOffset;
 			result.confidence = 50;
 			result.method = OffsetDetectionMethod::PregapAnalysis;
-			result.details = "Estimated from pregap analysis (less reliable)";
+			result.details += "Estimated from pregap analysis (less reliable)";
 			return true;
 		}
 	}
@@ -50,7 +56,7 @@ bool ScsiDrive::DetectDriveOffset(OffsetDetectionResult& result) {
 	result.offset = 0;
 	result.confidence = 0;
 	result.method = OffsetDetectionMethod::Unknown;
-	result.details = "Unknown drive - insert a disc from AccurateRip database for auto-calibration";
+	result.details += "Unknown drive - insert a disc from AccurateRip database for auto-calibration";
 	return false;
 }
 
@@ -77,7 +83,9 @@ bool ScsiDrive::DetectOffsetFromPregap(int trackStartLBA, int& estimatedOffset) 
 
 	for (int i = -SCAN_RANGE; i < SCAN_RANGE; i++) {
 		BYTE sector[AUDIO_SECTOR_SIZE];
-		if (!ReadSectorAudioOnly(trackStartLBA + i, sector)) continue;
+		const int scanLBA = trackStartLBA + i;
+		if (scanLBA < 0) continue;
+		if (!ReadSectorAudioOnly(static_cast<DWORD>(scanLBA), sector)) continue;
 
 		int16_t* samples = reinterpret_cast<int16_t*>(sector);
 		int silentSamples = 0;

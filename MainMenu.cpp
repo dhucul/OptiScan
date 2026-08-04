@@ -22,6 +22,34 @@
 
 namespace {
 
+enum class PioneerMenuReadPolicy {
+    Unchanged,
+    StrictContent,
+    RawMeasurement
+};
+
+PioneerMenuReadPolicy GetPioneerMenuReadPolicy(int operation) {
+    switch (operation) {
+    // Content reads where retry assistance is useful but interpolation would
+    // invalidate an exact comparison or analysis result.
+    case 11: // Compare original vs. copy
+    case 12: // Audio content analysis
+    case 19: // Live AccurateRip offset calibration (when DB lookup misses)
+        return PioneerMenuReadPolicy::StrictContent;
+
+    // Measurement/diagnostic reads must observe the medium as-is. PureRead can
+    // hide unstable sectors, intentional errors, latency, or error counters.
+    case 5:  case 6:  case 7:  case 8:  case 9:  case 10:
+    case 14: case 15: case 16: case 17: case 18:
+    case 20: case 21: case 22: case 24:
+    case 28: case 29: case 30: case 32:
+        return PioneerMenuReadPolicy::RawMeasurement;
+
+    default:
+        return PioneerMenuReadPolicy::Unchanged;
+    }
+}
+
 // Pioneer CD Check standalone UI. Measurement mechanics live in the shared
 // OpticalDrive engine so every workflow uses identical inspection-state,
 // PureRead, retry, cancellation, cleanup, and validity semantics.
@@ -129,6 +157,34 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 		Console::Error("This operation requires a disc with a valid TOC.\n");
 		return 1;
 	}
+
+	const PioneerMenuReadPolicy pioneerPolicy = GetPioneerMenuReadPolicy(choice);
+	PioneerVendor pioneerProbe(copier.GetDriveRef());
+	const bool isPioneer = pioneerPolicy != PioneerMenuReadPolicy::Unchanged &&
+		pioneerProbe.IsPioneerDrive();
+	PioneerPureReadModeGuard strictPureRead(copier.GetDriveRef(),
+		isPioneer && pioneerPolicy == PioneerMenuReadPolicy::StrictContent,
+		PureReadMode::Perfect, /*requestRealTime=*/true);
+	PioneerPureReadOffGuard rawMeasurementPureRead(copier.GetDriveRef(),
+		isPioneer && pioneerPolicy == PioneerMenuReadPolicy::RawMeasurement);
+	if (isPioneer && pioneerPolicy == PioneerMenuReadPolicy::RawMeasurement &&
+		!rawMeasurementPureRead.engaged()) {
+		Console::Error("Pioneer PureRead could not be confirmed Off. "
+			"The diagnostic was not started because its measurements would be unreliable.\n");
+		rawMeasurementPureRead.Restore();
+		return 1;
+	}
+
+	if (isPioneer && pioneerPolicy == PioneerMenuReadPolicy::StrictContent) {
+		if (strictPureRead.engaged()) {
+			Console::Success("Pioneer PureRead Perfect confirmed for strict content reads "
+				"(temporary; interpolation disabled).\n");
+		}
+		else {
+			Console::Warning("Pioneer PureRead Perfect could not be enabled; "
+				"read failures will still be reported normally.\n");
+		}
+	}
 	{
 		switch (choice) {
 
@@ -138,21 +194,11 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			// ── 1. Copy disc ────────────────────────────────────────────
 		case 1:
-			if (!hasTOC) {
-				Console::Error("This operation requires a disc with a valid TOC.\n");
-				dispatchStatus = 1;
-				break;
-			}
 			if (!RunCopyWorkflow(copier, disc, workDir)) dispatchStatus = 1;
 			break;
 
 			// ── 2. Rip tracks (WAV/FLAC) ────────────────────────────────
 		case 2:
-			if (!hasTOC) {
-				Console::Error("This operation requires a disc with a valid TOC.\n");
-				dispatchStatus = 1;
-				break;
-			}
 			if (!RunTrackRipWorkflow(copier, disc, workDir)) dispatchStatus = 1;
 			break;
 
@@ -171,13 +217,16 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			// ── 4. Write tracks to disc using current disc's pregaps ────
 		case 4:
-			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
 		{
 			bool completed = false;
-			RunWriteTracksWorkflow(copier, disc, workDir, audioDrive, &completed);
+			bool driveOrMediaChanged = false;
+			RunWriteTracksWorkflow(copier, disc, workDir, audioDrive, &completed,
+				&driveOrMediaChanged);
 			if (!completed) dispatchStatus = 1;
-			disc = DiscInfo{};
-			hasTOC = false;
+			if (driveOrMediaChanged) {
+				disc = DiscInfo{};
+				hasTOC = false;
+			}
 			break;
 		}
 
@@ -187,9 +236,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			// ── 5. Hardware quality scan ─────────────────────────────────
 		case 5: {
-			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
 			int speed = copier.SelectScanSpeed();
-			if (speed == -1) break;
 			QCheckResult qcheckResult;
 			if (copier.RunQCheckScan(disc, qcheckResult, speed)) {
 				std::wstring logPath = workDir + L"\\qcheck_scan.csv";
@@ -222,9 +269,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			  // ── 6. C2 error scan ──────────────────────────────────────
 		case 6: {
-			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
 			int speed = copier.SelectScanSpeed();
-			if (speed == -1) break;
 			BlerResult c2Result;
 			if (copier.RunC2Scan(disc, c2Result, speed)) {
 				std::wstring logPath = workDir + L"\\c2_scan.csv";
@@ -247,9 +292,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			  // ── 7. BLER scan (detailed) ─────────────────────────────────
 		case 7: {
-			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
 			int speed = copier.SelectScanSpeed();
-			if (speed == -1) break;
 			BlerResult result;
 			if (copier.RunBlerScan(disc, result, speed)) {
 				std::wstring logPath = workDir + L"\\bler_scan.csv";
@@ -272,9 +315,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			  // ── 8. Disc rot detection ───────────────────────────────────
 		case 8: {
-			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
 			int speed = copier.SelectScanSpeed();
-			if (speed == -1) break;
 			DiscRotAnalysis result;
 			if (copier.RunDiscRotScan(disc, result, speed)) {
 				std::wstring logPath = workDir + L"\\discrot_report.txt";
@@ -297,9 +338,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			  // ── 9. Generate surface map ─────────────────────────────────
 		case 9: {
-			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
 			int speed = copier.SelectScanSpeed();
-			if (speed == -1) break;
 			std::wstring mapFile = workDir + L"\\surface_map.csv";
 			copier.GenerateSurfaceMap(disc, mapFile, speed);
 			break;
@@ -307,15 +346,15 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			  // ── 10. Multi-pass verification ─────────────────────────────
 		case 10: {
-			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
 			int speed = copier.SelectScanSpeed();
-			if (speed == -1) break;
 			std::cout << "\n=== Multi-Pass Verification ===\n";
 			std::cout << "Select number of passes (2-10, recommended: 3): ";
+			bool passesOk = false;
 			int passes = GetMenuChoice("Multi-Pass Verification",
 				"Number of full read passes to compare for consistency.\n\n"
 				"Enter a value from 2 to 10 (recommended: 3).",
-				2, 10, 3);
+				2, 10, 3, &passesOk);
+			if (!passesOk) { Console::Info("Verification cancelled.\n"); break; }
 			std::vector<MultiPassResult> results;
 			if (!copier.RunMultiPassVerification(disc, results, passes, speed))
 				dispatchStatus = 1;
@@ -324,8 +363,6 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			  // ── 11. Compare disc CRCs (original vs. copy) ──────────────
 		case 11: {
-			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
-
 			bool hasAudio = false;
 			for (const auto& t : disc.tracks) { if (t.isAudio) { hasAudio = true; break; } }
 			if (!hasAudio) {
@@ -339,7 +376,6 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			Console::Info("Make sure the ORIGINAL disc is currently inserted.\n\n");
 
 			int speed = copier.SelectSpeed();
-			if (speed == -1) break;
 
 			// ── Read original disc ─────────────────────────────────────
 			Console::Info("Step 1/2: Reading original disc...\n");
@@ -402,10 +438,23 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			copier.Eject();
 			GuiInput::WaitForKey("Please insert the COPIED disc, then click OK.");
 
-			// The mounted medium may now be different. Invalidate the source TOC
-			// before any close/reopen failure can return control to the menu.
+			// Ejecting invalidates the cached source TOC even when the user cancels
+			// at the swap prompt. Do this before any early exit, but avoid a needless
+			// close/reopen when cancellation is already pending.
 			disc = DiscInfo{};
 			hasTOC = false;
+			if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
+				Console::Warning("\n*** Cancelled by user ***\n");
+				dispatchStatus = 1;
+				break;
+			}
+
+			if (isPioneer && !strictPureRead.Restore()) {
+				Console::Error("Failed to restore the previous Pioneer PureRead state "
+					"before reopening the drive. Comparison aborted.\n");
+				dispatchStatus = 1;
+				break;
+			}
 			copier.Close();
 			Sleep(3000);
 
@@ -413,6 +462,13 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 				Console::Error("Failed to reopen drive.\n");
 				dispatchStatus = 1;
 				break;
+			}
+			if (isPioneer && !strictPureRead.Reapply()) {
+				Console::Warning("Pioneer PureRead Perfect did not re-engage after the "
+					"disc swap; copied-disc read will continue without it.\n");
+			}
+			else if (isPioneer) {
+				Console::Success("Pioneer PureRead Perfect confirmed for copied-disc read.\n");
 			}
 
 			DiscInfo copyDisc;
@@ -438,15 +494,26 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			// Validate the copy's own TOC against the original
 			// (don't overwrite — the copy may have different LBA boundaries)
-			{
-				int origAudioCount = 0, copyAudioCount = 0;
-				for (const auto& t : originalDisc.tracks) { if (t.isAudio) origAudioCount++; }
-				for (const auto& t : copyDisc.tracks)     { if (t.isAudio) copyAudioCount++; }
-				if (origAudioCount != copyAudioCount) {
-					Console::Warning(("Audio track count differs (original: "
-    + std::to_string(origAudioCount) + ", copy: "
-    + std::to_string(copyAudioCount) + ")\n").c_str());
+			bool matchingTrackLayout =
+				originalDisc.tracks.size() == copyDisc.tracks.size();
+			if (matchingTrackLayout) {
+				for (size_t i = 0; i < originalDisc.tracks.size(); ++i) {
+					const auto& originalTrack = originalDisc.tracks[i];
+					const auto& copyTrack = copyDisc.tracks[i];
+					if (originalTrack.trackNumber != copyTrack.trackNumber ||
+						originalTrack.isAudio != copyTrack.isAudio) {
+						matchingTrackLayout = false;
+						break;
+					}
 				}
+			}
+			if (!matchingTrackLayout) {
+				Console::Error("Original and copied-disc track layouts differ; "
+					"an identity result would be invalid. Comparison aborted.\n");
+				disc = copyDisc;
+				hasTOC = true;
+				dispatchStatus = 1;
+				break;
 			}
 
 			copyDisc.pregapMode = PregapMode::Skip;
@@ -511,7 +578,9 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			copyDisc.rawSectors.shrink_to_fit();
 
 			// ── Compare ────────────────────────────────────────────────
-			copier.CompareDiscCRCs(originalCRCs, copyCRCs);
+			if (!copier.CompareDiscCRCs(originalCRCs, copyCRCs)) {
+				dispatchStatus = 1;
+			}
 
 			disc = copyDisc;
 			hasTOC = true;
@@ -524,9 +593,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			   // ── 12. Audio content analysis ─────────────────────────────
 		case 12: {
-			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
 			int speed = copier.SelectScanSpeed();
-			if (speed == -1) break;
 			AudioAnalysisResult result;
 			if (!copier.AnalyzeAudioContent(disc, result, speed))
 				dispatchStatus = 1;
@@ -535,9 +602,6 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			   // ── 13. Disc fingerprint ──────────────────────────────────
 		case 13: {
-			if (!hasTOC) {
-				Console::Error("This operation requires a disc with a valid TOC.\n"); break;
-			}
 			DiscFingerprint fingerprint;
 			if (copier.GenerateDiscFingerprint(disc, fingerprint)) {
 				copier.PrintDiscFingerprint(fingerprint);
@@ -561,18 +625,14 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			   // ── 14. Lead area check ───────────────────────────────────
 		case 14: {
-			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
 			int speed = copier.SelectScanSpeed();
-			if (speed == -1) break;
 			if (!copier.CheckLeadAreas(disc, speed)) dispatchStatus = 1;
 			break;
 		}
 
 			   // ── 15. Subchannel integrity check ────────────────────────
 		case 15: {
-			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
 			int speed = copier.SelectScanSpeed();
-			if (speed == -1) break;
 			int errorCount = 0;
 			Console::Info("\nChecking subchannel integrity...\n");
 			if (copier.VerifySubchannelIntegrity(disc, errorCount, speed)) {
@@ -593,9 +653,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			   // ── 16. Verify subchannel burn status ─────────────────────
 		case 16: {
-			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
 			int speed = copier.SelectScanSpeed();
-			if (speed == -1) break;
 			SubchannelBurnResult burnResult;
 			Console::Info("\nVerifying subchannel burn status...\n");
 			if (!copier.VerifySubchannelBurnStatus(disc, burnResult, speed)) {
@@ -607,9 +665,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			   // ── 17. Copy-protection check ─────────────────────────────
 		case 17: {
-			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
 			int speed = copier.SelectScanSpeed();
-			if (speed == -1) break;
 			RunProtectionCheck(copier, disc, workDir, speed);
 			break;
 		}
@@ -681,6 +737,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			std::vector<DWORD> testLBAs;
 			for (const auto& t : disc.tracks) {
 				if (!t.isAudio) continue;
+				if (t.endLBA < t.startLBA) continue;
 				DWORD mid = t.startLBA + (t.endLBA - t.startLBA) / 2;
 				testLBAs.push_back(mid);
 				if (testLBAs.size() >= 3) break;
@@ -770,7 +827,6 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			   // ── 24. Disc balance check ────────────────────────────────
 		case 24: {
-			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
 			int balanceScore = 0;
 			Console::Info("\nRunning disc balance check...\n");
 			if (copier.CheckDiscBalance(disc, balanceScore)) {
@@ -897,15 +953,12 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			// ── 28. Pioneer CD Check ────────────────────────────────
 		case 28:
-			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
 			RunPioneerCdCheck(copier, disc);
 			break;
 
 			// ── 29. Jitter / beta scan (LiteOn) ─────────────────────
 		case 29: {
-			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
 			int speed = copier.SelectScanSpeed();
-			if (speed == -1) break;
 			JitterResult jr;
 			if (copier.RunJitterScan(disc, jr, speed)) {
 				std::wstring logPath = workDir + L"\\jitter_scan.csv";
@@ -932,9 +985,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			// ── 32. FE/TE servo scan (LiteOn, experimental) ─────────
 		case 32: {
-			if (!hasTOC) { Console::Error("This operation requires a disc with a valid TOC.\n"); break; }
 			int speed = copier.SelectScanSpeed();
-			if (speed == -1) break;
 			FeTeResult fr;
 			if (copier.RunFeTeScan(disc, fr, speed)) {
 				std::wstring logPath = workDir + L"\\fete_scan.csv";
@@ -964,11 +1015,6 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			// ButtonToMenuChoice. Rebuilds hard sectors from cross-read
 			// consensus instead of trusting the drive's C2.
 		case 30:
-			if (!hasTOC) {
-				Console::Error("This operation requires a disc with a valid TOC.\n");
-				dispatchStatus = 1;
-				break;
-			}
 			if (!RunRecoveryRipWorkflow(copier, disc, workDir)) dispatchStatus = 1;
 			break;
 
@@ -1064,7 +1110,6 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			bool quickBlank = (mode == 1);
 
 			int speed = copier.SelectWriteSpeed();
-			if (speed == -1) { Console::Info("Erase cancelled.\n"); break; }
 
 			if (forceUnreadable)
 				Console::Info("Forcing blank on an unreadable disc...\n");
@@ -1090,6 +1135,18 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			dispatchStatus = 1;
 			break;
 		}
+	}
+
+	if (isPioneer && pioneerPolicy == PioneerMenuReadPolicy::StrictContent &&
+		!strictPureRead.Restore()) {
+		Console::Error("Failed to restore the previous Pioneer PureRead state.\n");
+		dispatchStatus = 1;
+	}
+	if (isPioneer && pioneerPolicy == PioneerMenuReadPolicy::RawMeasurement &&
+		!rawMeasurementPureRead.Restore()) {
+		Console::Error("Failed to restore the previous Pioneer PureRead state "
+			"after the diagnostic.\n");
+		dispatchStatus = 1;
 	}
 
 	return dispatchStatus;

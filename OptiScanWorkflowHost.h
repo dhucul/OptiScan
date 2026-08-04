@@ -20,7 +20,7 @@ bool ButtonNeedsDrive(int btnIndex);
 bool ButtonDisablesMenu(int btnIndex);
 bool ButtonNeedsPrescan(int btnIndex);
 void Prescan();
-void RefreshDisc();
+bool RefreshDisc();
 bool ReselectSourceDriveIfMultiple();
 int ButtonToMenuChoice(int btnIndex);
 std::vector<int> ParseBatchChoices(const std::string& input);

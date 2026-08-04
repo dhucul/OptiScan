@@ -97,8 +97,7 @@ bool ScsiDrive::SetSpeedRead(bool enable) {
 	cdb[3] = enable ? 0x01 : 0x00;
 
 	BYTE sk = 0, asc = 0, ascq = 0;
-	bool ok = SendSCSIWithSense(cdb, 10, nullptr, 0, &sk, &asc, &ascq, /*dataIn=*/false);
-	return ok || sk <= 0x01;
+	return SendSCSIWithSense(cdb, 10, nullptr, 0, &sk, &asc, &ascq, /*dataIn=*/false);
 }
 
 // ─── SilentMode ────────────────────────────────────────────────────────────
@@ -146,8 +145,7 @@ bool ScsiDrive::SetSilentMode(bool enable) {
 
 	BYTE buf[16] = {};
 	BYTE sk = 0, asc = 0, ascq = 0;
-	bool ok = SendSCSIWithSense(cdb, 12, buf, sizeof(buf), &sk, &asc, &ascq, /*dataIn=*/false);
-	return ok || sk <= 0x01;
+	return SendSCSIWithSense(cdb, 12, buf, sizeof(buf), &sk, &asc, &ascq, /*dataIn=*/false);
 }
 
 // ─── TLA (Top-Level Assembly) ──────────────────────────────────────────────
@@ -179,8 +177,8 @@ bool ScsiDrive::GetPlextorTLA(std::string& tla) {
 	// Extract printable ASCII run from the start of the response
 	std::ostringstream oss;
 	for (BYTE b : buf) {
-		if (b >= 0x20 && b < 0x7F) oss << static_cast<char>(b);
-		else if (b == 0) break;
+		if (b < 0x20 || b >= 0x7F) break;
+		oss << static_cast<char>(b);
 	}
 	tla = oss.str();
 
@@ -210,8 +208,7 @@ bool ScsiDrive::SetPlextorTestWrite(bool enable) {
 	cdb[3] = enable ? 0x01 : 0x00;
 
 	BYTE sk = 0, asc = 0, ascq = 0;
-	bool ok = SendSCSIWithSense(cdb, 10, nullptr, 0, &sk, &asc, &ascq, /*dataIn=*/false);
-	return ok || sk <= 0x01;
+	return SendSCSIWithSense(cdb, 10, nullptr, 0, &sk, &asc, &ascq, /*dataIn=*/false);
 }
 
 // ─── VariRec (CD) ──────────────────────────────────────────────────────────
@@ -266,6 +263,5 @@ bool ScsiDrive::SetVariRecCD(bool enable, int powerOffset) {
 
 	BYTE buf[16] = {};
 	BYTE sk = 0, asc = 0, ascq = 0;
-	bool ok = SendSCSIWithSense(cdb, 12, buf, sizeof(buf), &sk, &asc, &ascq, /*dataIn=*/false);
-	return ok || sk <= 0x01;
+	return SendSCSIWithSense(cdb, 12, buf, sizeof(buf), &sk, &asc, &ascq, /*dataIn=*/false);
 }

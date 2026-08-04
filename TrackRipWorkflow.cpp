@@ -153,14 +153,22 @@ static bool ConvertWavToFlac(const std::wstring& wavPath, const std::wstring& fl
 		return false;
 	}
 
-	WaitForSingleObject(pi.hProcess, INFINITE);
+	bool cancelled = false;
+	while (WaitForSingleObject(pi.hProcess, 100) == WAIT_TIMEOUT) {
+		if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
+			TerminateProcess(pi.hProcess, ERROR_CANCELLED);
+			WaitForSingleObject(pi.hProcess, 5000);
+			cancelled = true;
+			break;
+		}
+	}
 
 	DWORD exitCode = 1;
 	GetExitCodeProcess(pi.hProcess, &exitCode);
 	CloseHandle(pi.hProcess);
 	CloseHandle(pi.hThread);
 
-	return exitCode == 0;
+	return !cancelled && exitCode == 0;
 }
 
 // Writes a track file in the requested format.
@@ -184,13 +192,20 @@ static bool WriteTrackFile(TrackOutputFormat format,
 	std::wstring wavPath = basePath + L".wav";
 	std::wstring flacPath = basePath + L".flac";
 
-	if (!WriteWavFile(wavPath, sectors, startSector, sectorCount))
+	if (!WriteWavFile(wavPath, sectors, startSector, sectorCount)) {
+		DeleteFileW(wavPath.c_str());
 		return false;
+	}
 
 	if (ConvertWavToFlac(wavPath, flacPath)) {
 		DeleteFileW(wavPath.c_str());
 		actualPath = flacPath;
 		return true;
+	}
+	if (g_interrupt.IsInterrupted()) {
+		DeleteFileW(wavPath.c_str());
+		DeleteFileW(flacPath.c_str());
+		return false;
 	}
 
 	// flac.exe not found or failed — keep the WAV
@@ -435,7 +450,6 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 
 	// ── 3. Speed ────────────────────────────────────────────────────────
 	int speed = copier.SelectSpeed();
-	if (speed == -1) return false;
 
 	// ── 4. Burst / Safe mode ────────────────────────────────────────────
 	int ripMode = SelectRipMode(speed);
@@ -522,8 +536,9 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 	}
 
 	// ── 7. Offset correction ────────────────────────────────────────────
-	int offset = copier.SelectOffset();
-	if (offset == -1) return false;
+	bool offsetOk = false;
+	int offset = copier.SelectOffset(&offsetOk);
+	if (!offsetOk) return false;
 	disc.driveOffset = offset;
 
 	// ── 8. Output directory ─────────────────────────────────────────────
@@ -706,6 +721,11 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 	for (size_t i = 0; i < ripDisc.tracks.size(); i++) {
 		DWORD readStart = (ripDisc.pregapMode == PregapMode::Skip)
 			? ripDisc.tracks[i].startLBA : ripDisc.tracks[i].pregapLBA;
+		if (ripDisc.tracks[i].endLBA < readStart) {
+			Console::Error("Invalid repaired TOC range while mapping track output.\n");
+			finishPureReadMonitoring("Invalid repaired TOC range");
+			return false;
+		}
 		DWORD cnt = ripDisc.tracks[i].endLBA - readStart + 1;
 		slices[i] = { cumIdx, cnt };
 		cumIdx += cnt;
@@ -864,8 +884,13 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 			verProg.SetLabel(attempt == 0 ? "  Verifying" : "  Retrying ");
 			verProg.Start();
 
-			DiscInfo verifyDisc = ripDisc;
-			verifyDisc.rawSectors.clear();
+			DiscInfo verifyDisc;
+			{
+				std::vector<std::vector<BYTE>> retained;
+				retained.swap(ripDisc.rawSectors);
+				verifyDisc = ripDisc;
+				ripDisc.rawSectors.swap(retained);
+			}
 			// Force cache defeat to ensure the drive actually re-reads the physical disc surface
 			verifyDisc.enableCacheDefeat = true;
 

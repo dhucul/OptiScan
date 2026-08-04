@@ -220,9 +220,9 @@ bool ScsiDrive::Characterize(DWORD audioLBA, DWORD leadOutLBA,
 	result.firmware = caps.firmware;
 	result.serialNumber = caps.serialNumber;
 
-	std::array<BYTE, AUDIO_SECTOR_SIZE> first{};
-	std::array<BYTE, AUDIO_SECTOR_SIZE> second{};
-	std::array<BYTE, AUDIO_SECTOR_SIZE> afterSeek{};
+	std::vector<BYTE> first(AUDIO_SECTOR_SIZE);
+	std::vector<BYTE> second(AUDIO_SECTOR_SIZE);
+	std::vector<BYTE> afterSeek(AUDIO_SECTOR_SIZE);
 	result.readCdAudio = ReadSectorAudioOnly(audioLBA, first.data());
 	if (result.readCdAudio) {
 		result.preferredReadMethod = DriveReadMethod::ReadCD;
@@ -252,7 +252,7 @@ bool ScsiDrive::Characterize(DWORD audioLBA, DWORD leadOutLBA,
 
 	// Probe the vendor READ CD-DA command with DATA+SUB. This is read-only and
 	// is especially useful on classic Plextor-family drives.
-	std::array<BYTE, RAW_SECTOR_SIZE> d8{};
+	std::vector<BYTE> d8(RAW_SECTOR_SIZE);
 	BYTE d8Cdb[12] = {};
 	d8Cdb[0] = 0xD8;
 	d8Cdb[2] = (audioLBA >> 24) & 0xFF;
@@ -267,8 +267,8 @@ bool ScsiDrive::Characterize(DWORD audioLBA, DWORD leadOutLBA,
 	if (!result.readCdAudio && result.readCdda)
 		result.preferredReadMethod = DriveReadMethod::ReadCDDA;
 
-	std::array<BYTE, AUDIO_SECTOR_SIZE> subAudio{};
-	std::array<BYTE, SUBCHANNEL_SIZE> rawSub{};
+	std::vector<BYTE> subAudio(AUDIO_SECTOR_SIZE);
+	std::vector<BYTE> rawSub(SUBCHANNEL_SIZE);
 	result.rawSubchannelFunctional =
 		ReadSector(audioLBA, subAudio.data(), rawSub.data()) &&
 		RawQValid(rawSub.data());
@@ -278,7 +278,7 @@ bool ScsiDrive::Characterize(DWORD audioLBA, DWORD leadOutLBA,
 			if (audioLBA > MAXDWORD - attempt) break;
 			DWORD probeLBA = audioLBA + attempt;
 			if (leadOutLBA > 0 && probeLBA >= leadOutLBA) break;
-			std::array<BYTE, FULL_SECTOR_WITH_C2> full{};
+			std::vector<BYTE> full(FULL_SECTOR_WITH_C2);
 			BYTE cdb[12] = {};
 			cdb[0] = SCSI_READ_CD;
 			cdb[1] = m_cddaSectorType;

@@ -13,13 +13,14 @@
 bool OpticalDrive::AnalyzeAudioContent(DiscInfo& disc, AudioAnalysisResult& result, int scanSpeed) {
 	std::cout << "\n=== Audio Content Analysis ===\n";
 	result = AudioAnalysisResult{};
-	m_drive.SetSpeed(scanSpeed);
 
 	DWORD totalSectors = CalculateTotalAudioSectors(disc);
 	if (totalSectors == 0) {
 		std::cout << "No audio tracks to analyze.\n";
 		return false;
 	}
+	ScopedDriveSpeed speedRestore(m_drive);
+	m_drive.SetSpeed(scanSpeed);
 
 	// Adaptive sampling: minimum 100 samples, max 1 per 100 sectors
 	int sampleInterval = std::max(1, static_cast<int>(totalSectors / 100));

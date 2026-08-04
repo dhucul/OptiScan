@@ -87,7 +87,7 @@ bool ScsiDrive::SupportsLiteOnScan() {
 	snprintf(dbg, sizeof(dbg), "LiteOnScan: 0xF3/0x0E probe ok=%d sk=0x%02X asc=0x%02X\n", ok, sk, asc);
 	OutputDebugStringA(dbg);
 
-	if (ok || sk <= 0x01) {
+	if (ok) {
 		// Verify the response contains actual ERROR-MEASUREMENT data (C1/C2 in
 		// bytes 4-7), not merely an MSF position (bytes 1-3). The new (0xF3)
 		// method must scan autonomously to be usable here — this poll path does
@@ -105,7 +105,7 @@ bool ScsiDrive::SupportsLiteOnScan() {
 			std::fill(buf.begin(), buf.end(), BYTE(0));
 			memset(cdb, 0, 12); cdb[0] = 0xF3; cdb[1] = 0x0E;
 			ok = SendSCSIWithSense(cdb, 12, buf.data(), 0x10, &sk, &asc, &ascq);
-			if (ok || sk <= 0x01) {
+			if (ok) {
 				for (int i = 4; i <= 7; i++) {
 					if (buf[i] != 0) { hasData = true; break; }
 				}
@@ -136,7 +136,7 @@ bool ScsiDrive::SupportsLiteOnScan() {
 	snprintf(dbg, sizeof(dbg), "LiteOnScan: 0xDF/0xA3 probe ok=%d sk=0x%02X asc=0x%02X\n", ok, sk, asc);
 	OutputDebugStringA(dbg);
 
-	if (ok || sk <= 0x01) {
+	if (ok) {
 		// Probe accepted — verify the drive actually produces scan data
 		// by completing the init sequence and doing trial reads.
 
@@ -179,7 +179,7 @@ bool ScsiDrive::SupportsLiteOnScan() {
 			std::fill(buf256.begin(), buf256.end(), BYTE(0));
 			memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0x82; cdb[2] = 0x05;
 			bool gdOk = SendSCSIWithSense(cdb, 12, buf256.data(), 256, &sk, &asc, &ascq);
-			if (gdOk || sk <= 0x01)
+			if (gdOk)
 				getDataAccepted = true;
 
 			// Check C1 (bytes 0-1), C2 (bytes 2-3), CU (byte 4)
@@ -247,7 +247,7 @@ bool ScsiDrive::LiteOnScanStart(DWORD startLBA, DWORD endLBA) {
 		snprintf(dbg, sizeof(dbg), "LiteOnScanStart(new): startLBA=%lu ok=%d sk=0x%02X\n",
 			(unsigned long)startLBA, ok, sk);
 		OutputDebugStringA(dbg);
-		return ok || sk <= 0x01;
+		return ok;
 	}
 	else {
 		// OLD: full 5-command init sequence from QPXTool
@@ -259,27 +259,27 @@ bool ScsiDrive::LiteOnScanStart(DWORD startLBA, DWORD endLBA) {
 
 		// Step A: 0xDF/0xA3
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0xA3;
-		if (!SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq) && sk > 0x01)
+		if (!SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq))
 			return false;
 
 		// Step B: 0xDF/0xA0 with byte[4]=0x02
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0xA0; cdb[4] = 0x02;
-		if (!SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq) && sk > 0x01)
+		if (!SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq))
 			return false;
 
 		// Step C: 0xDF/0xA0
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0xA0;
-		if (!SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq) && sk > 0x01)
+		if (!SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq))
 			return false;
 
 		// Step D: 0xDF/0xA0 with byte[4]=0x04
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0xA0; cdb[4] = 0x04;
-		if (!SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq) && sk > 0x01)
+		if (!SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq))
 			return false;
 
 		// Step E: 0xDF/0xA0 with byte[4]=0x02
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0xA0; cdb[4] = 0x02;
-		if (!SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq) && sk > 0x01)
+		if (!SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq))
 			return false;
 
 		OutputDebugStringA("LiteOnScanStart(old): init sequence complete\n");
@@ -327,9 +327,10 @@ bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
 		}
 
 		// LBA from MSF: byte[1]=min, byte[2]=sec, byte[3]=frame
-		currentLBA = static_cast<DWORD>(buf[1]) * 60 * 75
+		const DWORD rawMsf = static_cast<DWORD>(buf[1]) * 60 * 75
 			+ static_cast<DWORD>(buf[2]) * 75
 			+ static_cast<DWORD>(buf[3]);
+		currentLBA = rawMsf >= 150 ? rawMsf - 150 : 0;
 
 		c1 = (static_cast<int>(buf[4]) << 8) | buf[5];   // BLER
 		c2 = (static_cast<int>(buf[6]) << 8) | buf[7];   // E22
@@ -338,7 +339,7 @@ bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
 		// A zero position after real data is the new protocol's terminal
 		// response. Preserve the last position rather than moving backward to
 		// LBA 0, which would make a completed scan look like lost coverage.
-		scanDone = (currentLBA == 0 && s_liteonLBA > 0);
+		scanDone = (rawMsf == 0 && s_liteonLBA > 0);
 		if (scanDone)
 			currentLBA = s_liteonLBA;
 		else
