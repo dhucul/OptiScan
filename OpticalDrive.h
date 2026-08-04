@@ -80,8 +80,12 @@ public:
 	bool SaveRecoveryReport(const RecoveryRipResult& result, const std::wstring& filename);
 
 	// Quality scanning
-	bool RunBlerScan(const DiscInfo& disc, BlerResult& result, int scanSpeed = 8);
-	bool RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int scanSpeed = 8);
+	// scanSpeed is mandatory on the three error-rate scans: it is both the SET
+	// CD SPEED value and the basis for the report's peak-confidence gating, so a
+	// silent default of 8 would claim archival confidence for a scan that may
+	// have run at the drive's 48x floor.
+	bool RunBlerScan(const DiscInfo& disc, BlerResult& result, int scanSpeed);
+	bool RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int scanSpeed);
 	// Shared Pioneer CD Check engine used by the standalone utility and all
 	// Pioneer quality workflows. Full scans every measurement window; Quick
 	// mirrors the Pioneer utility's 0.05 mm radial sampling mode.
@@ -96,7 +100,7 @@ public:
 	bool RunFeTeScan(const DiscInfo& disc, FeTeResult& result, int scanSpeed = 8);
 	void PrintFeTeReport(const FeTeResult& result);
 	bool SaveFeTeLog(const FeTeResult& result, const std::wstring& filename);
-	bool RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanSpeed = 8);
+	bool RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanSpeed);
 	void PrintC2ScanReport(const BlerResult& result, const DiscInfo& disc, int scanSpeed);
 	void PrintC2Chart(const BlerResult& result, int width = 60, int height = 10);
 	void PrintC2SenseCodeChart(const std::vector<C2SectorError>& badSectors, const DiscInfo& disc, const BlerResult& result);

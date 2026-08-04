@@ -52,18 +52,43 @@ void OpticalDrive::PrintBlerReport(const DiscInfo& disc, const BlerResult& resul
 			std::cout << "  at " << worstMin << ":" << std::setfill('0') << std::setw(2) << worstSec << std::setfill(' ');
 		}
 		std::cout << "\n";
+		std::cout << "  Sustained C1/sec:     " << result.peaks.sustainedC1PerSecond
+			<< "  (95th pct " << result.peaks.p95C1PerSecond << ") - ratings use this\n";
 		std::cout << "  Max C1 in one sector: " << result.maxC1InSingleSector;
 		if (result.maxC1InSingleSector > 0) std::cout << "  (LBA " << result.worstC1SectorLBA << ")";
 		std::cout << "\n";
+
+		// Same wording as the Q-Check report: a peak that did not persist is
+		// reported as a drive transient rather than silently dropped.
+		if (ScanQuality::TransientNoteWarranted(result.maxC1PerSecond,
+				result.peaks.peakC1Transient)) {
+			ScanQuality::SeriesStats shown;
+			shown.peak = result.maxC1PerSecond;
+			shown.peakRunLength = result.peaks.peakC1RunLength;
+			shown.sustainedPeak = result.peaks.sustainedC1PerSecond;
+			ScanQuality::PrintWrapped(std::cout,
+				ScanQuality::TransientNote("C1", shown), "  ");
+		}
 
 		if (result.avgC1PerSecond < 5.0)
 			std::cout << "  C1 Assessment:        EXCELLENT - minimal correction needed\n";
 		else if (result.avgC1PerSecond < 50.0)
 			std::cout << "  C1 Assessment:        GOOD - normal wear\n";
-		else if (result.avgC1PerSecond < 220.0)
+		else if (result.avgC1PerSecond < ScanQuality::kRedBookBlerLimit)
 			std::cout << "  C1 Assessment:        FAIR - elevated but within Red Book limits\n";
 		else
 			std::cout << "  C1 Assessment:        POOR - exceeds Red Book BLER limit\n";
+
+		if (!result.archivalC1Rating.empty()) {
+			std::cout << "  Archival C1:          " << result.archivalC1Rating
+				<< " (" << ArchivalRatingDescription(result.archivalC1Rating) << ")\n";
+			if (result.archivalC1Rating == "NOT RATED")
+				ScanQuality::PrintWrapped(std::cout,
+					ScanQuality::UnratedNote("Archival C1", result.peaks.scanSpeedX), "  ");
+		}
+		std::cout << "  Peak confidence:      "
+			<< ScanQuality::ConfidenceLabel(result.peaks.PeakConfidence()) << "\n";
+		ScanQuality::PrintConfidenceCaveat(std::cout, result.peaks.PeakConfidence(), "    ");
 	}
 
 	if (result.c2Unverified) {
@@ -76,8 +101,26 @@ void OpticalDrive::PrintBlerReport(const DiscInfo& disc, const BlerResult& resul
 			std::cout << "  Total E22:        " << result.pioneerE22Total << "\n";
 			std::cout << "  Avg E22/sec:      " << std::fixed << std::setprecision(2)
 				<< result.pioneerE22AvgPerSecond << "\n";
-			std::cout << "  Peak E22/sec:     " << result.pioneerE22Peak << "\n";
-			std::cout << "  Rating:           " << result.pioneerE22Rating << " (diagnostic only)\n";
+			std::cout << "  Sustained E22/sec: "
+				<< result.peaks.sustainedPioneerE22PerSecond << "  (rated on this)\n";
+			std::cout << "  Raw peak E22/sec: " << result.pioneerE22Peak << "\n";
+			std::cout << "  Rating:           " << result.pioneerE22Rating
+				<< " (" << PioneerE22RatingDescription(result.pioneerE22Rating)
+				<< "; diagnostic only)\n";
+			if (ScanQuality::TransientNoteWarranted(result.pioneerE22Peak,
+					result.peaks.peakPioneerE22Transient,
+					ScanQuality::kMinE22PeakWorthExplaining)) {
+				ScanQuality::SeriesStats shown;
+				shown.peak = result.pioneerE22Peak;
+				shown.peakRunLength = result.peaks.peakPioneerE22RunLength;
+				shown.sustainedPeak = result.peaks.sustainedPioneerE22PerSecond;
+				ScanQuality::PrintWrapped(std::cout,
+					ScanQuality::TransientNote("E22", shown), "  ");
+			}
+			if (result.peaks.pioneerE22PeakTracksC1)
+				ScanQuality::PrintWrapped(std::cout,
+					"E22 and C1 peak at the same time slice - one event counted by "
+					"two decoder stages, not two independent findings.", "  ");
 			std::cout << "  Uncorrectable:    ";
 			if (!result.pioneerCdCheckRun)
 				std::cout << "NOT MEASURED\n";
@@ -299,8 +342,13 @@ void OpticalDrive::PrintBlerMarginAnalysis(const BlerResult& result) {
 		std::cout << "  Avg C1 budget used:  " << std::fixed << std::setprecision(1)
 			<< result.avgC1PerSecond << " / 220.0 /sec  ("
 			<< result.c1UtilizationPct << "% of Red Book limit)\n";
-		std::cout << "  Peak C1 budget used: " << result.maxC1PerSecond << " / 220.0 /sec  ("
-			<< std::setprecision(1) << result.peakC1UtilizationPct << "% of limit)\n";
+		// Budget is reported against the sustained level: a one-slice transient
+		// does not consume correction budget in any meaningful sense.
+		std::cout << "  Peak C1 budget used: " << result.peaks.sustainedC1PerSecond
+			<< " / 220.0 /sec  ("
+			<< std::setprecision(1) << result.peakC1UtilizationPct << "% of limit"
+			<< (result.peaks.peakC1Transient
+				? "; raw peak excluded as transient" : "") << ")\n";
 		std::cout << "  C2 margin score:     " << result.c2MarginScore
 			<< " / 100  [" << result.c2MarginLabel << "]\n";
 

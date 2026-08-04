@@ -131,6 +131,7 @@
     <ClInclude Include="RecoveryRipWorkflow.h" />
     <ClInclude Include="RecoveryTypes.h" />
     <ClInclude Include="Resource.h" />
+    <ClInclude Include="ScanQualityRating.h" />
     <ClInclude Include="ScanResults.h" />
     <ClInclude Include="ScsiDrive.h" />
     <ClInclude Include="ScsiTypes.h" />
@@ -214,6 +215,7 @@
     <ClCompile Include="ScsiDrive.cpp" />
     <ClCompile Include="ScsiDrive.Capabilities.cpp" />
     <ClCompile Include="ScsiDrive.Chipset.cpp" />
+    <ClCompile Include="ScanQualityRating.cpp" />
     <ClCompile Include="ScsiDrive.Core.cpp" />
     <ClCompile Include="ScsiDrive.HideCDR.cpp" />
     <ClCompile Include="ScsiDrive.LiteOnFeTe.cpp" />

@@ -65,12 +65,10 @@ void RecalculateQCheckTotals(QCheckResult& result) {
 		? static_cast<double>(result.totalPioneerE22) / sampleCount : 0.0;
 }
 
-const char* PioneerE22Rating(int total, double avg, int peak) {
-	if (total == 0) return "Ideal";
-	if (avg < 0.25 && peak < 25) return "Good";
-	if (avg < 1.0 && peak < 100) return "Acceptable";
-	return "Concerning";
-}
+// The E22 tier thresholds used to be duplicated here and in
+// OpticalDrive_QCheck.cpp. They now come from ScanResults.h / ScanQualityRating
+// so the rot scan and the quality scan cannot disagree about the same disc, and
+// both judge the sustained level instead of the raw peak.
 }  // namespace
 
 bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int scanSpeed) {
@@ -318,6 +316,16 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 				std::cout << "  Startup spike(s) trimmed from quality scan.\n";
 
 			hasC1 = !c1Result.samples.empty();
+
+			// Same sustained-level statistics the quality scan computes, from
+			// the same helper, so both scans rate this disc identically. Only
+			// published when a usable series exists — otherwise the report
+			// would show a scan speed and confidence for a scan that produced
+			// no samples.
+			if (hasC1) {
+				ComputeScanPeakContext(c1Result.samples, scanSpeed, c1Result.peaks);
+				result.peaks = c1Result.peaks;
+			}
 			if (hasC1)
 				std::cout << "\r  C1 scan complete: " << c1Result.samples.size()
 				<< " samples, avg C1=" << std::fixed << std::setprecision(1)
@@ -329,10 +337,10 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 				result.pioneerE22Total = c1Result.totalPioneerE22;
 				result.pioneerE22AvgPerSecond = c1Result.avgPioneerE22PerSecond;
 				result.pioneerE22Peak = c1Result.maxPioneerE22PerSecond;
-				result.pioneerE22Rating = PioneerE22Rating(
+				result.pioneerE22Rating = RatePioneerE22(
 					result.pioneerE22Total,
 					result.pioneerE22AvgPerSecond,
-					result.pioneerE22Peak);
+					result.peaks);
 			}
 		}
 		else {
@@ -855,6 +863,17 @@ void OpticalDrive::PrintDiscRotReport(const DiscRotAnalysis& analysis) {
 	std::cout << Sym::BottomRight << "\n";
 	Reset();
 
+	// Same measurement-confidence header the quality scan prints, so the two
+	// reports state their limits in the same words.
+	if (analysis.peaks.scanSpeedX > 0) {
+		std::cout << "\n";
+		std::cout << "  Scan speed:      " << analysis.peaks.scanSpeedX << "x\n";
+		std::cout << "  Peak confidence: "
+			<< ScanQuality::ConfidenceLabel(analysis.peaks.PeakConfidence()) << "\n";
+		ScanQuality::PrintConfidenceCaveat(std::cout,
+			analysis.peaks.PeakConfidence(), "    ");
+	}
+
 	std::cout << "\n";
 	Heading("  Zone Error Rates\n");
 	SetColorRGB(Theme::DimR, Theme::DimG, Theme::DimB);
@@ -1112,13 +1131,27 @@ void OpticalDrive::AnalyzeC1RotPatterns(const QCheckResult& c1Result,
 	std::cout << "  Middle avg C1/sec: " << avgMiddle << "\n";
 	std::cout << "  Outer  avg C1/sec: " << avgOuter << "\n";
 
-	// C1-based rot indicators (these fire BEFORE C2 errors appear)
+	// C1-based rot indicators (these fire BEFORE C2 errors appear).
+	//
+	// All four are built from *averages and zone ratios*, never from a single
+	// slice, so they stay admissible at any scan speed — that is the rule
+	// ScanQualityRating.h states, and it is the reason the sustained/peak
+	// machinery deliberately does not gate this block. A high scan speed
+	// inflates every zone alike, so the ratios survive; and a disc averaging
+	// hundreds of C1 per second is stressed whatever speed revealed it.
+	//
+	// What high speed does change is the *margin*: at 48x the fixed 220/sec
+	// spec number is a lower bar than the Red Book measurement intends, so the
+	// absolute tests run hot. The report says so rather than silently
+	// suppressing them, because suppressing them would hide real rot.
 	const bool zonesComparable = innerN > 0 && middleN > 0 && outerN > 0;
+	const auto conf = c1Result.peaks.PeakConfidence();
+
 	bool c1EdgeElevated = zonesComparable && (avgOuter > avgInner * 3.0) && (avgOuter > 10.0);
 	bool c1Progressive = zonesComparable && (avgInner < avgMiddle) &&
 		(avgMiddle < avgOuter) && (avgOuter > 10.0);
 	bool c1OverallHigh = (c1Result.avgC1PerSecond > 50.0);
-	bool c1RedBookFail = (c1Result.avgC1PerSecond >= 220.0);
+	bool c1RedBookFail = (c1Result.avgC1PerSecond >= ScanQuality::kRedBookBlerLimit);
 
 	if (c1EdgeElevated)
 		std::cout << "  ** C1 elevated at outer edge - early disc rot signal **\n";
@@ -1126,6 +1159,16 @@ void OpticalDrive::AnalyzeC1RotPatterns(const QCheckResult& c1Result,
 		std::cout << "  ** C1 rising inner->outer - progressive degradation pattern **\n";
 	if (c1RedBookFail)
 		std::cout << "  ** C1 exceeds Red Book limit - disc is stressed **\n";
+	// One caveat line, not a suppression: the reader needs to know the absolute
+	// thresholds were applied to a fast scan before acting on the risk level.
+	if ((c1OverallHigh || c1RedBookFail) &&
+		!ScanQuality::PeakEvidenceAdmissible(conf)) {
+		ScanQuality::PrintWrapped(std::cout,
+			"These absolute C1 thresholds were applied to a scan run above 16x, "
+			"where rates read higher than at Red Book measurement speed. The "
+			"finding still counts toward rot risk, but confirm it on a drive "
+			"that honours 4x-8x before concluding the disc is degrading.", "  ");
+	}
 
 	// Boost the rot risk score based on C1 findings
 	// These are early warnings that wouldn't show up in C2 alone
@@ -1182,9 +1225,27 @@ void OpticalDrive::AnalyzeC1RotPatterns(const QCheckResult& c1Result,
 			std::cout << "  Outer  avg E22/sec: " << aOutE22 << "\n";
 			std::cout << "  Total E22: " << c1Result.totalPioneerE22
 				<< " (avg " << std::fixed << std::setprecision(2) << c1Result.avgPioneerE22PerSecond
-				<< "/sec, peak " << c1Result.maxPioneerE22PerSecond << "/sec)\n";
+				<< "/sec, sustained " << c1Result.peaks.sustainedPioneerE22PerSecond
+				<< "/sec, raw peak " << c1Result.maxPioneerE22PerSecond << "/sec)\n";
+			if (ScanQuality::TransientNoteWarranted(
+					c1Result.maxPioneerE22PerSecond,
+					c1Result.peaks.peakPioneerE22Transient,
+					ScanQuality::kMinE22PeakWorthExplaining)) {
+				ScanQuality::SeriesStats shown;
+				shown.peak = c1Result.maxPioneerE22PerSecond;
+				shown.peakRunLength = c1Result.peaks.peakPioneerE22RunLength;
+				shown.sustainedPeak = c1Result.peaks.sustainedPioneerE22PerSecond;
+				ScanQuality::PrintWrapped(std::cout,
+					ScanQuality::TransientNote("E22", shown), "  ");
+			}
+			if (c1Result.peaks.pioneerE22PeakTracksC1)
+				ScanQuality::PrintWrapped(std::cout,
+					"E22 and C1 peak at the same time slice - one event counted by "
+					"two decoder stages, not two independent findings.", "  ");
 		}
 
+		// Same basis as the C1 block: averages and zone ratios, never a single
+		// slice, so these stay admissible at any scan speed.
 		bool e22EdgeElevated = (aOutE22 > aInE22 * 3.0) && (aOutE22 > 2.0);
 		bool e22Progressive = (aInE22 < aMidE22) && (aMidE22 < aOutE22) && (aOutE22 > 2.0);
 		bool e22OverallHigh = (c1Result.avgPioneerE22PerSecond > 1.0);

@@ -65,6 +65,7 @@
     <ClInclude Include="RecoveryRipWorkflow.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="RecoveryTypes.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Resource.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="ScanQualityRating.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="ScanResults.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="ScsiDrive.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="ScsiTypes.h"><Filter>Header Files</Filter></ClInclude>
@@ -148,6 +149,7 @@
     <ClCompile Include="ScsiDrive.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="ScsiDrive.Capabilities.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="ScsiDrive.Chipset.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="ScanQualityRating.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="ScsiDrive.Core.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="ScsiDrive.HideCDR.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="ScsiDrive.LiteOnFeTe.cpp"><Filter>Source Files</Filter></ClCompile>

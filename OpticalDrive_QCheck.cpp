@@ -35,31 +35,12 @@ bool IsPioneerScanMethod(const std::string& method) {
 	return method.find("Pioneer") != std::string::npos;
 }
 
-// Classify the Pioneer E22 diagnostic counter into a 4-tier rating that
-// parallels archivalC1Rating.  E22 is a raw firmware counter exposed by
-// the vendor scan; it is *not* verified C2 and is not a copy trigger.  This
-// rating is purely informational — even "Concerning" does not by itself
-// mean the disc is uncopyable.
-//
-// Tiers:
-//   Ideal       total == 0                          — no E22 anywhere
-//   Good        avg < 0.25/s AND peak < 25          — normal background
-//   Acceptable  avg < 1.0/s  AND peak < 100         — elevated activity
-//   Concerning  above                               — heavy E22 activity
-const char* PioneerE22Rating(int total, double avg, int peak) {
-	if (total == 0) return "Ideal";
-	if (avg < 0.25 && peak < 25) return "Good";
-	if (avg < 1.0 && peak < 100) return "Acceptable";
-	return "Concerning";
-}
-
-// Short descriptor for the parenthetical after the rating word.
-const char* PioneerE22RatingDescription(const std::string& rating) {
-	if (rating == "Ideal")      return "no E22 reported";
-	if (rating == "Good")       return "low background, normal for Pioneer scans";
-	if (rating == "Acceptable") return "elevated diagnostic activity";
-	return "heavy diagnostic activity";
-}
+// Pioneer E22 tier classification and the archival peak-C1 tier now live in
+// ScanResults.h / ScanQualityRating.cpp so the quality scan, the BLER/C2 scan,
+// Disc Rot and Disc Balance all reach the same verdict from the same data.
+// Both judge the *sustained* level rather than the raw peak, so a one-slice
+// servo transient can no longer produce a "Poor" or "Concerning" verdict on an
+// otherwise clean disc.
 
 void RecalculateQCheckTotals(QCheckResult& result) {
 	result.totalC1 = 0;
@@ -860,6 +841,12 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 			result.c2RecheckSamples.size();
 	}
 
+	// ── Sustained-level statistics ───────────────────────────
+	// Compute these before any rating runs: every peak-driven tier below is
+	// judged against the sustained level, and the scan speed decides whether a
+	// bad peak is admissible evidence about the disc at all.
+	ComputeScanPeakContext(result.samples, scanSpeed, result.peaks);
+
 	// ── Quality rating ───────────────────────────────────────
 	// Multi-tier rating based on CIRC error hierarchy:
 	//   CU > 0           → BAD    (uncorrectable = data loss)
@@ -902,25 +889,21 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		result.totalC1Quality = "Poor";
 
 	// ── Archival suitability rating ──────────────────────────
-	// For long-term archival, peak C1 matters more than average — a single
-	// region with high C1 may degrade further over time and eventually
-	// produce C2/CU errors.
-	if (result.maxC1PerSecond < 50)
-		result.archivalC1Rating = "Ideal";
-	else if (result.maxC1PerSecond < 100)
-		result.archivalC1Rating = "Good";
-	else if (result.maxC1PerSecond <= 220)
-		result.archivalC1Rating = "Acceptable";
-	else
-		result.archivalC1Rating = "Poor";
+	// For long-term archival a raised C1 region matters more than the average,
+	// because it may degrade further and eventually produce C2/CU. But the
+	// evidence has to be a *region*: a single time slice at 252/sec against a
+	// 2/sec baseline is the drive re-acquiring track, not a weak spot in the
+	// dye. Rate the sustained level, and withhold a bad verdict entirely when
+	// the scan speed makes peaks untrustworthy.
+	result.archivalC1Rating = RateArchivalC1(result.peaks);
 
 	// ── Pioneer E22 diagnostic rating ────────────────────────
 	// Only meaningful on Pioneer vendor scans; left empty otherwise.
 	if (IsPioneerScanMethod(result.scanMethod)) {
-		result.pioneerE22Rating = PioneerE22Rating(
+		result.pioneerE22Rating = RatePioneerE22(
 			result.totalPioneerE22,
 			result.avgPioneerE22PerSecond,
-			result.maxPioneerE22PerSecond);
+			result.peaks);
 	}
 
 	// ── Flag potentially non-functional quality scan ─────────
@@ -943,6 +926,12 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		&& result.totalPioneerE22 == 0) {
 		result.c1Unverified = true;
 		result.qualityRating = "UNVERIFIED";
+		// The sustained level is 0 because nothing was measured, not because
+		// the disc is clean. "Ideal" here would present a missing measurement
+		// as a good result, which is the one thing this report must not do.
+		result.archivalC1Rating = "NOT RATED";
+		if (!result.pioneerE22Rating.empty())
+			result.pioneerE22Rating = "NOT RATED";
 	}
 
 	// ── Pioneer uncorrectable cross-check via CD Check (0xE6) ─
@@ -1431,6 +1420,11 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 		<< std::setfill('0') << std::setw(2) << (result.totalSeconds % 60)
 		<< std::setfill(' ') << " (mm:ss)\n";
 	std::cout << "  Sectors covered:   " << result.totalSectors << "\n";
+	if (result.peaks.scanSpeedX > 0)
+		std::cout << "  Scan speed:        " << result.peaks.scanSpeedX << "x\n";
+	std::cout << "  Peak confidence:   "
+		<< ScanQuality::ConfidenceLabel(result.peaks.PeakConfidence()) << "\n";
+	ScanQuality::PrintConfidenceCaveat(std::cout, result.peaks.PeakConfidence(), "    ");
 
 	// ── Section 2: C1 errors (Block Error Rate) ──────────────
 	// C1 is the first level of Reed-Solomon error correction in the CIRC
@@ -1497,30 +1491,49 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 		std::cout << " (poor burn or aging disc)";
 	std::cout << "\n";
 
-	// ── Section 4: Archival suitability (peak C1) ────────────
-	// For long-term preservation, peak C1 is more important than average —
-	// a localised hot-spot may worsen over time and eventually become
-	// uncorrectable.  Thresholds: <50 ideal, <100 good, ≤220 acceptable.
-	std::cout << "\n--- Archival Audio (Peak C1) ---\n";
-	std::cout << "  Peak C1/sec: " << result.maxC1PerSecond << "\n";
-	std::cout << "  Rating:      ";
+	// ── Section 4: Archival suitability (sustained C1) ───────
+	// For long-term preservation a raised C1 region matters more than the
+	// average, because it may worsen and eventually become uncorrectable. The
+	// evidence has to be a region though: the rating is judged on the highest
+	// level held for several consecutive slices, so a one-slice servo transient
+	// no longer decides the verdict. The raw peak is still shown as context.
+	std::cout << "\n--- Archival Audio (Sustained C1) ---\n";
+	std::cout << "  Sustained C1/sec: " << result.peaks.sustainedC1PerSecond
+		<< "  (95th pct " << result.peaks.p95C1PerSecond << ")\n";
+	std::cout << "  Raw peak C1/sec:  " << result.maxC1PerSecond;
+	if (result.maxC1SecondIndex >= 0 &&
+		result.maxC1SecondIndex < static_cast<int>(result.samples.size()))
+		std::cout << "  (at LBA " << result.samples[result.maxC1SecondIndex].lba << ")";
+	std::cout << "\n";
+	std::cout << "  Rating:           ";
 	if (result.archivalC1Rating == "Ideal" || result.archivalC1Rating == "Good")
 		Console::SetColorRGB(Console::Theme::GreenR, Console::Theme::GreenG, Console::Theme::GreenB);
 	else if (result.archivalC1Rating == "Acceptable")
 		Console::SetColorRGB(Console::Theme::YellowR, Console::Theme::YellowG, Console::Theme::YellowB);
-	else
+	else if (result.archivalC1Rating == "Poor")
 		Console::SetColorRGB(Console::Theme::RedR, Console::Theme::RedG, Console::Theme::RedB);
+	else
+		Console::SetColorRGB(Console::Theme::YellowR, Console::Theme::YellowG, Console::Theme::YellowB);
 	std::cout << result.archivalC1Rating;
 	Console::Reset();
-	if (result.archivalC1Rating == "Ideal")
-		std::cout << " (< 50/sec)";
-	else if (result.archivalC1Rating == "Good")
-		std::cout << " (< 100/sec)";
-	else if (result.archivalC1Rating == "Acceptable")
-		std::cout << " (100-220/sec, not ideal for archival)";
-	else
-		std::cout << " (exceeds Red Book limit)";
-	std::cout << "\n";
+	std::cout << " (" << ArchivalRatingDescription(result.archivalC1Rating) << ")\n";
+
+	// Explain a rejected peak rather than silently dropping it — a user who saw
+	// the number in the graph needs to know why it did not become a verdict.
+	// Only worth saying for a peak big enough to have changed a tier; defending
+	// a 3/sec peak just trains the reader to skip this line.
+	if (ScanQuality::TransientNoteWarranted(result.maxC1PerSecond,
+			result.peaks.peakC1Transient)) {
+		ScanQuality::SeriesStats shown;
+		shown.peak = result.maxC1PerSecond;
+		shown.peakRunLength = result.peaks.peakC1RunLength;
+		shown.sustainedPeak = result.peaks.sustainedC1PerSecond;
+		ScanQuality::PrintWrapped(std::cout,
+			ScanQuality::TransientNote("C1", shown), "  ");
+	}
+	if (result.archivalC1Rating == "NOT RATED")
+		ScanQuality::PrintWrapped(std::cout,
+			ScanQuality::UnratedNote("Archival C1", result.peaks.scanSpeedX), "  ");
 
 	// ── Section 5: C2 errors ─────────────────────────────────
 	// C2 errors indicate the first-level (C1) correction failed and the
@@ -1536,21 +1549,43 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 		std::cout << "  Rating:      ";
 		if (result.pioneerE22Rating == "Ideal" || result.pioneerE22Rating == "Good")
 			Console::SetColorRGB(Console::Theme::GreenR, Console::Theme::GreenG, Console::Theme::GreenB);
-		else if (result.pioneerE22Rating == "Acceptable")
-			Console::SetColorRGB(Console::Theme::YellowR, Console::Theme::YellowG, Console::Theme::YellowB);
-		else
+		else if (result.pioneerE22Rating == "Concerning")
 			Console::SetColorRGB(Console::Theme::RedR, Console::Theme::RedG, Console::Theme::RedB);
+		else
+			Console::SetColorRGB(Console::Theme::YellowR, Console::Theme::YellowG, Console::Theme::YellowB);
 		std::cout << result.pioneerE22Rating;
 		Console::Reset();
 		std::cout << " (" << PioneerE22RatingDescription(result.pioneerE22Rating) << ")\n";
-		std::cout << "  Total E22:   " << result.totalPioneerE22 << "\n";
-		std::cout << "  Avg E22/sec: " << std::fixed << std::setprecision(2)
+		std::cout << "  Total E22:        " << result.totalPioneerE22 << "\n";
+		std::cout << "  Avg E22/sec:      " << std::fixed << std::setprecision(2)
 			<< result.avgPioneerE22PerSecond << "\n";
-		std::cout << "  Max E22/sec: " << result.maxPioneerE22PerSecond;
+		std::cout << "  Sustained E22/sec: "
+			<< result.peaks.sustainedPioneerE22PerSecond << "  (rated on this)\n";
+		std::cout << "  Raw peak E22/sec: " << result.maxPioneerE22PerSecond;
 		if (result.maxPioneerE22SecondIndex >= 0 &&
 			result.maxPioneerE22SecondIndex < static_cast<int>(result.samples.size()))
 			std::cout << "  (at LBA " << result.samples[result.maxPioneerE22SecondIndex].lba << ")";
 		std::cout << "\n";
+
+		if (ScanQuality::TransientNoteWarranted(result.maxPioneerE22PerSecond,
+				result.peaks.peakPioneerE22Transient,
+				ScanQuality::kMinE22PeakWorthExplaining)) {
+			ScanQuality::SeriesStats shown;
+			shown.peak = result.maxPioneerE22PerSecond;
+			shown.peakRunLength = result.peaks.peakPioneerE22RunLength;
+			shown.sustainedPeak = result.peaks.sustainedPioneerE22PerSecond;
+			ScanQuality::PrintWrapped(std::cout,
+				ScanQuality::TransientNote("E22", shown), "  ");
+		}
+		// An E22 excursion at the same slice as the C1 excursion is one physical
+		// event seen by two counters, so it is not independent corroboration.
+		if (result.peaks.pioneerE22PeakTracksC1)
+			ScanQuality::PrintWrapped(std::cout,
+				"E22 and C1 peak at the same time slice - one event counted by two "
+				"decoder stages, not two independent findings.", "  ");
+		if (result.pioneerE22Rating == "NOT RATED")
+			ScanQuality::PrintWrapped(std::cout,
+				ScanQuality::UnratedNote("E22", result.peaks.scanSpeedX), "  ");
 	}
 	else {
 		std::cout << "\n--- C2 Errors ---\n";
@@ -1738,6 +1773,30 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 			opts.refLine = 220;                              // Red Book BLER limit
 			opts.refLabel = "Red Book BLER limit (220/sec)";
 			Console::DrawBarGraph(buckets, graphMax, opts, result.totalSeconds);
+
+			// Annotate a bar that crosses the reference line but did not
+			// persist, so the graph and the verdict tell the same story.
+			//
+			// Count the slices actually above the limit. SeriesStats::
+			// peakRunLength answers a different question - the width of the
+			// peak at half its OWN height - and would overstate this: a peak of
+			// 300 flanked by 160s has a half-height width of 3 but crosses the
+			// 220 line exactly once.
+			const int redBookLimit = static_cast<int>(ScanQuality::kRedBookBlerLimit);
+			const int aboveLimitRun =
+				ScanQuality::LongestRunAtOrAbove(c1Vals, redBookLimit);
+			if (peakC1 > redBookLimit &&
+				aboveLimitRun < ScanQuality::kDefaultMinRunSamples) {
+				Console::SetColorRGB(Console::Theme::YellowR,
+					Console::Theme::YellowG, Console::Theme::YellowB);
+				ScanQuality::PrintWrapped(std::cout,
+					"C1 crosses the limit line for " +
+					std::to_string(aboveLimitRun) +
+					" time slice(s). A Red Book BLER failure is a sustained rate, "
+					"not a brief excursion - sustained C1 here is " +
+					std::to_string(result.peaks.sustainedC1PerSecond) + "/sec.", "  ");
+				Console::Reset();
+			}
 		}
 
 		// ── C2 distribution graph ────────────────────────────
@@ -1915,16 +1974,18 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 	Console::Reset();
 	std::cout << " (" << result.totalC1 << " total)\n";
 
-	std::cout << "  Archival Peak:  ";
+	std::cout << "  Archival C1:    ";
 	if (result.archivalC1Rating == "Ideal" || result.archivalC1Rating == "Good")
 		Console::SetColorRGB(Console::Theme::GreenR, Console::Theme::GreenG, Console::Theme::GreenB);
-	else if (result.archivalC1Rating == "Acceptable")
-		Console::SetColorRGB(Console::Theme::YellowR, Console::Theme::YellowG, Console::Theme::YellowB);
-	else
+	else if (result.archivalC1Rating == "Poor")
 		Console::SetColorRGB(Console::Theme::RedR, Console::Theme::RedG, Console::Theme::RedB);
+	else
+		Console::SetColorRGB(Console::Theme::YellowR, Console::Theme::YellowG, Console::Theme::YellowB);
 	std::cout << result.archivalC1Rating;
 	Console::Reset();
-	std::cout << " (peak " << result.maxC1PerSecond << "/sec)\n";
+	std::cout << " (sustained " << result.peaks.sustainedC1PerSecond
+		<< "/sec, raw peak " << result.maxC1PerSecond << "/sec"
+		<< (result.peaks.peakC1Transient ? " transient" : "") << ")\n";
 
 	if (!pioneerScan && result.totalC2 > 0) {
 		std::cout << "  C2 Primary:    ";
@@ -2116,6 +2177,15 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 	log << "\n";
 	log << "# Avg C1/sec Pass:       " << (result.avgC1PerSecond < 220.0 ? "PASS" : "FAIL")
 		<< " (Red Book limit: 220/sec)\n";
+	log << "# Sustained C1/sec:      " << result.peaks.sustainedC1PerSecond
+		<< " (level held >= " << ScanQuality::kDefaultMinRunSamples
+		<< " consecutive slices; this is what ratings use)\n";
+	log << "# 95th pct C1/sec:       " << result.peaks.p95C1PerSecond << "\n";
+	log << "# Raw peak run length:   " << result.peaks.peakC1RunLength
+		<< (result.peaks.peakC1Transient ? " (transient - not rated)" : "") << "\n";
+	log << "# Scan speed:            " << result.peaks.scanSpeedX << "x\n";
+	log << "# Peak confidence:       "
+		<< ScanQuality::ConfidenceLabel(result.peaks.PeakConfidence()) << "\n";
 	log << "#\n";
 	log << "# --- C2 Statistics ---\n";
 	if (pioneerScan) {
@@ -2270,7 +2340,8 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 	log << "# Total C1 Quality:      " << result.totalC1Quality << "\n";
 	log << "#\n";
 	log << "# --- Archival Audio ---\n";
-	log << "# Peak C1 Rating:        " << result.archivalC1Rating << "\n";
+	log << "# Sustained C1 Rating:   " << result.archivalC1Rating
+		<< " (" << ArchivalRatingDescription(result.archivalC1Rating) << ")\n";
 	if (result.c1Unverified) {
 		log << "#\n";
 		log << "# *** WARNING: Zero C1 errors across entire disc.        ***\n";

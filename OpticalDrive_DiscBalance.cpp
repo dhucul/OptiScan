@@ -1156,6 +1156,18 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 				<< "        or CU. It is reported here but does not affect the Balance Score\n"
 				<< "        or Suggested Max Rip Speed and is not a copy-integrity trigger.\n";
 		}
+		// Consistency with the quality / BLER / rot reports: absolute C1 and E22
+		// rates are only archivally meaningful at or below the archival speed
+		// ceiling. Above it the figures still compare against each other across
+		// the sweep — which is exactly what this check needs, and is valid at
+		// any speed — but they are not a disc-quality verdict.
+		ScanQuality::PrintWrapped(std::cout,
+			std::string("Rates above ") +
+			std::to_string(ScanQuality::kArchivalScanSpeedMax) +
+			"x are comparative only. This check reads them as a trend across the "
+			"sweep, which stays valid at any speed; the same figures are not a "
+			"quality verdict about the disc. The CD quality scan gives that.",
+			"  ");
 		if (hwSweepFailed) {
 			std::cout << "  ** NOTE: The hardware ECC sweep failed; partial hardware data\n"
 				<< "     was discarded from scoring. Using the READ CD/read-stability\n"

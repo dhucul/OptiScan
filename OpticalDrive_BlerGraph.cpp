@@ -51,11 +51,33 @@ void OpticalDrive::PrintBlerGraph(const BlerResult& result, int width, int heigh
 			auto buckets = ToBuckets(result.perSecondC1, width);
 			Console::DrawBarGraph(buckets, graphMax, opts, result.totalSeconds);
 
-			if (peakC1 > 220) {
+			// Only warn on an excursion that actually persisted. A single bar
+			// over the reference line is the drive re-acquiring track, and
+			// calling that a Red Book failure is what made every disc look bad.
+			const int redBookLimit = static_cast<int>(ScanQuality::kRedBookBlerLimit);
+			if (peakC1 > redBookLimit) {
+				// How many consecutive slices actually stayed above the line.
+				// SeriesStats::peakRunLength answers a different question (peak
+				// width at half its own height) and must not stand in for this.
+				std::vector<int> series;
+				series.reserve(result.perSecondC1.size());
+				for (const auto& p : result.perSecondC1) series.push_back(p.second);
+				const int aboveRun =
+					ScanQuality::LongestRunAtOrAbove(series, redBookLimit);
+
 				Console::SetColorRGB(Console::Theme::YellowR,
 					Console::Theme::YellowG, Console::Theme::YellowB);
-				std::cout << "  Peak C1 of " << peakC1
-					<< "/sec exceeds Red Book BLER limit (220/sec).\n";
+				if (aboveRun >= ScanQuality::kDefaultMinRunSamples) {
+					std::cout << "  C1 stays above the Red Book BLER limit (220/sec) for "
+						<< aboveRun << " consecutive slices - sustained "
+						<< result.peaks.sustainedC1PerSecond << "/sec.\n";
+				}
+				else {
+					std::cout << "  Tallest bar (" << peakC1 << "/sec) crosses the limit for "
+						<< aboveRun << " slice(s) - a drive transient, not a Red Book"
+						<< " failure; sustained C1 is "
+						<< result.peaks.sustainedC1PerSecond << "/sec.\n";
+				}
 				Console::Reset();
 			}
 		}

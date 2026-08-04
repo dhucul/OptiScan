@@ -5,10 +5,45 @@
 
 #include "ErrorTypes.h"
 #include "AnalysisTypes.h"
+#include "ScanQualityRating.h"
 #include <windows.h>
 #include <vector>
 #include <string>
 #include <utility>
+
+// ── Shared peak / confidence block ──────────────────────────────────────────
+// Every scan mode that rates a disc from a per-time-slice error series carries
+// this block, so the rules stay identical between them. Raw peaks are still
+// kept for the graphs; the *ratings* are driven by the sustained figures below,
+// and scanSpeedX records how far any peak can be trusted at all.
+struct ScanPeakContext {
+	int scanSpeedX = 0;                     // Speed the scan actually ran at
+
+	// False when the scan produced fewer slices than kDefaultMinRunSamples, so
+	// "held for N consecutive slices" cannot be evaluated at all. Both series
+	// come from the same samples, so one flag covers C1 and E22. Every tier
+	// judged from a sustained level must come back Unrated when this is false.
+	bool sustainedMeasurable = false;
+
+	// C1 / BLER series
+	int  sustainedC1PerSecond = 0;          // Level held >= kDefaultMinRunSamples
+	int  p95C1PerSecond = 0;
+	int  peakC1RunLength = 0;
+	bool peakC1Transient = false;
+
+	// Pioneer E22 diagnostic series
+	int  sustainedPioneerE22PerSecond = 0;
+	int  peakPioneerE22RunLength = 0;
+	bool peakPioneerE22Transient = false;
+	bool pioneerE22PeakTracksC1 = false;    // Peaks at the same slice as C1
+
+	ScanQuality::Confidence PeakConfidence() const {
+		return ScanQuality::ConfidenceForSpeed(scanSpeedX);
+	}
+	bool PeaksAdmissible() const {
+		return ScanQuality::PeakEvidenceAdmissible(PeakConfidence());
+	}
+};
 
 // ── Per-second sample from hardware quality scan ────────────────────────────
 struct QCheckSample {
@@ -106,11 +141,16 @@ struct QCheckResult {
 	// Total C1 quality interpretation
 	std::string totalC1Quality;                // Exceptional / Very good / Normal / Marginal / Poor
 
-	// Archival audio peak C1 assessment
-	std::string archivalC1Rating;              // Ideal / Good / Acceptable / Poor
+	// Archival audio peak C1 assessment. Driven by peaks.sustainedC1PerSecond,
+	// not maxC1PerSecond — see ScanQualityRating.h for why.
+	std::string archivalC1Rating;              // Ideal / Good / Acceptable / Poor / NOT RATED
 
 	// Pioneer E22 diagnostic rating (diagnostic only — not a copy trigger)
-	std::string pioneerE22Rating;              // Ideal / Good / Acceptable / Concerning
+	std::string pioneerE22Rating;              // Ideal / Good / Acceptable / Concerning / NOT RATED
+
+	// Sustained-level statistics and scan-speed confidence shared with every
+	// other scan mode.
+	ScanPeakContext peaks;
 
 	// Drive compatibility warning — zero C1 across entire disc suggests
 	// the drive accepted the vendor scan command but does not actually
@@ -141,6 +181,96 @@ inline QCheckC2Stability ClassifyQCheckC2Stability(const QCheckResult& result) {
 	if (result.totalC2 > 0)
 		return QCheckC2Stability::RecheckIncomplete;
 	return QCheckC2Stability::NoActivity;
+}
+
+// ── Fill a ScanPeakContext from a per-slice series ──────────────────────────
+// Single implementation shared by the quality scan, BLER/C2 scan, Disc Rot and
+// Disc Balance so no scan mode can drift into its own peak handling.
+inline void ComputeScanPeakContext(const std::vector<int>& c1Series,
+	const std::vector<int>& e22Series, int scanSpeedX, ScanPeakContext& out) {
+	out.scanSpeedX = scanSpeedX;
+
+	const ScanQuality::SeriesStats c1 = ScanQuality::Analyze(c1Series);
+	out.sustainedMeasurable = c1.persistenceMeasurable;
+	out.sustainedC1PerSecond = c1.sustainedPeak;
+	out.p95C1PerSecond = c1.p95;
+	out.peakC1RunLength = c1.peakRunLength;
+	out.peakC1Transient = c1.peakIsTransient;
+
+	if (e22Series.empty()) {
+		// No E22 series this pass. Clear rather than leave the previous scan's
+		// figures in place — this context is reused across passes.
+		out.sustainedPioneerE22PerSecond = 0;
+		out.peakPioneerE22RunLength = 0;
+		out.peakPioneerE22Transient = false;
+		out.pioneerE22PeakTracksC1 = false;
+	}
+	else {
+		const ScanQuality::SeriesStats e22 = ScanQuality::Analyze(e22Series);
+		out.sustainedPioneerE22PerSecond = e22.sustainedPeak;
+		out.peakPioneerE22RunLength = e22.peakRunLength;
+		out.peakPioneerE22Transient = e22.peakIsTransient;
+		out.pioneerE22PeakTracksC1 = ScanQuality::PeaksCorrelated(c1, e22);
+	}
+}
+
+inline void ComputeScanPeakContext(const std::vector<QCheckSample>& samples,
+	int scanSpeedX, ScanPeakContext& out) {
+	std::vector<int> c1, e22;
+	c1.reserve(samples.size());
+	e22.reserve(samples.size());
+	bool anyE22 = false;
+	for (const auto& s : samples) {
+		c1.push_back(s.c1);
+		e22.push_back(s.pioneerE22);
+		if (s.pioneerE22 != 0) anyE22 = true;
+	}
+	if (!anyE22) e22.clear();
+	ComputeScanPeakContext(c1, e22, scanSpeedX, out);
+}
+
+// ── Shared rating entry points ──────────────────────────────────────────────
+// Both the quality scan and the disc-rot scan previously kept private copies of
+// these thresholds, which drifted. They now share one implementation, and both
+// judge the *sustained* level rather than the raw peak.
+inline std::string RateArchivalC1(const ScanPeakContext& peaks) {
+	// Only sustainedPeak and persistenceMeasurable feed the tier; the transient
+	// test already happened when the context was computed.
+	ScanQuality::SeriesStats c1;
+	c1.sustainedPeak = peaks.sustainedC1PerSecond;
+	c1.persistenceMeasurable = peaks.sustainedMeasurable;
+	return ScanQuality::TierName(
+		ScanQuality::RateArchivalC1(c1, peaks.PeakConfidence()));
+}
+
+inline std::string RatePioneerE22(long long total, double avgPerSecond,
+	const ScanPeakContext& peaks) {
+	// Note this takes persistence from the shared sample count, not from the
+	// E22 vector: an all-zero E22 series is cleared by ComputeScanPeakContext
+	// as an optimisation, and that means "no E22 activity over a full scan",
+	// not "too few slices to tell".
+	ScanQuality::SeriesStats e22;
+	e22.sustainedPeak = peaks.sustainedPioneerE22PerSecond;
+	e22.persistenceMeasurable = peaks.sustainedMeasurable;
+	return ScanQuality::TierNameDiagnostic(
+		ScanQuality::RatePioneerE22(total, avgPerSecond, e22,
+			peaks.PeakConfidence(), peaks.pioneerE22PeakTracksC1));
+}
+
+inline const char* ArchivalRatingDescription(const std::string& rating) {
+	if (rating == "Ideal")      return "sustained peak under 50/sec";
+	if (rating == "Good")       return "sustained peak 50-99/sec";
+	if (rating == "Acceptable") return "sustained peak 100-220/sec, not ideal for archival";
+	if (rating == "Poor")       return "sustained peak exceeds the Red Book limit";
+	return "not measurable at the speed this drive honours";
+}
+
+inline const char* PioneerE22RatingDescription(const std::string& rating) {
+	if (rating == "Ideal")      return "no E22 reported";
+	if (rating == "Good")       return "low background, normal for Pioneer scans";
+	if (rating == "Acceptable") return "elevated diagnostic activity";
+	if (rating == "Concerning") return "sustained heavy diagnostic activity";
+	return "not measurable at the speed this drive honours";
 }
 
 // ── Single jitter/beta time-slice from a LiteOn jitter scan ─────────────────
@@ -237,6 +367,13 @@ struct BlerResult {
 	bool c2Unverified = false;             // C2 bitmap may not be functional
 	std::string qualityRating;
 
+	// Sustained-level statistics and scan-speed confidence, shared with the
+	// Q-Check, Disc Rot and Balance paths.
+	ScanPeakContext peaks;
+
+	// Archival peak-C1 tier, computed the same way as QCheckResult's.
+	std::string archivalC1Rating;
+
 	// Pioneer 0x3B/0x3C vendor-quality provenance. E22 is a diagnostic
 	// second-stage counter, not a verified READ CD C2 pointer or E32/CU count.
 	bool pioneerVendorQuality = false;
@@ -279,9 +416,14 @@ struct DiscRotAnalysis {
 	int pioneerE22Total = 0;                    // Pioneer vendor diagnostic E22, not counted as C2
 	double pioneerE22AvgPerSecond = 0.0;        // Average Pioneer E22 diagnostic count in Phase 0
 	int pioneerE22Peak = 0;                     // Peak Pioneer E22 diagnostic count in Phase 0
-	std::string pioneerE22Rating;               // Ideal / Good / Acceptable / Concerning
+	std::string pioneerE22Rating;               // Ideal / Good / Acceptable / Concerning / NOT RATED
 	bool pioneerDrive = false;                   // Enables explicit CU-unmeasured reporting
 	bool pioneerQualityScanRun = false;          // Phase 0 completed with valid Pioneer samples
+
+	// Sustained-level statistics and scan-speed confidence for Phase 0. Risk
+	// escalation driven by absolute peak thresholds is gated on this; zone
+	// *ratios* stay admissible at any speed because they are speed-robust.
+	ScanPeakContext peaks;
 
 	// Pioneer CD Check (0xE6) uncorrectable cross-check. On Pioneer drives the
 	// vendor scan (Phase 0) and the per-sector READ CD C2 area (Phase 1) are both

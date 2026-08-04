@@ -34,10 +34,29 @@ void OpticalDrive::AnalyzeBlerResults(BlerResult& result, const std::vector<DWOR
 			}
 		}
 
-		// C2 proximity: express C1 rate as a fraction of the Red Book 220/sec limit
-		result.c1UtilizationPct = std::min(100.0, result.avgC1PerSecond / 220.0 * 100.0);
-		result.peakC1UtilizationPct = std::min(100.0, result.maxC1PerSecond / 220.0 * 100.0);
-		double util = result.avgC1PerSecond / 220.0;
+		// Sustained-level statistics, from the same helper the quality scan,
+		// disc rot and balance paths use. Every peak-driven figure below is
+		// judged against these rather than against the raw maximum.
+		{
+			std::vector<int> c1Series, e22Series;
+			c1Series.reserve(result.perSecondC1.size());
+			for (const auto& p : result.perSecondC1) c1Series.push_back(p.second);
+			for (const auto& p : result.perSecondPioneerE22) e22Series.push_back(p.second);
+			ComputeScanPeakContext(c1Series, e22Series, scanSpeed, result.peaks);
+		}
+
+		// Archival tier: identical thresholds, identical transient handling and
+		// identical speed gating to the Q-Check report.
+		result.archivalC1Rating = RateArchivalC1(result.peaks);
+
+		// C2 proximity: express C1 rate as a fraction of the Red Book 220/sec
+		// limit. Peak utilisation uses the sustained level, so a single servo
+		// transient can no longer report the correction budget as exhausted.
+		result.c1UtilizationPct = std::min(100.0,
+			result.avgC1PerSecond / ScanQuality::kRedBookBlerLimit * 100.0);
+		result.peakC1UtilizationPct = std::min(100.0,
+			result.peaks.sustainedC1PerSecond / ScanQuality::kRedBookBlerLimit * 100.0);
+		double util = result.avgC1PerSecond / ScanQuality::kRedBookBlerLimit;
 		result.c2MarginScore = static_cast<int>(
 			std::lround(std::max(0.0, (1.0 - util) * 100.0)));
 

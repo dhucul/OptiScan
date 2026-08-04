@@ -465,6 +465,11 @@ OpticalDrive::PioneerQualityFallbackResult OpticalDrive::RunPioneerVendorQuality
 	result.pioneerE22AvgPerSecond = qc.avgPioneerE22PerSecond;
 	result.pioneerE22Peak = qc.maxPioneerE22PerSecond;
 	result.pioneerE22Rating = qc.pioneerE22Rating;
+	// Carry the sustained-level statistics and scan-speed confidence across, so
+	// the BLER-shaped report reaches the same verdict as the Q-Check report it
+	// was derived from instead of re-deriving tiers from the raw peaks.
+	result.peaks = qc.peaks;
+	result.archivalC1Rating = qc.archivalC1Rating;
 	result.pioneerCdCheckRun = qc.pioneerCdCheckRun;
 	result.pioneerCdCheckC1Frames = qc.pioneerCdCheckC1Frames;
 	result.pioneerCdCheckC2Bytes = qc.pioneerCdCheckC2Bytes;
