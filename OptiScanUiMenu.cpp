@@ -1,4 +1,4 @@
-// OptiScanUiMenu.cpp - Operations menu construction.
+﻿// OptiScanUiMenu.cpp - Operations menu construction.
 
 #include "framework.h"
 #include "OptiScanUiInternal.h"
@@ -76,15 +76,15 @@ void BuildOperationsMenu(HWND hWnd)
     if (!bar) return;
 
     struct Category { const wchar_t* name; int first; int last; };
-    // Ranges are button indices (0-based). Clear (33) and Exit (34) are left
+    // Ranges are button indices (0-based). Clear (34) and Exit (35) are left
     // out: Exit lives in the File menu, Clear in the View menu, and both
     // remain reachable via Tab.
     static const Category categories[] = {
-        { L"&Ripping",      0,  4  },
-        { L"Disc &Quality", 5,  11 },
-        { L"Disc I&nfo",    12, 17 },
-        { L"Dri&ve",        18, 24 },
-        { L"&Utility",      25, 32 },
+        { L"&Ripping",      0,  5  },
+        { L"Disc &Quality", 6,  12 },
+        { L"Disc I&nfo",    13, 18 },
+        { L"Dri&ve",        19, 25 },
+        { L"&Utility",      26, 33 },
     };
 
     HMENU operations = CreatePopupMenu();

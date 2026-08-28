@@ -55,6 +55,16 @@ namespace GuiInput {
     std::wstring PromptForFolder(const wchar_t* title,
                                  const std::wstring& initialDir = std::wstring());
 
+    // Native Windows file-open dialog (IFileDialog). Returns the selected path
+    // on OK, empty string on Cancel/close. `filterName`/`filterSpec` seed the
+    // first named filter (e.g. L"CUE sheets", L"*.cue"); an "All files" entry
+    // is always appended. `initialDir` (if non-empty and existing) is shown as
+    // the starting folder.
+    std::wstring PromptForFile(const wchar_t* title,
+                               const wchar_t* filterName,
+                               const wchar_t* filterSpec,
+                               const std::wstring& initialDir = std::wstring());
+
     // Re-seed the prompt-dialog colours from the active theme and drop cached
     // brushes so the next prompt is drawn in the new theme.
     void ApplyTheme();

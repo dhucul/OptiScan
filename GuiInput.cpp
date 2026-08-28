@@ -581,6 +581,70 @@ namespace GuiInput {
         });
     }
 
+    std::wstring PromptForFile(const wchar_t* title,
+                               const wchar_t* filterName,
+                               const wchar_t* filterSpec,
+                               const std::wstring& initialDir) {
+        return RunOnOwnerThread([&]() {
+        std::wstring result;
+
+        HRESULT hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        bool needUninit = SUCCEEDED(hrInit);
+
+        IFileOpenDialog* pDialog = nullptr;
+        HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                      IID_IFileOpenDialog, reinterpret_cast<void**>(&pDialog));
+        if (SUCCEEDED(hr) && pDialog) {
+            DWORD opts = 0;
+            pDialog->GetOptions(&opts);
+            pDialog->SetOptions(opts | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM);
+            if (title) pDialog->SetTitle(title);
+
+            // "All files" is always offered as a second entry: a cue sheet the
+            // user saved with a different extension is still worth opening.
+            const COMDLG_FILTERSPEC specs[] = {
+                { filterName ? filterName : L"Supported files",
+                  filterSpec ? filterSpec : L"*.*" },
+                { L"All files", L"*.*" },
+            };
+            pDialog->SetFileTypes(ARRAYSIZE(specs), specs);
+            // Only a concrete extension is meaningful as the default; a
+            // wildcard spec like "*.*" would otherwise set it to "*".
+            if (filterSpec && filterSpec[0] == L'*' && filterSpec[1] == L'.' &&
+                filterSpec[2] && filterSpec[2] != L'*')
+                pDialog->SetDefaultExtension(filterSpec + 2);
+
+            if (!initialDir.empty()) {
+                IShellItem* pStart = nullptr;
+                if (SUCCEEDED(SHCreateItemFromParsingName(initialDir.c_str(), nullptr,
+                                                         IID_IShellItem,
+                                                         reinterpret_cast<void**>(&pStart)))
+                    && pStart) {
+                    pDialog->SetFolder(pStart);
+                    pStart->Release();
+                }
+            }
+
+            hr = pDialog->Show(ModalOwnerWindow());
+            if (SUCCEEDED(hr)) {
+                IShellItem* pItem = nullptr;
+                if (SUCCEEDED(pDialog->GetResult(&pItem)) && pItem) {
+                    PWSTR pPath = nullptr;
+                    if (SUCCEEDED(pItem->GetDisplayName(SIGDN_FILESYSPATH, &pPath)) && pPath) {
+                        result = pPath;
+                        CoTaskMemFree(pPath);
+                    }
+                    pItem->Release();
+                }
+            }
+            pDialog->Release();
+        }
+
+        if (needUninit) CoUninitialize();
+        return result;
+        });
+    }
+
     void WaitForKey(const char* message) {
         std::wstring wMsg = ToWide(message ? message : "Continue?");
         RunOnOwnerThread([&]() {

@@ -85,6 +85,7 @@
     <ClInclude Include="AccessibleAnnounce.h" />
     <ClInclude Include="AccurateRip.h" />
     <ClInclude Include="AnalysisTypes.h" />
+    <ClInclude Include="AudioFileSource.h" />
     <ClInclude Include="OpticalDrive.h" />
     <ClInclude Include="OptiScan.h" />
     <ClInclude Include="OptiScanUi.h" />
@@ -101,6 +102,7 @@
     <ClInclude Include="ConsoleSymbols.h" />
     <ClInclude Include="Constants.h" />
     <ClInclude Include="CopyWorkflow.h" />
+    <ClInclude Include="CueSheetImport.h" />
     <ClInclude Include="DiscTypes.h" />
     <ClInclude Include="Drive.h" />
     <ClInclude Include="DriveOffsetDatabase.h" />
@@ -140,11 +142,13 @@
     <ClInclude Include="TrackRipWorkflow.h" />
     <ClInclude Include="UpdateChecker.h" />
     <ClInclude Include="WriteDiscInternal.h" />
+    <ClInclude Include="WriteFromCueWorkflow.h" />
     <ClInclude Include="WriteTracksWorkflow.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="AccessibleAnnounce.cpp" />
     <ClCompile Include="AccurateRip.cpp" />
+    <ClCompile Include="AudioFileSource.cpp" />
     <ClCompile Include="OpticalDrive.cpp" />
     <ClCompile Include="OpticalDrive_AudioAnalysis.cpp" />
     <ClCompile Include="OpticalDrive_BasicReading.cpp" />
@@ -192,6 +196,7 @@
     <ClCompile Include="OptiScanUiPaint.cpp" />
     <ClCompile Include="OptiScanWorkflowHost.cpp" />
     <ClCompile Include="CopyWorkflow.cpp" />
+    <ClCompile Include="CueSheetImport.cpp" />
     <ClCompile Include="Drive.cpp" />
     <ClCompile Include="DriveCharacterization.cpp" />
     <ClCompile Include="DriveOffsetDatabase.cpp" />
@@ -229,6 +234,7 @@
     <ClCompile Include="ScsiDrive.Recommendations.cpp" />
     <ClCompile Include="TrackRipWorkflow.cpp" />
     <ClCompile Include="UpdateChecker.cpp" />
+    <ClCompile Include="WriteFromCueWorkflow.cpp" />
     <ClCompile Include="WriteTracksWorkflow.cpp" />
   </ItemGroup>
   <ItemGroup>

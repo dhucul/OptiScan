@@ -1,4 +1,4 @@
-#include "MainMenu.h"
+﻿#include "MainMenu.h"
 #include "AccurateRip.h"
 #include "CopyWorkflow.h"
 #include "Drive.h"
@@ -14,6 +14,7 @@
 #include "RecoveryRipWorkflow.h"
 #include "TrackRipWorkflow.h"
 #include "UpdateChecker.h"
+#include "WriteFromCueWorkflow.h"
 #include "WriteTracksWorkflow.h"
 #include <algorithm>
 #include <iostream>
@@ -148,6 +149,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 	auto requiresTOC = [](int operation) {
 		switch (operation) {
 		case 3: case 18: case 23: case 25: case 26: case 27: case 31:
+		case 33:
 			return false;
 		default:
 			return true;
@@ -227,6 +229,24 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 				disc = DiscInfo{};
 				hasTOC = false;
 			}
+			break;
+		}
+
+			// ── 33. Write disc from CUE sheet + audio files ─────────────
+			// Stable op id 33, surfaced as GUI button index 4 / display 5 via
+			// ButtonToMenuChoice. Numbered past the existing cases so the
+			// batch op ids 1..32 kept their meanings when this was inserted
+			// ahead of them in the menu.
+		case 33:
+		{
+			bool completed = false;
+			RunWriteFromCueWorkflow(copier, workDir, audioDrive, &completed);
+			if (!completed) dispatchStatus = 1;
+			// The workflow may switch drives or replace/erase the mounted
+			// medium. Never leave a source TOC associated with the resulting
+			// burner handle.
+			disc = DiscInfo{};
+			hasTOC = false;
 			break;
 		}
 

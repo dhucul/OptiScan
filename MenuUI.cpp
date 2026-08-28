@@ -93,7 +93,32 @@ void PrintHelpMenu() {
 		"     5. Choose write speed; the burn uses the standard write pipeline.",
 		"Re-burning a CD from your ripped tracks while preserving its track gaps." });
 
-	PrintEntry({ "5. Recovery Rip (Drive-Independent)",
+	PrintEntry({ "5. Write Disc from CUE Sheet + Audio Files",
+		"Burns an audio CD from a CUE sheet and the WAV/FLAC files it references.\n"
+		"   No source disc is read at any point - the track layout, gap durations,\n"
+		"   CD-Text and ISRCs all come from the CUE itself.\n"
+		"\n"
+		"   Both CUE layouts are accepted:\n"
+		"     - one audio file per track (EAC/XLD style), where each INDEX time is\n"
+		"       relative to its own file; and\n"
+		"     - a single large image split into tracks by INDEX offsets.\n"
+		"\n"
+		"   All three EAC gap styles work unchanged. Gap audio is preserved whether\n"
+		"   the CUE places it at the tail of the previous track's file or the head\n"
+		"   of the next one, and PREGAP commands generate real silence.\n"
+		"\n"
+		"   FLAC inputs are decoded via flac.exe on the system PATH. CUE sheets\n"
+		"   written in ANSI or UTF-16 (as EAC does by default) are read correctly.\n"
+		"\n"
+		"   Write-offset compensation is offered so the burned disc verifies against\n"
+		"   AccurateRip; the burner's offset comes from the AccurateRip database, so\n"
+		"   no disc read is needed to suggest it.\n"
+		"\n"
+		"   The resolved track table is shown before any disc is touched, so a CUE\n"
+		"   that disagrees with its audio files can never cost you a blank.",
+		"Burning a CD from a downloaded or archived rip without the original disc." });
+
+	PrintEntry({ "6. Recovery Rip (Drive-Independent)",
 		"Rips the disc with a recovery engine that rebuilds hard sectors from the\n"
 		"   agreement of many re-reads instead of trusting the drive's C2. Each\n"
 		"   problem sector is read repeatedly; the passes are aligned to defeat\n"
@@ -121,7 +146,7 @@ void PrintHelpMenu() {
 	// ═════════════════════════════════════════════════════════════════════
 	PrintSection("Disc Quality");
 
-	PrintEntry({ "6. Quality Scan (Hardware Error Graphs)",
+	PrintEntry({ "7. Quality Scan (Hardware Error Graphs)",
 		"Performs a hardware-driven CIRC quality measurement: the drive enters a\n"
 		"   dedicated scan mode and reports backend-specific counters per time\n"
 		"   slice without transferring audio data. Plextor/LiteOn report C1, C2,\n"
@@ -141,7 +166,7 @@ void PrintHelpMenu() {
 		"   not Q-Check; use option 8 (BLER Scan) on those instead.",
 		"Hardware quality measurement with backend-accurate counter semantics." });
 
-	PrintEntry({ "7. C2 Error Scan",
+	PrintEntry({ "8. C2 Error Scan",
 		"Performs a disc quality scan using the drive's C2 error reporting capability.\n"
 		"   Auto-detects best C2 mode: error pointers (standard MMC), error block,\n"
 		"   or Plextor vendor D8 commands when available.\n"
@@ -153,7 +178,7 @@ void PrintHelpMenu() {
 		"   checks before ripping or detailed analysis of damaged discs.",
 		"Quick disc health assessment or detailed error analysis before ripping." });
 
-	PrintEntry({ "8. BLER Scan (Detailed)",
+	PrintEntry({ "9. BLER Scan (Detailed)",
 		"Measures Block Error Rate - the frequency of raw errors before correction.\n"
 		"   Provides per-track statistics, error clustering analysis, zone distribution,\n"
 		"   and a text-based error graph across the disc surface.\n"
@@ -166,24 +191,24 @@ void PrintHelpMenu() {
 		"   Red Book standard: average BLER should be < 220 errors/second.",
 		"Professional-grade disc quality analysis with C1/C2 breakdown." });
 
-	PrintEntry({ "9. Disc Rot Detection",
+	PrintEntry({ "10. Disc Rot Detection",
 		"Analyzes error patterns to detect physical degradation (disc rot/bronzing).\n"
 		"   Checks for characteristic edge deterioration and oxidation patterns.",
 		"Evaluating older discs or checking storage conditions." });
 
-	PrintEntry({ "10. Generate Surface Map",
+	PrintEntry({ "11. Generate Surface Map",
 		"Creates a visual representation of the entire disc surface quality.\n"
 		"   Shows error density patterns, scratch locations, and problem areas.\n"
 		"   Outputs a text file with a grid of symbols indicating sector health.",
 		"Visual documentation of disc condition or identifying damaged regions." });
 
-	PrintEntry({ "11. Multi-Pass Verification",
+	PrintEntry({ "12. Multi-Pass Verification",
 		"Reads the disc multiple times (2-10 passes) and compares results.\n"
 		"   Inconsistent reads indicate marginal sectors or drive issues.\n"
 		"   Sectors that differ between passes are flagged as unreliable.",
 		"Maximum confidence in rip accuracy." });
 
-	PrintEntry({ "12. Compare Disc CRCs (Original vs. Copy)",
+	PrintEntry({ "13. Compare Disc CRCs (Original vs. Copy)",
 		"Performs a full read of two discs (original then copy) and compares\n"
 		"   CRC-32 checksums for every audio track. The tool reads the first\n"
 		"   disc, ejects it, waits for the second disc, then reads and compares\n"
@@ -204,14 +229,14 @@ void PrintHelpMenu() {
 	// ═════════════════════════════════════════════════════════════════════
 	PrintSection("Disc Info");
 
-	PrintEntry({ "13. Audio Content Analysis",
+	PrintEntry({ "14. Audio Content Analysis",
 		"Analyzes audio characteristics: silence detection, clipping, DC offset,\n"
 		"   and per-track RMS/peak levels.\n"
 		"   (Pre-emphasis is verified separately by the Subchannel Integrity Check,\n"
 		"   option 16, from the Q control field.)",
 		"Understanding the audio mastering of the disc." });
 
-	PrintEntry({ "14. Disc Fingerprint (CDDB/MusicBrainz/AccurateRip IDs)",
+	PrintEntry({ "15. Disc Fingerprint (CDDB/MusicBrainz/AccurateRip IDs)",
 		"Generates unique disc identifiers for online database lookups:\n"
 		"   - CDDB/FreeDB ID for metadata lookup\n"
 		"   - MusicBrainz Disc ID for accurate metadata matching\n"
@@ -220,13 +245,13 @@ void PrintHelpMenu() {
 		"   Results are saved to disc_fingerprint.txt.",
 		"Looking up album metadata or verifying disc identity." });
 
-	PrintEntry({ "15. Lead Area Check",
+	PrintEntry({ "16. Lead Area Check",
 		"Examines lead-in and lead-out areas for hidden data or damage.\n"
 		"   These areas contain TOC data and are critical for disc recognition.\n"
 		"   Can reveal hidden track zero audio (HTOA) or pre-gap content.",
 		"Diagnosing discs that fail to load or have TOC issues." });
 
-	PrintEntry({ "16. Subchannel Integrity Check",
+	PrintEntry({ "17. Subchannel Integrity Check",
 		"Verifies the integrity of subchannel data (Q-channel timing, etc.).\n"
 		"   Subchannel errors can cause incorrect track indexing or timing issues.\n"
 		"   Reports total error count across all sectors, then cross-checks the\n"
@@ -235,7 +260,7 @@ void PrintHelpMenu() {
 		"Diagnosing timing/indexing issues, verifying subchannel extraction, or\n"
 		"confirming whether a track needs de-emphasis for accurate audio." });
 
-	PrintEntry({ "17. Verify Subchannel Burn Status",
+	PrintEntry({ "18. Verify Subchannel Burn Status",
 		"Samples sectors across the disc and reads raw subchannel data to determine\n"
 		"   whether subchannel information was actually mastered/burned onto the disc.\n"
 		"   Checks Q-channel CRC validity, P-channel pause/play state, R-W channel\n"
@@ -245,7 +270,7 @@ void PrintHelpMenu() {
 		"   or may not, depending on the burning software and settings used.",
 		"Deciding if subchannel extraction is useful before ripping, or identifying burned copies vs. originals." });
 
-	PrintEntry({ "18. Copy-Protection Check",
+	PrintEntry({ "19. Copy-Protection Check",
 		"Scans the disc for common audio CD copy-protection mechanisms.\n"
 		"   Performs 8 heuristic checks:\n"
 		"   - Illegal / non-standard TOC entries\n"
@@ -267,7 +292,7 @@ void PrintHelpMenu() {
 	// ═════════════════════════════════════════════════════════════════════
 	PrintSection("Drive");
 
-	PrintEntry({ "19. Drive Capabilities & Characterization",
+	PrintEntry({ "20. Drive Capabilities & Characterization",
 		"Detects and displays your CD/DVD drive's hardware capabilities.\n"
 		"   Shows support for: C2 errors, accurate stream, CD-TEXT, subchannel.\n"
 		"   Also displays: read/write speeds, buffer size, overread capability.\n"
@@ -280,39 +305,39 @@ void PrintHelpMenu() {
 		"   and reused by all applicable rip and scan menu items.",
 		"Checking if your drive is suitable for accurate ripping." });
 
-	PrintEntry({ "20. Drive Offset Detection",
+	PrintEntry({ "21. Drive Offset Detection",
 		"Automatically detects your CD drive's read offset using AccurateRip database.\n"
 		"   Offset correction ensures sample-accurate rips that match the original master.\n"
 		"   Displays the detected offset in samples along with a confidence percentage.",
 		"Configuring your drive for accurate ripping." });
 
-	PrintEntry({ "21. C2 Validation Test",
+	PrintEntry({ "22. C2 Validation Test",
 		"Tests the reliability of your drive's C2 error reporting at different speeds.\n"
 		"   Some drives report false C2 errors at high speeds. This test verifies accuracy\n"
 		"   by comparing C2 results at slow and fast speeds for consistency.\n"
 		"   Tests up to 3 sectors spread across inner, middle, and outer disc regions.",
 		"Determining if your drive's C2 detection is trustworthy before scanning." });
 
-	PrintEntry({ "22. Speed Comparison Test",
+	PrintEntry({ "23. Speed Comparison Test",
 		"Tests read performance at multiple speeds to find optimal ripping speed.\n"
 		"   Slower speeds often yield better results on damaged discs.\n"
 		"   Compares C2 error counts at each speed to identify the best trade-off.",
 		"Determining the best speed for problematic discs." });
 
-	PrintEntry({ "23. Seek Time Analysis",
+	PrintEntry({ "24. Seek Time Analysis",
 		"Measures drive seek performance across the disc surface.\n"
 		"   Slow seeks may indicate mechanical issues or disc damage.\n"
 		"   Tests seek latency at various positions from inner to outer edge.",
 		"Diagnosing drive performance or disc readability issues." });
 
-	PrintEntry({ "24. Chipset Identification",
+	PrintEntry({ "25. Chipset Identification",
 		"Identifies the internal chipset / controller used by your CD/DVD drive.\n"
 		"   Displays chipset vendor, model, and firmware-level details when available.\n"
 		"   Useful for determining hardware-level capabilities not exposed via standard\n"
 		"   MMC feature queries.",
 		"Identifying drive hardware for compatibility or capability research." });
 
-	PrintEntry({ "25. Disc Balance Check",
+	PrintEntry({ "26. Disc Balance Check",
 		"Detects disc wobble or eccentricity by reading sample sectors at increasing\n"
 		"   speeds (4x through 40x) and measuring how C2 errors change.\n"
 		"\n"
@@ -328,22 +353,22 @@ void PrintHelpMenu() {
 	// ═════════════════════════════════════════════════════════════════════
 	PrintSection("Utility");
 
-	PrintEntry({ "26. Rescan Disc",
+	PrintEntry({ "27. Rescan Disc",
 		"Re-scans drives and reloads disc metadata (TOC, CD-TEXT, ISRC, AccurateRip).\n"
 		"   Automatically detects if the drive letter changed and re-opens the handle.\n"
 		"   Supports switching between multiple drives if more than one is present.",
 		"Use after swapping discs without restarting the program." });
 
-	PrintEntry({ "27. Check for Updates",
+	PrintEntry({ "28. Check for Updates",
 		"Checks for a newer version of the tool online.\n"
 		"   Compares the running version against the latest published release.",
 		"Keeping the tool up to date." });
 
-	PrintEntry({ "28. Help (Test Descriptions)",
+	PrintEntry({ "29. Help (Test Descriptions)",
 		"Displays this help screen with detailed descriptions of each operation.",
 		"Understanding the purpose and details of each operation." });
 
-	PrintEntry({ "29. Pioneer CD Check (Audio Quality)",
+	PrintEntry({ "30. Pioneer CD Check (Audio Quality)",
 		"Pioneer-only hardware audio-quality measurement. The drive scans the\n"
 		"   audio range internally using WRITE/READ BUFFER 0xE6 at offset\n"
 		"   0x300000. Quick mode samples every 0.05 mm of disc radius; Full mode\n"
@@ -361,7 +386,7 @@ void PrintHelpMenu() {
 		"   unsupported or incomplete measurements explicitly unmeasured.",
 		"Authoritative quality assessment of an audio CD on Pioneer drives." });
 
-	PrintEntry({ "30. Jitter / Beta Scan (LiteOn)",
+	PrintEntry({ "31. Jitter / Beta Scan (LiteOn)",
 		"Hardware-driven physical-layer scan using the LiteOn/MediaTek vendor\n"
 		"   command 0xDF/0x1B.  Reports per-time-slice jitter (EFM pit-timing\n"
 		"   variation) and beta (pit/land asymmetry, ~0 = ideal).\n"
@@ -375,7 +400,7 @@ void PrintHelpMenu() {
 		"   Output is a CSV log of (lba, jitter, beta) plus a summary report.",
 		"Pressing-quality diagnostics and early-warning disc/drive health checks." });
 
-	PrintEntry({ "31. Erase CD-RW (Rewritable)",
+	PrintEntry({ "32. Erase CD-RW (Rewritable)",
 		"Blanks a rewritable (CD-RW) disc so it can be written again. No TOC\n"
 		"   pre-scan is performed - the disc's current contents are erased, so\n"
 		"   they don't need to be read first, even if the disc is full.\n"
@@ -390,31 +415,31 @@ void PrintHelpMenu() {
 		"   A final confirmation is required before anything is erased.",
 		"Reusing a CD-RW, or fully wiping one before disposal." });
 
-	PrintEntry({ "32. FE/TE Servo Scan",
+	PrintEntry({ "33. FE/TE Servo Scan",
 		"Measures focus-error and tracking-error servo signals across the disc.\n"
 		"   Requires a compatible LiteOn drive and writes a diagnostic scan log.\n"
 		"   Cancel remains available if the drive stalls or the media is unreadable.",
 		"Diagnosing tracking, focus, or mechanical readability problems." });
 
-	PrintEntry({ "33. Batch Run (multiple ops, 1 prescan)",
+	PrintEntry({ "34. Batch Run (multiple ops, 1 prescan)",
 		"Runs several menu items in succession with a single shared pre-scan\n"
 		"   (TOC + CD-Text + ISRC) at the start, so the disc only spins up once\n"
 		"   for the whole batch.\n"
 		"\n"
 		"   Prompts for a space- or comma-separated list of menu numbers in the\n"
-		"   supported operation range (example: \"6 7 8 9\"). Duplicates are ignored and the\n"
+		"   supported operation range (example: \"7 8 9 10\"). Duplicates are ignored and the\n"
 		"   numbers are run in the order given. Use Clear output (View menu, or\n"
 		"   the Clear info box button) during the batch to cancel at the next\n"
 		"   operation boundary.\n"
 		"\n"
 		"   Each step still prompts for its own per-op choices (output folder,\n"
 		"   speed, etc.) - the batch saves the pre-scan time, not the per-op\n"
-		"   interaction. Avoid mixing Write Disc / Write Tracks (options 3/4)\n"
+		"   interaction. Avoid mixing the write operations (options 3, 4 and 5)\n"
 		"   with other ops in one batch, since those workflows may change the\n"
 		"   active drive partway through.",
 		"Running several quality scans or info readouts back-to-back on one disc." });
 
-	PrintEntry({ "34. Clear Info Box",
+	PrintEntry({ "35. Clear Info Box",
 		"Clears the output/info pane in the GUI.\n"
 		"   Does not affect the disc, drive, or any in-progress operation -\n"
 		"   only the on-screen log buffer is wiped. While a workflow is running\n"
@@ -422,7 +447,7 @@ void PrintHelpMenu() {
 		"   to stop at the next checkpoint.",
 		"Tidying the output area between operations, or cancelling a running workflow." });
 
-	PrintEntry({ "35. Exit",
+	PrintEntry({ "36. Exit",
 		"Exits the program. If a workflow is running, it is asked to cancel first.",
 		"Closing the tool when done." });
 

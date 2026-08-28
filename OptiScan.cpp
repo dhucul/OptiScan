@@ -448,7 +448,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 // were inserted, kClearButtonIndex shifted but the menu item did not -- leaving
 // "Clear output" wired to Batch run. Pin it so the next insertion breaks the
 // build instead of the menu.
-static_assert(IDC_INFO_BUTTON34 - IDC_INFO_BUTTON1 == kClearButtonIndex,
+static_assert(IDC_INFO_BUTTON35 - IDC_INFO_BUTTON1 == kClearButtonIndex,
               "View > Clear output in OptiScan.rc must post the Clear command's id");
 
 static void CheckThemeMenuRadio(HWND hWnd, ThemeId id)
@@ -648,6 +648,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             case IDC_INFO_BUTTON33:
             case IDC_INFO_BUTTON34:
             case IDC_INFO_BUTTON35:
+            case IDC_INFO_BUTTON36:
                 if (HIWORD(wParam) == BN_CLICKED)
                 {
                     // The screen reader already announces the button press, so
@@ -700,7 +701,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                     std::string raw = GuiInput::PromptString(
                                         "Batch run",
                                         "Enter menu numbers to run, separated by spaces or commas\n"
-                                        "(valid range: 1-32; duplicates ignored; example: 6 7 8 9)",
+                                        "(valid range: 1-33; duplicates ignored; example: 7 8 9 10)",
                                         std::string(), &ok);
                                     if (!ok) {
                                         Console::Info("Batch cancelled.\n");
@@ -984,7 +985,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                         // Write disc (3) and Write tracks (4) are the exception:
                                         // they read the source TOC on the current handle and then
                                         // run their own SelectWriterDrive picker internally, so
-                                        // they keep the same-handle Prescan().
+                                        // they keep the same-handle Prescan(). Write disc from CUE
+                                        // (33) never gets here at all -- its label carries no "*",
+                                        // so needsPrescan is false and no disc is touched.
                                         if (needsPrescan && !freshlyScanned) {
                                             if (choice == 3 || choice == 4) {
                                                 Prescan();

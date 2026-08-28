@@ -1,4 +1,4 @@
-// OptiScanWorkflowHost.cpp - drive/session state and GUI workflow helpers.
+﻿// OptiScanWorkflowHost.cpp - drive/session state and GUI workflow helpers.
 
 #include "framework.h"
 #include "OptiScanWorkflowHost.h"
@@ -139,8 +139,11 @@ bool ButtonNeedsAudioDisc(int btnIndex) {
     // Buttons that don't touch the drive at all (handled by ButtonNeedsDrive)
     // also don't need an audio disc.
     if (btnIndex == 2) return false;
-    if (btnIndex == 26 || btnIndex == 27) return false;  // Check updates / Help
-    if (btnIndex == 30) return false;                    // Erase CD-RW (any RW disc, may be full)
+    // Button index 4 == op id 33 == Write disc from CUE sheet. Its whole point
+    // is that no source disc is involved, so waiting for one would be absurd.
+    if (btnIndex == 4) return false;
+    if (btnIndex == 27 || btnIndex == 28) return false;  // Check updates / Help
+    if (btnIndex == 31) return false;                    // Erase CD-RW (any RW disc, may be full)
     return true;
 }
 
@@ -148,16 +151,16 @@ bool ButtonNeedsAudioDisc(int btnIndex) {
 // — they just hit the network / print text. Skip EnsureDriveOpen entirely so
 // the user isn't forced to insert a disc to read the help screen.
 bool ButtonNeedsDrive(int btnIndex) {
-    // Button index 26 == Check for updates (op id 26).
-    // Button index 27 == Help (op id 27).
-    return btnIndex != 26 && btnIndex != 27;
+    // Button index 27 == Check for updates (op id 26).
+    // Button index 28 == Help (op id 27).
+    return btnIndex != 27 && btnIndex != 28;
 }
 
 // Check-for-updates (menu 26) and Help (menu 27) are quick, drive-free
 // operations — there's no need to grey out the rest of the menu while they
 // run. The worker's IsRunning() guard still prevents overlapping workflows.
 bool ButtonDisablesMenu(int btnIndex) {
-    return btnIndex != 26 && btnIndex != 27;  // Check updates / Help
+    return btnIndex != 27 && btnIndex != 28;  // Check updates / Help
 }
 
 // A trailing "*" in CommandLabels[] marks a workflow that depends on the source
@@ -308,10 +311,11 @@ bool ReselectSourceDriveIfMultiple() {
 // Returns -1 if no dispatch is required (Batch/Clear/Exit are handled separately).
 int ButtonToMenuChoice(int btnIndex) {
     if (btnIndex >= 0 && btnIndex <= 3) return btnIndex + 1;  // Copy/Rip/Write/WriteTracks → 1..4
-    if (btnIndex == 4) return 30;                             // Recovery rip → op id 30
-    if (btnIndex >= 5 && btnIndex <= 29) return btnIndex;     // shifted display, original op id
-    if (btnIndex == 30) return 31;                            // Erase CD-RW → op id 31
-    if (btnIndex == 31) return 32;                            // FE/TE servo scan → op id 32
+    if (btnIndex == 4) return 33;                             // Write disc from CUE → op id 33
+    if (btnIndex == 5) return 30;                             // Recovery rip → op id 30
+    if (btnIndex >= 6 && btnIndex <= 30) return btnIndex - 1; // shifted display, original op id
+    if (btnIndex == 31) return 31;                            // Erase CD-RW → op id 31
+    if (btnIndex == 32) return 32;                            // FE/TE servo scan → op id 32
     return -1;                                                // Batch/Clear/Exit
 }
 
@@ -325,7 +329,7 @@ std::vector<int> ParseBatchChoices(const std::string& input) {
         if (token.empty()) return;
         try {
             int v = std::stoi(token);
-            if (v >= 1 && v <= 32 &&
+            if (v >= 1 && v <= 33 &&
                 std::find(out.begin(), out.end(), v) == out.end()) {
                 out.push_back(v);
             }

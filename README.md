@@ -6,7 +6,7 @@ A Windows **GUI application** for high-quality audio CD ripping, writing, and ad
 
 OptiScan reads and writes audio CDs at the raw sector level using SCSI/MMC commands and provides multiple quality scanning modes to assess disc health before, during, or after extraction.
 
-**[Download OptiScan 3.32](https://github.com/dhucul/OptiScan/releases/latest)** — choose `OptiScan-3.32-Setup.exe`, the 64-bit installer for Windows 10 or later. It installs the Microsoft Visual C++ 2015–2022 runtime when needed, so setup requires administrator rights.
+**[Download OptiScan 3.33](https://github.com/dhucul/OptiScan/releases/latest)** — choose `OptiScan-3.33-Setup.exe`, the 64-bit installer for Windows 10 or later. It installs the Microsoft Visual C++ 2015–2022 runtime when needed, so setup requires administrator rights.
 
 > [!IMPORTANT]
 > **Drive compatibility is not universal.** OptiScan relies on low-level SCSI/MMC and vendor-specific optical-drive commands, so support depends on the exact drive model, firmware, chipset, USB bridge, and media type. A drive may work for normal ripping but still fail features such as pregap detection, subchannel reading/writing, CD-Text writing, C2/C1 reporting, or hardware quality scans.
@@ -49,6 +49,7 @@ The original command-line workflow has been ported to a native Win32 GUI: every 
 ### Disc Writing
 - **Write audio CDs** from `.bin` / `.cue` / `.sub` file sets
 - **Write tracks with source-disc pregaps** — burn a new disc from individual ripped `.wav` / `.flac` files while preserving the track-to-track gap durations of the disc currently in the drive
+- **Write from a CUE sheet + audio files** — burn a CD from a CUE sheet and the `.wav`/`.flac` files it references, with no source disc involved. Accepts both one-file-per-track sheets (all three EAC gap styles) and single-image sheets split by `INDEX` offsets; `PREGAP` commands generate real silence, and CD-Text, ISRCs and the catalogue number carry through
 - **Automatic write mode negotiation** — tries Raw DAO with subchannel, falls back to SAO
 - **Subchannel writing** — writes packed or raw P-W subchannel data from `.sub` files when the drive supports it
 - **CD-Text writing** — builds and sends CD-Text packs (Title, Performer) from CUE sheet metadata
@@ -108,37 +109,38 @@ The table below lists every operation with the number shown on its card. That nu
 | 2 | Rip & Copy | Rip tracks (WAV/FLAC) — *hero card on Overview* |
 | 3 | Rip & Copy | Write disc (.bin/.cue/.sub files) |
 | 4 | Rip & Copy | Write tracks to disc using current disc's pregaps |
-| 5 | Rip & Copy | Recovery rip (drive-independent) |
-| 6 | Disc Quality | Quality scan (hardware error graphs) — *hero card on Overview* |
-| 7 | Disc Quality | C2 error scan |
-| 8 | Disc Quality | BLER scan (detailed) |
-| 9 | Disc Quality | Disc rot detection |
-| 10 | Disc Quality | Generate surface map |
-| 11 | Disc Quality | Multi-pass verification |
-| 12 | Disc Quality | Compare disc CRCs (original vs. copy) |
-| 13 | Analysis | Audio content analysis |
-| 14 | Analysis | Disc fingerprint (CDDB/MusicBrainz/AccurateRip IDs) |
-| 15 | Analysis | Lead area check |
-| 16 | Analysis | Subchannel integrity check |
-| 17 | Analysis | Verify subchannel burn status |
-| 18 | Analysis | Copy-protection check |
-| 19 | Drive Tools | Drive capabilities & characterization |
-| 20 | Drive Tools | Drive offset detection |
-| 21 | Drive Tools | C2 validation test |
-| 22 | Drive Tools | Speed comparison test |
-| 23 | Drive Tools | Seek time analysis |
-| 24 | Drive Tools | Chipset identification |
-| 25 | Drive Tools | Disc balance check |
-| 26 | Utilities | Rescan disc |
-| 27 | Utilities | Check for updates |
-| 28 | Utilities | Help (test descriptions) |
-| 29 | Drive Tools | Pioneer CD Check (audio quality) |
-| 30 | Drive Tools | Jitter / beta scan (LiteOn) |
-| 31 | Drive Tools | Erase CD-RW (rewritable) |
-| 32 | Drive Tools | FE/TE servo scan (experimental, LiteOn) |
-| 33 | Utilities | Batch run (multiple ops, 1 prescan) |
-| 34 | Utilities | Clear info box |
-| 35 | Utilities | Exit |
+| 5 | Rip & Copy | Write disc from CUE sheet + audio files |
+| 6 | Rip & Copy | Recovery rip (drive-independent) |
+| 7 | Disc Quality | Quality scan (hardware error graphs) — *hero card on Overview* |
+| 8 | Disc Quality | C2 error scan |
+| 9 | Disc Quality | BLER scan (detailed) |
+| 10 | Disc Quality | Disc rot detection |
+| 11 | Disc Quality | Generate surface map |
+| 12 | Disc Quality | Multi-pass verification |
+| 13 | Disc Quality | Compare disc CRCs (original vs. copy) |
+| 14 | Analysis | Audio content analysis |
+| 15 | Analysis | Disc fingerprint (CDDB/MusicBrainz/AccurateRip IDs) |
+| 16 | Analysis | Lead area check |
+| 17 | Analysis | Subchannel integrity check |
+| 18 | Analysis | Verify subchannel burn status |
+| 19 | Analysis | Copy-protection check |
+| 20 | Drive Tools | Drive capabilities & characterization |
+| 21 | Drive Tools | Drive offset detection |
+| 22 | Drive Tools | C2 validation test |
+| 23 | Drive Tools | Speed comparison test |
+| 24 | Drive Tools | Seek time analysis |
+| 25 | Drive Tools | Chipset identification |
+| 26 | Drive Tools | Disc balance check |
+| 27 | Utilities | Rescan disc |
+| 28 | Utilities | Check for updates |
+| 29 | Utilities | Help (test descriptions) |
+| 30 | Drive Tools | Pioneer CD Check (audio quality) |
+| 31 | Drive Tools | Jitter / beta scan (LiteOn) |
+| 32 | Drive Tools | Erase CD-RW (rewritable) |
+| 33 | Drive Tools | FE/TE servo scan (experimental, LiteOn) |
+| 34 | Utilities | Batch run (multiple ops, 1 prescan) |
+| 35 | Utilities | Clear info box |
+| 36 | Utilities | Exit |
 
 Operations marked with **\*** in the Operations menu use pre-gap analysis (scan range includes pregap sectors). Some cards shorten the full name to fit — the Operations menu always carries the complete wording.
 

@@ -67,6 +67,7 @@
 #define IDC_INFO_BUTTON33       1033
 #define IDC_INFO_BUTTON34       1034
 #define IDC_INFO_BUTTON35       1035
+#define IDC_INFO_BUTTON36       1036
 #define IDC_PROGRESS_TEXT       1040
 #define IDC_PROGRESS_BAR        1041
 #define IDC_ACCESSIBLE_EDIT     1042

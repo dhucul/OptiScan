@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 #  OptiScan - build Release x64 and package the Inno Setup installer.
 #
 #  Run manually:  right-click build-installer.bat > Run,  or from a terminal:
@@ -24,13 +24,27 @@ $msbuild = & $vswhere -latest -requires Microsoft.Component.MSBuild -find "MSBui
     Select-Object -First 1
 if (-not $msbuild) { throw "MSBuild not found via vswhere." }
 
-# --- Locate ISCC (Inno Setup 6): per-user install first, then Program Files --
-$iscc = @(
-    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
-    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-    "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
-) | Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not $iscc) { throw "ISCC.exe (Inno Setup 6) not found." }
+# --- Locate ISCC (Inno Setup): newest major first, per-user before machine ---
+# Enumerated rather than hard-coded to one major version: the pinned "6" list
+# silently stopped finding the compiler when Inno Setup 7 was installed.
+# Note the quoted form for the first entry: written as $env:LOCALAPPDATA +
+# "\Programs", ... the + binds against the whole comma list and folds
+# all three roots into a single string.
+$isccRoots = @("$env:LOCALAPPDATA\Programs", ${env:ProgramFiles(x86)}, $env:ProgramFiles) |
+    Where-Object { $_ -and (Test-Path $_) }
+$iscc = $isccRoots |
+    ForEach-Object { Get-ChildItem -Path $_ -Filter "Inno Setup *" -Directory -ErrorAction SilentlyContinue } |
+    ForEach-Object {
+        $exe = Join-Path $_.FullName "ISCC.exe"
+        if (Test-Path $exe) {
+            $major = 0
+            if ($_.Name -match "(\d+)$") { $major = [int]$Matches[1] }
+            [pscustomobject]@{ Path = $exe; Major = $major }
+        }
+    } |
+    Sort-Object Major -Descending |
+    Select-Object -First 1 -ExpandProperty Path
+if (-not $iscc) { throw "ISCC.exe (Inno Setup) not found in Program Files or %LOCALAPPDATA%\Programs." }
 
 Write-Host "=== Building Release | x64 ===" -ForegroundColor Cyan
 Write-Host "  MSBuild: $msbuild"

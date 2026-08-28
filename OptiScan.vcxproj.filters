@@ -34,6 +34,9 @@
     <ClInclude Include="ConsoleGraph.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="ConsoleSymbols.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Constants.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="AudioFileSource.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="CueSheetImport.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="WriteFromCueWorkflow.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="CopyWorkflow.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="DiscTypes.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Drive.h"><Filter>Header Files</Filter></ClInclude>
@@ -125,6 +128,9 @@
     <ClCompile Include="OptiScanUiMenu.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="OptiScanUiPaint.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="OptiScanWorkflowHost.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="AudioFileSource.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="CueSheetImport.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="WriteFromCueWorkflow.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="CopyWorkflow.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Drive.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="DriveCharacterization.cpp"><Filter>Source Files</Filter></ClCompile>

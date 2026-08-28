@@ -187,7 +187,7 @@ void LayoutMainControls(HWND hWnd)
     bool buttonVisible[COMMAND_BUTTON_COUNT]{};
     HWND priorFocus = GetFocus();
 
-    HDWP hdwp = BeginDeferWindowPos(40);
+    HDWP hdwp = BeginDeferWindowPos(41);
     auto move = [&](HWND h, int x, int y, int w, int hgt) {
         if (!h) return;
         for (int i = 0; i < COMMAND_BUTTON_COUNT; ++i) {
@@ -224,7 +224,7 @@ void LayoutMainControls(HWND hWnd)
             const int primaryHeight = ScalePx(170);
             const int primaryGap = ScalePx(24);
             const int primaryWidth = max(ScalePx(300), (contentWidth - (primaryGap * 2)) / 3);
-            const int primary[] = { 0, 1, 5 };
+            const int primary[] = { 0, 1, 6 };
             for (int i = 0; i < 3; ++i)
             {
                 move(hInfoButtons[primary[i]], contentLeft + i * (primaryWidth + primaryGap),
@@ -247,11 +247,11 @@ void LayoutMainControls(HWND hWnd)
                     * (buttonHeight + rowGap) - rowGap;
             };
 
-            const int ripCopy[] = { 2, 3, 4 };
-            const int discQuality[] = { 6, 7, 8, 9, 10, 11 };
-            const int analysis[] = { 12, 13, 14, 15, 16, 17 };
-            const int driveTools[] = { 18, 19, 20, 21, 22, 23, 24, 28, 29, 30, 31 };
-            const int utilities[] = { 25, 26, 27, 32, 33, 34 };
+            const int ripCopy[] = { 2, 3, 4, 5 };
+            const int discQuality[] = { 7, 8, 9, 10, 11, 12 };
+            const int analysis[] = { 13, 14, 15, 16, 17, 18 };
+            const int driveTools[] = { 19, 20, 21, 22, 23, 24, 25, 29, 30, 31, 32 };
+            const int utilities[] = { 26, 27, 28, 33, 34, 35 };
 
             int groupTitleTop = ScalePx(370);
             int groupBottom = placeGroup(ripCopy, ARRAYSIZE(ripCopy), groupTitleTop + ScalePx(40));
@@ -267,11 +267,11 @@ void LayoutMainControls(HWND hWnd)
         }
         else
         {
-            const int ripCopy[] = { 0, 1, 2, 3, 4 };
-            const int discQuality[] = { 5, 6, 7, 8, 9, 10, 11 };
-            const int analysis[] = { 12, 13, 14, 15, 16, 17 };
-            const int driveTools[] = { 18, 19, 20, 21, 22, 23, 24, 28, 29, 30, 31 };
-            const int utilities[] = { 25, 26, 27, 32, 33, 34 };
+            const int ripCopy[] = { 0, 1, 2, 3, 4, 5 };
+            const int discQuality[] = { 6, 7, 8, 9, 10, 11, 12 };
+            const int analysis[] = { 13, 14, 15, 16, 17, 18 };
+            const int driveTools[] = { 19, 20, 21, 22, 23, 24, 25, 29, 30, 31, 32 };
+            const int utilities[] = { 26, 27, 28, 33, 34, 35 };
             const int* indices = ripCopy;
             int count = ARRAYSIZE(ripCopy);
             if (navIndex == 2) { indices = discQuality; count = ARRAYSIZE(discQuality); }

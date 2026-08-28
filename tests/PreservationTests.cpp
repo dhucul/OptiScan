@@ -14,6 +14,9 @@
 #include <sstream>
 #include <string>
 
+// Defined in CueSheetImportTests.cpp; returns its own failure count.
+int RunCueSheetImportTests();
+
 namespace {
 
 int failures = 0;
@@ -900,6 +903,8 @@ int main() {
 	Check(!WritePreservationManifest(disc, missingManifest,
 		(temp / L"missing.manifest.json").wstring()),
 		"Manifest creation fails when an expected artifact is missing");
+
+	failures += RunCueSheetImportTests();
 
 	manifestInput.close();
 	std::error_code cleanupError;

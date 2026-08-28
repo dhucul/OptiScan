@@ -371,7 +371,7 @@ static void DrawUnifiedBackground(Gdiplus::Graphics& graphics, const RECT& rc)
     if (selectedNav == 0)
     {
         const wchar_t* groupNames[] = { L"Rip & Copy", L"Disc Quality", L"Analysis", L"Drive Tools", L"Utilities" };
-        const int groupCounts[] = { 3, 6, 6, 11, 6 };
+        const int groupCounts[] = { 4, 6, 6, 11, 6 };
         const int overviewColumns = 6;
         int groupTitleTop = ScalePx(370);
         const int buttonHeight = ScalePx(56);
@@ -458,7 +458,7 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
     }
 
         const bool primary = GetNavIndex() == 0 &&
-                             (commandIndex == 0 || commandIndex == 1 || commandIndex == 5);
+                             (commandIndex == 0 || commandIndex == 1 || commandIndex == 6);
         WCHAR number[8];
         LPCWSTR rawLabel = CommandLabels[commandIndex];
         SplitCommandLabel(CommandLabels[commandIndex], number, ARRAYSIZE(number), &rawLabel);
@@ -475,15 +475,16 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
         {
         case 2:  displayLabel = L"Write disc image files"; break;
         case 3:  displayLabel = L"Write tracks with current pregaps"; break;
-        case 4:  displayLabel = L"Recovery rip"; break;
-	case 5:  displayLabel = L"Quality scan (hardware errors)"; break;
-        case 11: displayLabel = L"Compare original and copy CRCs"; break;
-        case 13: displayLabel = L"Disc fingerprint IDs"; break;
-        case 16: displayLabel = L"Verify subchannel burn"; break;
-        case 28: displayLabel = L"Pioneer audio quality check"; break;
-        case 31: displayLabel = L"FE/TE servo scan (LiteOn)"; break;
-        case 32: displayLabel = L"Batch run"; break;
-        case 33: displayLabel = L"Clear output"; break;
+        case 4:  displayLabel = L"Write disc from CUE sheet"; break;
+        case 5:  displayLabel = L"Recovery rip"; break;
+        case 6:  displayLabel = L"Quality scan (hardware errors)"; break;
+        case 12: displayLabel = L"Compare original and copy CRCs"; break;
+        case 14: displayLabel = L"Disc fingerprint IDs"; break;
+        case 17: displayLabel = L"Verify subchannel burn"; break;
+        case 29: displayLabel = L"Pioneer audio quality check"; break;
+        case 32: displayLabel = L"FE/TE servo scan (LiteOn)"; break;
+        case 33: displayLabel = L"Batch run"; break;
+        case 34: displayLabel = L"Clear output"; break;
         default: break;
         }
 
@@ -541,7 +542,7 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
                                      : L"Scan the disc surface and read quality.");
             const wchar_t* primaryTitle = commandIndex == 0 ? L"Copy disc"
                 : (commandIndex == 1 ? L"Rip tracks" : L"Quality scan");
-            const wchar_t* menuNumber = commandIndex == 0 ? L"1" : (commandIndex == 1 ? L"2" : L"6");
+            const wchar_t* menuNumber = commandIndex == 0 ? L"1" : (commandIndex == 1 ? L"2" : L"7");
             Gdiplus::GraphicsPath numberBadge;
             AddRoundedRectangle(numberBadge, rc.left + ScalePx(128), rc.top + ScalePx(28),
                                 ScalePx(34), ScalePx(30), ScalePx(7));
