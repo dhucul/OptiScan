@@ -75,7 +75,7 @@ namespace Console {
         Theme::RedR = GetRValue(p.error);        Theme::RedG = GetGValue(p.error);        Theme::RedB = GetBValue(p.error);
         Theme::BorderR = GetRValue(p.graphFrame);Theme::BorderG = GetGValue(p.graphFrame);Theme::BorderB = GetBValue(p.graphFrame);
         Theme::SilverR = GetRValue(p.graphBar);  Theme::SilverG = GetGValue(p.graphBar);  Theme::SilverB = GetBValue(p.graphBar);
-        Theme::WaveR = GetRValue(p.chromeAccent);Theme::WaveG = GetGValue(p.chromeAccent);Theme::WaveB = GetBValue(p.chromeAccent);
+        Theme::WaveR = GetRValue(p.cyan);        Theme::WaveG = GetGValue(p.cyan);        Theme::WaveB = GetBValue(p.cyan);
     }
 
     // Build and write an SGR escape in a single std::cout operation so it

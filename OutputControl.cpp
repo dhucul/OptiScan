@@ -37,6 +37,7 @@ namespace {
 
     constexpr UINT_PTR kAutoScrollTimer   = 0xA5C1;
     constexpr UINT     kAutoScrollPeriodMs = 50;
+    constexpr UINT_PTR kScrollPageTimer = 0xA5C2;
 
     // Per-line colour heuristic for runs that didn't get an explicit ANSI
     // SGR colour. Deliberately narrow: only line-start prefixes count, so a
@@ -118,6 +119,10 @@ namespace {
         int totalVisualLines = 0;    // sum of all logical lines' visualLines
         int topLine = 0;             // index of first visible visual line
         bool followBottom = true;
+        bool scrollHovered = false;
+        bool scrollDragging = false;
+        int scrollDragOffset = 0;
+        int scrollPageDirection = 0;
 
         // Line-based selection. Indices into closedLines (plus optional
         // currentLine at index closedLines.size()). -1 = no selection.
@@ -135,8 +140,7 @@ namespace {
         HBITMAP backOldBitmap = nullptr;
         int cacheWidth  = 0;
         int cacheHeight = 0;
-        BYTE backgroundToneAlpha = 84;
-        BYTE backgroundGridAlpha = 22;
+        BYTE backgroundGridAlpha = 10;
     };
 
     State* GetState(HWND h) {
@@ -213,6 +217,10 @@ namespace {
         s.totalVisualLines = total;
     }
 
+    int ScrollbarWidth(const State& s) {
+        return std::max(14, MulDiv(14, GetDpiForWindow(s.hwnd), 96));
+    }
+
     void ComputeMetrics(State& s, HDC referenceDc) {
         if (!referenceDc || !s.font) return;
 
@@ -231,7 +239,7 @@ namespace {
         const int leftMargin = 18;
         const int rightMargin = 8;
         const int textWidth = std::max(1, (int)(rc.right - rc.left)
-                                          - leftMargin - rightMargin);
+                                          - leftMargin - rightMargin - ScrollbarWidth(s));
         s.maxCharsPerLine = std::max(1, textWidth / s.charWidth);
     }
 
@@ -388,11 +396,9 @@ namespace {
         // Solid themed dark surface for the log text (the procedural artwork
         // lives on the main window; the log panel stays clean for legibility).
         // A faint grid keeps a hint of texture.
-        const COLORREF backdrop = ActiveTheme().backdropTop;
-        Gdiplus::SolidBrush backdropBrush(Gdiplus::Color(255,
-            GetRValue(backdrop), GetGValue(backdrop), GetBValue(backdrop)));
-        graphics.FillRectangle(&backdropBrush, 0, 0, width, height);
-        Gdiplus::SolidBrush baseBrush(Gdiplus::Color(s.backgroundToneAlpha,
+        // Output ink is designed for outputBg. Blending the canvas into it
+        // made contrast depend on DPI and washed out Apple Light's statuses.
+        Gdiplus::SolidBrush baseBrush(Gdiplus::Color(255,
             GetRValue(PanelDark), GetGValue(PanelDark), GetBValue(PanelDark)));
         graphics.FillRectangle(&baseBrush, 0, 0, width, height);
 
@@ -431,21 +437,58 @@ namespace {
         RECT rc;
         GetClientRect(s.hwnd, &rc);
         const int viewH = std::max(1, (int)(rc.bottom - rc.top));
-        return std::max(1, viewH / std::max(1, s.lineHeight));
+        return std::max(1, (viewH - 4) / std::max(1, s.lineHeight));
+    }
+
+    struct ScrollGeometry {
+        RECT track{};
+        RECT thumb{};
+        int maxTop = 0;
+        int travel = 0;
+    };
+
+    ScrollGeometry GetScrollGeometry(const State& s) {
+        RECT rc{};
+        GetClientRect(s.hwnd, &rc);
+        ScrollGeometry g;
+        g.track = { std::max(0L, rc.right - ScrollbarWidth(s)), 4, rc.right, std::max(4L, rc.bottom - 4) };
+        const int total = VisibleLineCount(s);
+        const int page = ViewportLineCapacity(s);
+        g.maxTop = std::max(0, total - page);
+        if (!g.maxTop) return g;
+        const int height = g.track.bottom - g.track.top;
+        const int thumbHeight = std::min(height, std::max(ScrollbarWidth(s) * 2, MulDiv(height, page, total)));
+        g.travel = height - thumbHeight;
+        const int y = g.track.top + MulDiv(g.travel, std::clamp(s.topLine, 0, g.maxTop), g.maxTop);
+        g.thumb = { g.track.left + 3, y, std::max(g.track.left + 3, g.track.right - 3), y + thumbHeight };
+        return g;
     }
 
     void UpdateScrollbar(State& s) {
-        const int total = VisibleLineCount(s);
-        const int page  = ViewportLineCapacity(s);
+        const auto g = GetScrollGeometry(s);
+        InvalidateRect(s.hwnd, &g.track, FALSE);
+    }
 
-        SCROLLINFO si{};
-        si.cbSize = sizeof(si);
-        si.fMask  = SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL;
-        si.nMin   = 0;
-        si.nMax   = std::max(0, total - 1);
-        si.nPage  = (UINT)std::min(page, std::max(1, total));
-        si.nPos   = s.topLine;
-        SetScrollInfo(s.hwnd, SB_VERT, &si, TRUE);
+    void PaintScrollbar(State& s, HDC dc) {
+        const auto g = GetScrollGeometry(s);
+        RECT rc{};
+        GetClientRect(s.hwnd, &rc);
+        rc.left = g.track.left;
+        HBRUSH track = CreateSolidBrush(PanelDark);
+        FillRect(dc, &rc, track);
+        DeleteObject(track);
+        if (!g.maxTop || IsRectEmpty(&g.thumb)) return;
+        Gdiplus::Graphics graphics(dc);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        const auto& p = ActiveTheme();
+        const COLORREF color = s.scrollDragging ? p.bright : (s.scrollHovered ? p.cyan : p.dim);
+        Gdiplus::SolidBrush brush(Gdiplus::Color(255, GetRValue(color), GetGValue(color), GetBValue(color)));
+        const int width = g.thumb.right - g.thumb.left;
+        Gdiplus::GraphicsPath path;
+        path.AddArc(g.thumb.left, g.thumb.top, width, width, 180, 180);
+        path.AddArc(g.thumb.left, g.thumb.bottom - width, width, width, 0, 180);
+        path.CloseFigure();
+        graphics.FillPath(&brush, &path);
     }
 
     void ClampScroll(State& s) {
@@ -652,7 +695,8 @@ namespace {
             const COLORREF heuristic = line->heuristicColor;
 
             // Selection highlight band for this visual row.
-            if (selStart >= 0 && logicalIdx >= selStart && logicalIdx <= selEnd) {
+            const bool selected = selStart >= 0 && logicalIdx >= selStart && logicalIdx <= selEnd;
+            if (selected) {
                 RECT hl{ 0, y, width, y + s.lineHeight };
                 HBRUSH br = CreateSolidBrush(SelectionBg);
                 FillRect(paintDc, &hl, br);
@@ -684,7 +728,7 @@ namespace {
                 const int x = leftMargin + (drawStart - rowStartChar) * charWidth;
 
                 const COLORREF c = seg.isExplicit ? seg.color : heuristic;
-                SetTextColor(paintDc, c);
+                SetTextColor(paintDc, selected ? LogHeading : c);
                 DrawCellsWithFallback(paintDc, x, y, sub, subLen,
                                       charWidth, s.font,
                                       s.fallbackFonts, State::kFallbackCount);
@@ -702,6 +746,12 @@ namespace {
         }
 
         if (oldFont) SelectObject(paintDc, oldFont);
+        PaintScrollbar(s, paintDc);
+        if (GetFocus() == s.hwnd && !(SendMessageW(s.hwnd, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS)) {
+            HBRUSH focus = CreateSolidBrush(ActiveTheme().cyan);
+            FrameRect(paintDc, &rc, focus);
+            DeleteObject(focus);
+        }
 
         if (paintDc != hdc) {
             BitBlt(hdc, 0, 0, width, height, paintDc, 0, 0, SRCCOPY);
@@ -727,21 +777,14 @@ namespace {
     }
 
     void HandleVScroll(State& s, WORD code) {
-        SCROLLINFO si{};
-        si.cbSize = sizeof(si);
-        si.fMask  = SIF_ALL;
-        GetScrollInfo(s.hwnd, SB_VERT, &si);
-
         int newTop = s.topLine;
         switch (code) {
         case SB_LINEUP:        newTop -= 1;             break;
         case SB_LINEDOWN:      newTop += 1;             break;
-        case SB_PAGEUP:        newTop -= (int)si.nPage; break;
-        case SB_PAGEDOWN:      newTop += (int)si.nPage; break;
+        case SB_PAGEUP:        newTop -= ViewportLineCapacity(s); break;
+        case SB_PAGEDOWN:      newTop += ViewportLineCapacity(s); break;
         case SB_TOP:           newTop = 0;              break;
         case SB_BOTTOM:        newTop = INT_MAX;        break;
-        case SB_THUMBTRACK:
-        case SB_THUMBPOSITION: newTop = si.nTrackPos;   break;
         default: return;
         }
         ApplyTopLine(s, newTop);
@@ -885,6 +928,7 @@ namespace {
             State* s = GetState(hwnd);
             if (s) {
                 KillTimer(hwnd, kAutoScrollTimer);
+                KillTimer(hwnd, kScrollPageTimer);
                 ReleaseCaches(*s);
                 ReleaseFallbackFonts(*s);
                 delete s;
@@ -894,6 +938,11 @@ namespace {
         }
         case WM_ERASEBKGND:
             return 1;
+        case WM_SETFOCUS:
+        case WM_KILLFOCUS:
+        case WM_UPDATEUISTATE:
+            InvalidateRect(hwnd, nullptr, FALSE);
+            break;
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd, &ps);
@@ -934,6 +983,23 @@ namespace {
             if (!s) return 0;
             SetFocus(hwnd);
             const int y = GET_Y_LPARAM(lParam);
+            const auto scroll = GetScrollGeometry(*s);
+            POINT point{ GET_X_LPARAM(lParam), y };
+            if (point.x >= scroll.track.left) {
+                if (!scroll.maxTop) return 0;
+                s->followBottom = false;
+                if (PtInRect(&scroll.thumb, point)) {
+                    s->scrollDragging = true;
+                    s->scrollDragOffset = y - scroll.thumb.top;
+                } else {
+                    s->scrollPageDirection = y < scroll.thumb.top ? -1 : 1;
+                    ApplyTopLine(*s, s->topLine + s->scrollPageDirection * ViewportLineCapacity(*s));
+                    SetTimer(hwnd, kScrollPageTimer, 350, nullptr);
+                }
+                SetCapture(hwnd);
+                Repaint(*s);
+                return 0;
+            }
             const int line = VisualYToLogicalLine(*s, y);
             if (line < 0) { ClearSelection(*s); return 0; }
             if ((wParam & MK_SHIFT) && s->selectionAnchor >= 0) {
@@ -952,8 +1018,25 @@ namespace {
         }
         case WM_MOUSEMOVE: {
             State* s = GetState(hwnd);
-            if (!s || !s->selecting) return 0;
+            if (!s) return 0;
             const int y = GET_Y_LPARAM(lParam);
+            const auto scroll = GetScrollGeometry(*s);
+            POINT point{ GET_X_LPARAM(lParam), y };
+            const bool hovered = scroll.maxTop && PtInRect(&scroll.track, point);
+            if (hovered != s->scrollHovered) {
+                s->scrollHovered = hovered;
+                TRACKMOUSEEVENT tracking{ sizeof(tracking), TME_LEAVE, hwnd, 0 };
+                TrackMouseEvent(&tracking);
+                Repaint(*s);
+            }
+            if (s->scrollDragging) {
+                if (scroll.travel > 0) {
+                    const int offset = std::clamp(y - s->scrollDragOffset - static_cast<int>(scroll.track.top), 0, scroll.travel);
+                    ApplyTopLine(*s, MulDiv(offset, scroll.maxTop, scroll.travel));
+                }
+                return 0;
+            }
+            if (!s->selecting) return 0;
             RECT rc; GetClientRect(hwnd, &rc);
             if (y < 0 || y >= rc.bottom) {
                 // Off-edge: let the timer scroll + extend selection one row
@@ -970,7 +1053,38 @@ namespace {
             }
             return 0;
         }
+        case WM_MOUSELEAVE: {
+            if (State* s = GetState(hwnd)) {
+                s->scrollHovered = false;
+                Repaint(*s);
+            }
+            return 0;
+        }
+        case WM_SETCURSOR: {
+            if (LOWORD(lParam) == HTCLIENT) {
+                State* s = GetState(hwnd);
+                POINT pt{}; GetCursorPos(&pt); ScreenToClient(hwnd, &pt);
+                if (s && (s->scrollDragging || pt.x >= GetScrollGeometry(*s).track.left)) {
+                    SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+                    return TRUE;
+                }
+            }
+            break;
+        }
         case WM_TIMER: {
+            if (wParam == kScrollPageTimer) {
+                State* s = GetState(hwnd);
+                if (!s || !s->scrollPageDirection) return 0;
+                POINT point{}; GetCursorPos(&point); ScreenToClient(hwnd, &point);
+                const auto scroll = GetScrollGeometry(*s);
+                if (PtInRect(&scroll.track, point) &&
+                    ((s->scrollPageDirection < 0 && point.y < scroll.thumb.top) ||
+                     (s->scrollPageDirection > 0 && point.y >= scroll.thumb.bottom))) {
+                    ApplyTopLine(*s, s->topLine + s->scrollPageDirection * ViewportLineCapacity(*s));
+                }
+                SetTimer(hwnd, kScrollPageTimer, 80, nullptr);
+                return 0;
+            }
             if (wParam != kAutoScrollTimer) break;
             State* s = GetState(hwnd);
             if (!s || !s->selecting) {
@@ -999,19 +1113,37 @@ namespace {
         case WM_LBUTTONUP: {
             State* s = GetState(hwnd);
             if (!s) return 0;
+            if (s->scrollDragging || s->scrollPageDirection) {
+                s->scrollDragging = false;
+                s->scrollPageDirection = 0;
+                KillTimer(hwnd, kScrollPageTimer);
+                ReleaseCapture();
+                Repaint(*s);
+                return 0;
+            }
             if (s->selecting) {
                 s->selecting = false;
+                s->scrollDragging = false;
+                s->scrollPageDirection = 0;
+                KillTimer(hwnd, kScrollPageTimer);
                 KillTimer(hwnd, kAutoScrollTimer);
+                Repaint(*s);
                 ReleaseCapture();
             }
             return 0;
         }
+        case WM_CANCELMODE:
         case WM_CAPTURECHANGED: {
             State* s = GetState(hwnd);
             if (s) {
                 s->selecting = false;
+                s->scrollDragging = false;
+                s->scrollPageDirection = 0;
+                KillTimer(hwnd, kScrollPageTimer);
                 KillTimer(hwnd, kAutoScrollTimer);
+                Repaint(*s);
             }
+            if (msg == WM_CANCELMODE && GetCapture() == hwnd) ReleaseCapture();
             return 0;
         }
         case WM_CONTEXTMENU: {
@@ -1056,6 +1188,14 @@ namespace {
                 SelectAll(*s);
                 return 0;
             }
+            switch (wParam) {
+            case VK_UP:    HandleVScroll(*s, SB_LINEUP); return 0;
+            case VK_DOWN:  HandleVScroll(*s, SB_LINEDOWN); return 0;
+            case VK_PRIOR: HandleVScroll(*s, SB_PAGEUP); return 0;
+            case VK_NEXT:  HandleVScroll(*s, SB_PAGEDOWN); return 0;
+            case VK_HOME:  HandleVScroll(*s, SB_TOP); return 0;
+            case VK_END:   HandleVScroll(*s, SB_BOTTOM); return 0;
+            }
             break;
         }
         case WM_GETDLGCODE:
@@ -1087,7 +1227,7 @@ namespace OutputControl {
             0,
             kClassName,
             L"",
-            WS_CHILD | WS_VSCROLL,
+            WS_CHILD | WS_TABSTOP,
             0, 0, 0, 0,
             parent,
             (HMENU)(INT_PTR)id,
@@ -1114,14 +1254,12 @@ namespace OutputControl {
         Repaint(*s);
     }
 
-    void SetBackgroundTone(HWND hCtrl, BYTE toneAlpha, BYTE gridAlpha) {
+    void SetBackgroundGrid(HWND hCtrl, BYTE gridAlpha) {
         State* s = GetState(hCtrl);
         if (!s) return;
-        if (s->backgroundToneAlpha == toneAlpha &&
-            s->backgroundGridAlpha == gridAlpha) {
+        if (s->backgroundGridAlpha == gridAlpha) {
             return;
         }
-        s->backgroundToneAlpha = toneAlpha;
         s->backgroundGridAlpha = gridAlpha;
         ReleaseCaches(*s);
         Repaint(*s);
@@ -1153,14 +1291,20 @@ namespace OutputControl {
         s->followBottom = true;
         s->selectionAnchor = s->selectionCaret = -1;
         s->selecting = false;
+        s->scrollDragging = false;
+        s->scrollHovered = false;
+        s->scrollPageDirection = 0;
+        KillTimer(hCtrl, kAutoScrollTimer);
+        KillTimer(hCtrl, kScrollPageTimer);
+        if (GetCapture() == hCtrl) ReleaseCapture();
         UpdateScrollbar(*s);
         Repaint(*s);
     }
 
     void ApplyTheme(HWND hCtrl) {
         // Re-seed the per-line colour roles from the active theme. Segments
-        // without an explicit SGR colour re-derive at paint time via the
-        // heuristic, so a repaint re-colours the bulk of existing output.
+        // without an explicit SGR colour use a cached line heuristic, which
+        // must be refreshed for both completed lines and the partial line.
         const Palette& p = ActiveTheme();
         LogDefault    = p.fg;
         LogDim        = p.dim;
@@ -1174,9 +1318,10 @@ namespace OutputControl {
         LogGraphBar   = p.graphBar;
         PanelDark     = p.outputBg;
         SelectionBg   = p.selection;
-        // Force the cached background (base fill + tinted artwork + veil) to
-        // re-render with the new theme, then repaint.
+        // Refresh cached text and the background fill/grid, then repaint.
         if (State* s = hCtrl ? GetState(hCtrl) : nullptr) {
+            for (auto& line : s->closedLines) RecacheLine(line, s->maxCharsPerLine);
+            RecacheLine(s->currentLine, s->maxCharsPerLine);
             ReleaseCaches(*s);
             Repaint(*s);
         }

@@ -22,7 +22,7 @@ enum class ThemeId : int {
     CatppuccinFrappe = 1,
     Nord             = 2,
     ArcDark          = 3,
-    AppleLight       = 4,   // soft-white light theme over a purple canvas
+    AppleLight       = 4,   // soft-white light theme over a muted purple canvas
 };
 
 constexpr int kThemeCount = 5;
@@ -55,9 +55,7 @@ struct Palette {
     COLORREF selection;   // log selection highlight band
 
     // --- Backdrop: the instrumentation canvas behind the content area --------
-    // Deliberately independent of the chrome surfaces below. Apple Light pairs
-    // a saturated purple canvas with a near-white rail, so deriving the canvas
-    // from a surface role would flatten it.
+    // Independent of the chrome surfaces so cards stay distinct from the canvas.
     COLORREF backdropTop;        // 12-degree gradient start (upper-left)
     COLORREF backdropBottom;     // gradient end (lower-right)
     COLORREF backdropDepth;      // vertical darkening pass; alpha at the site
@@ -70,6 +68,7 @@ struct Palette {
 
     // --- Chrome surfaces: navigation rail + command cards --------------------
     COLORREF surfaceRaised;  // rail fill + normal card face
+    COLORREF surfaceHover;   // hovered command card or navigation item
     COLORREF surfaceSunken;  // selected nav pill + pressed card face
     COLORREF hairline;       // nav divider, sidebar rule, card border
     COLORREF shadowInk;      // card drop-shadow tint; alpha at the site
@@ -80,6 +79,7 @@ struct Palette {
     COLORREF cardInk;       // brand, card title/label, "Drive ready"
     COLORREF cardInkMuted;  // unselected nav, sidebar detail, card description
     COLORREF disabledText;  // disabled card ink
+    COLORREF readyInk;      // drive-ready dot on the navigation rail
 
     // --- Accent ---------------------------------------------------------------
     COLORREF accentPrimary;  // nav stripe/label, focus border, number, action pill

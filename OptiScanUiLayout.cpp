@@ -1,4 +1,4 @@
-﻿// OptiScanUiLayout.cpp - control creation, layout, fonts, and accessibility visibility.
+// OptiScanUiLayout.cpp - control creation, layout, fonts, and accessibility visibility.
 
 #include "framework.h"
 #include "OptiScanUiInternal.h"
@@ -7,6 +7,7 @@
 #include "FontLoader.h"
 #include "OutputControl.h"
 #include "Theme.h"
+#include "ButtonFeedback.h"
 #include "UiSound.h"
 #include <commctrl.h>
 #include <cmath>
@@ -57,7 +58,7 @@ void ApplyUiFonts()
 
 void ApplyUiVisualTone()
 {
-    if (hInfoEdit) OutputControl::SetBackgroundTone(hInfoEdit, BackgroundAlpha(84), BackgroundAlpha(22));
+    if (hInfoEdit) OutputControl::SetBackgroundGrid(hInfoEdit, BackgroundAlpha(10));
 }
 
 bool UpdateUiScale(HWND hWnd, UINT dpi)
@@ -160,6 +161,7 @@ void CreateMainControls(HWND hWnd)
 
         if (hInfoButtons[i])
         {
+            InstallButtonFeedback(hInfoButtons[i]);
             SendMessageW(hInfoButtons[i], WM_SETFONT, (WPARAM)hCommandFont, TRUE);
         }
     }
@@ -376,4 +378,3 @@ void ApplyAccessibleMode(HWND hWnd, bool enabled, bool focusEdit)
         SetFocus(hAccessibleEdit);
     }
 }
-

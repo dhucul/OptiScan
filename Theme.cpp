@@ -8,14 +8,14 @@ namespace {
 // --- Graphite (original dark graphite/slate) --------------------------------
 constexpr Palette kGraphite = {
     .fg = RGB(216, 216, 211),
-    .bright = RGB(206, 210, 212),
-    .dim = RGB(118, 128, 138),
+    .bright = RGB(232, 235, 238),
+    .dim = RGB(145, 155, 165),
     .accentWarm = RGB(198, 178, 150),
     .ok = RGB(148, 192, 166),
     .warn = RGB(210, 174, 112),
     .error = RGB(222, 126, 122),
     .cyan = RGB(156, 168, 180),
-    .logInfo = RGB(206, 210, 212),          // == bright
+    .logInfo = RGB(232, 235, 238),          // == bright
     .graphFrame = RGB(150, 160, 170),
     .graphBar = RGB(174, 182, 190),
     .selection = RGB( 58,  66,  78),
@@ -30,6 +30,7 @@ constexpr Palette kGraphite = {
     .canvasInkMuted = RGB(176, 186, 196),
 
     .surfaceRaised = RGB( 44,  50,  60),
+    .surfaceHover = RGB( 52,  61,  74),
     .surfaceSunken = RGB( 58,  65,  77),
     .hairline = RGB( 78,  86,  98),
     .shadowInk = RGB(  0,   0,   0),
@@ -37,6 +38,7 @@ constexpr Palette kGraphite = {
     .cardInk = RGB(216, 222, 226),
     .cardInkMuted = RGB(150, 160, 172),
     .disabledText = RGB( 96, 100, 104),
+    .readyInk = RGB(148, 192, 166),
 
     .accentPrimary = RGB(126, 178, 212),
     .accentSurface = RGB( 52,  60,  72),
@@ -65,14 +67,14 @@ constexpr Palette kGraphite = {
 constexpr Palette kCatppuccinFrappe = {
     .fg = RGB(198, 208, 245),               // text
     .bright = RGB(205, 214, 245),
-    .dim = RGB(131, 139, 167),              // overlay1 (overlay0 failed on crust)
+    .dim = RGB(148, 156, 187),              // lifted overlay for secondary text
     .accentWarm = RGB(239, 159, 118),       // peach
     .ok = RGB(166, 209, 137),               // green
     .warn = RGB(229, 200, 144),             // yellow
     .error = RGB(231, 130, 132),            // red
     .cyan = RGB(153, 209, 219),             // sky
     .logInfo = RGB(205, 214, 245),          // == bright
-    .graphFrame = RGB( 98, 104, 128),       // surface2
+    .graphFrame = RGB(148, 156, 187),       // frames also contain labels
     .graphBar = RGB(133, 193, 220),
     .selection = RGB( 81,  87, 106),        // surface1
 
@@ -93,6 +95,7 @@ constexpr Palette kCatppuccinFrappe = {
     // Cards lifted onto the real Catppuccin surface ramp so they clear the
     // canvas and the console well (console->card was a flat 3.7 L*, now ~14).
     .surfaceRaised = RGB( 65,  69,  89),    // surface0
+    .surfaceHover = RGB( 74,  80, 104),
     .surfaceSunken = RGB( 81,  87, 109),    // surface1
     .hairline = RGB( 98, 104, 128),         // surface2
     .shadowInk = RGB( 20,  22,  30),
@@ -100,6 +103,7 @@ constexpr Palette kCatppuccinFrappe = {
     .cardInk = RGB(198, 208, 245),
     .cardInkMuted = RGB(165, 173, 206),
     .disabledText = RGB( 92,  97, 118),
+    .readyInk = RGB(166, 209, 137),
 
     .accentPrimary = RGB(140, 170, 221),    // blue
     .accentSurface = RGB( 72,  76,  98),    // surface0
@@ -128,14 +132,14 @@ constexpr Palette kCatppuccinFrappe = {
 constexpr Palette kNord = {
     .fg = RGB(216, 222, 233),               // nord4
     .bright = RGB(236, 239, 244),           // nord6
-    .dim = RGB(124, 135, 159),              // lifted nord comment grey (was 2.7:1)
+    .dim = RGB(151, 162, 182),              // readable secondary text
     .accentWarm = RGB(208, 135, 112),       // nord12 orange
     .ok = RGB(163, 190, 140),               // nord14
     .warn = RGB(235, 203, 139),             // nord13
-    .error = RGB(208, 123, 131),            // lifted nord11 (raw was 3.4:1 on well)
+    .error = RGB(222, 140, 149),            // lifted nord11 for output text
     .cyan = RGB(136, 192, 208),             // nord8
     .logInfo = RGB(236, 239, 244),          // == bright (nord6)
-    .graphFrame = RGB( 76,  86, 106),       // nord3
+    .graphFrame = RGB(143, 154, 176),       // lifted nord3 for labelled frames
     .graphBar = RGB(143, 188, 187),         // nord7
     .selection = RGB( 67,  76,  94),        // nord2
 
@@ -152,6 +156,7 @@ constexpr Palette kNord = {
     .canvasInkMuted = RGB(200, 212, 228),
 
     .surfaceRaised = RGB( 59,  66,  82),    // nord1
+    .surfaceHover = RGB( 67,  78,  96),
     .surfaceSunken = RGB( 76,  86, 106),    // nord2
     .hairline = RGB( 94, 104, 124),         // nord3
     .shadowInk = RGB( 20,  24,  31),
@@ -159,6 +164,7 @@ constexpr Palette kNord = {
     .cardInk = RGB(236, 239, 244),          // nord6
     .cardInkMuted = RGB(178, 190, 208),
     .disabledText = RGB( 88,  96, 112),
+    .readyInk = RGB(163, 190, 140),
 
     .accentPrimary = RGB(136, 192, 208),    // nord10
     .accentSurface = RGB( 67,  76,  94),    // nord2
@@ -187,14 +193,14 @@ constexpr Palette kNord = {
 constexpr Palette kArcDark = {
     .fg = RGB(211, 218, 227),
     .bright = RGB(231, 235, 240),
-    .dim = RGB(139, 145, 153),
+    .dim = RGB(153, 160, 172),
     .accentWarm = RGB(240, 198, 116),       // subtle gold (Arc is mono-blue)
     .ok = RGB(126, 191, 106),
     .warn = RGB(240, 198, 116),
-    .error = RGB(224, 108, 117),
+    .error = RGB(235, 128, 139),
     .cyan = RGB(108, 182, 227),
     .logInfo = RGB(231, 235, 240),          // == bright
-    .graphFrame = RGB( 91,  98, 115),
+    .graphFrame = RGB(147, 156, 173),
     .graphBar = RGB(123, 168, 216),
     .selection = RGB( 69,  74,  90),
 
@@ -212,6 +218,7 @@ constexpr Palette kArcDark = {
     .canvasInkMuted = RGB(186, 196, 210),
 
     .surfaceRaised = RGB( 56,  60,  74),    // #383c4a -- Arc's raised card face
+    .surfaceHover = RGB( 64,  73,  91),
     .surfaceSunken = RGB( 72,  78,  93),
     .hairline = RGB( 95, 102, 119),
     .shadowInk = RGB( 16,  18,  23),
@@ -219,6 +226,7 @@ constexpr Palette kArcDark = {
     .cardInk = RGB(231, 235, 240),
     .cardInkMuted = RGB(170, 178, 190),
     .disabledText = RGB( 96, 101, 110),
+    .readyInk = RGB(126, 191, 106),
 
     .accentPrimary = RGB(108, 168, 232),    // #5294e2
     .accentSurface = RGB( 66,  71,  86),    // lifted off the card face for badges
@@ -250,36 +258,38 @@ constexpr Palette kArcDark = {
 // ink on outputBg (#151B23), not on the light chrome. The chrome's own ink
 // lives in the card/canvas roles.
 constexpr Palette kAppleLight = {
-    .fg = RGB(210, 217, 226),               // console body text on #151B23
+    .fg = RGB(225, 228, 234),               // neutral console body on #151B23
     .bright = RGB(245, 247, 250),           // console headings, "Output" title
-    .dim = RGB(139, 150, 165),              // console muted text
-    .accentWarm = RGB(255, 159,  67),       // #FF9F43 warm orange (title / >>>)
-    .ok = RGB( 42, 158,  72),               // success green; also the ready dot
-    .warn = RGB(190, 120,  24),             // balanced orange for graph severity
-    .error = RGB(230,  64,  76),            // balanced red for graph severity
-    .cyan = RGB(255, 177,  90),             // #FFB15A soft orange = [INFO]
-    .logInfo = RGB(255, 177,  90),          // == cyan (dark themes use bright)
+    .dim = RGB(156, 166, 182),              // console secondary text
+    .accentWarm = RGB(139, 183, 255),       // blue command accent on dark output
+    .ok = RGB( 96, 211, 148),               // mint green on the dark console
+    .warn = RGB(242, 193,  93),             // amber reserved for warnings
+    .error = RGB(255, 133, 142),            // readable coral red
+    .cyan = RGB(124, 195, 242),             // cool blue neutral data
+    .logInfo = RGB(124, 195, 242),          // == cyan
     .graphFrame = RGB(139, 150, 165),       // console box chars
-    .graphBar = RGB(255, 159,  67),         // #FF9F43 orange bars
+    .graphBar = RGB(139, 183, 255),         // blue bars, distinct from warnings
     .selection = RGB( 42,  65,  96),        // selection band on the dark console
 
-    .backdropTop = RGB(100,  88, 180),      // saturated purple instrumentation
-    .backdropBottom = RGB( 57,  49, 120),
-    .backdropDepth = RGB( 40,  33,  91),
-    .backdropGlow = RGB(151, 126, 255),     // lavender glow + rays
-    .backdropInstrument = RGB(174, 151, 255), // arcs, dots, horizon, progress
+    .backdropTop = RGB(112, 100, 164),      // soft purple, clearly distinct from white cards
+    .backdropBottom = RGB( 76,  65, 126),
+    .backdropDepth = RGB( 59,  48, 100),
+    .backdropGlow = RGB(167, 148, 219),
+    .backdropInstrument = RGB(188, 173, 232), // quiet lavender artwork and progress
 
-    .canvasInk = RGB(255, 255, 255),        // page title on the purple canvas
-    .canvasInkMuted = RGB(226, 220, 255),
+    .canvasInk = RGB(255, 255, 255),        // white headings on purple
+    .canvasInkMuted = RGB(245, 241, 253),
 
-    .surfaceRaised = RGB(247, 244, 251),    // lavender-white rail + card face
-    .surfaceSunken = RGB(232, 226, 247),    // selected nav pill + pressed card
-    .hairline = RGB(207, 201, 226),
+    .surfaceRaised = RGB(252, 252, 255),    // soft-white rail + card face
+    .surfaceHover = RGB(237, 244, 255),
+    .surfaceSunken = RGB(219, 231, 249),    // selected nav pill + pressed card
+    .hairline = RGB(204, 212, 228),
     .shadowInk = RGB( 23,  32,  42),
 
     .cardInk = RGB( 23,  32,  42),
     .cardInkMuted = RGB( 53,  64,  82),
     .disabledText = RGB(152, 162, 179),
+    .readyInk = RGB( 42, 158,  72),         // darker green on the light rail
 
     .accentPrimary = RGB( 23, 105, 224),
     .accentSurface = RGB(235, 243, 255),
@@ -289,9 +299,7 @@ constexpr Palette kAppleLight = {
     .dangerInk = RGB(196,  35,  55),
 
     .outputBg = RGB( 21,  27,  35),         // #151B23 dark output console
-    .chromeAccent = RGB( 76, 154, 232),     // #4C9AE8 -- ring hub/arc; kept
-                                            // lighter than accentPrimary so it
-                                            // stays legible on the purple canvas
+    .chromeAccent = RGB( 46, 116, 194),     // ring hub/arc on the light surface
     .chromeText = RGB(112, 126, 145),       // optical ring strokes
 
     .dlgBack = RGB(236, 236, 238),          // #ECECEE

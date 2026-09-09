@@ -7,7 +7,7 @@
 // and colouring are both consistent — the control owns everything it paints.
 //
 // The control:
-//   - has a vertical scrollbar
+//   - has a themed vertical scrollbar with mouse and keyboard navigation
 //   - auto-scrolls to bottom on Append unless the user has scrolled away
 //   - applies a per-line colour heuristic to runs marked non-explicit
 //     (so a cout flush that happens to contain "done" colours the *line*,
@@ -26,12 +26,12 @@ namespace OutputControl {
     // Call once at startup.
     void RegisterClass(HINSTANCE hInstance);
 
-    // Creates the control with WS_CHILD | WS_VISIBLE | WS_VSCROLL.
+    // Creates a hidden child with a themed client-area scrollbar and tab stop.
     HWND Create(HWND parent, int id, HINSTANCE hInstance);
 
     // Optional configuration.
     void SetFont(HWND hCtrl, HFONT font);
-    void SetBackgroundTone(HWND hCtrl, BYTE toneAlpha, BYTE gridAlpha);
+    void SetBackgroundGrid(HWND hCtrl, BYTE gridAlpha);
 
     // Append a styled text segment.
     //   isExplicit == true  → `color` is used as-is for this segment.

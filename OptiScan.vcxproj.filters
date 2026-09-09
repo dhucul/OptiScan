@@ -16,6 +16,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Accessibility.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="ButtonFeedback.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="AccessibleAnnounce.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="AccurateRip.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="AnalysisTypes.h"><Filter>Header Files</Filter></ClInclude>

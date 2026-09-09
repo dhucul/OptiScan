@@ -53,4 +53,6 @@ LRESULT HandleControlColorEdit(HDC hdc);
 void DrawMainBackground(HWND hWnd, HDC hdc);
 void DrawCommandButton(const DRAWITEMSTRUCT* drawItem);
 int GetNavIndex();
+int GetHoveredNavIndex();
+void HandleSidebarHover(HWND hWnd, int x, int y);
 bool HandleSidebarClick(HWND hWnd, int x, int y);

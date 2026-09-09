@@ -2,6 +2,7 @@
 #include "GuiInput.h"
 #include "FontLoader.h"
 #include "Theme.h"
+#include "ButtonFeedback.h"
 
 #include <windows.h>
 #include <commctrl.h>
@@ -134,13 +135,15 @@ namespace {
     void DrawPromptButton(const DRAWITEMSTRUCT* dis) {
         if (!dis) return;
         const bool pressed = (dis->itemState & ODS_SELECTED) != 0;
-        const bool focused = (dis->itemState & ODS_FOCUS) != 0;
+        const bool focused = (dis->itemState & ODS_FOCUS) != 0 && (dis->itemState & ODS_NOFOCUSRECT) == 0;
+        const bool hovered = GetPropW(dis->hwndItem, L"OptiScan.CommandHover") != nullptr;
+        const auto& p = ActiveTheme();
 
         RECT rc = dis->rcItem;
         HDC hdc = dis->hDC;
-        COLORREF top = pressed ? RGB(56, 60, 66) : DialogButtonTop;
-        COLORREF bottom = pressed ? RGB(30, 34, 40) : DialogButtonBottom;
-        COLORREF border = focused ? RGB(204, 210, 216) : DialogButtonBorder;
+        COLORREF top = pressed ? p.surfaceSunken : (hovered ? p.surfaceHover : DialogButtonTop);
+        COLORREF bottom = pressed ? p.surfaceSunken : (hovered ? p.surfaceHover : DialogButtonBottom);
+        COLORREF border = (focused || hovered || pressed) ? p.accentPrimary : DialogButtonBorder;
 
         RECT topHalf = rc;
         RECT bottomHalf = rc;
@@ -167,6 +170,11 @@ namespace {
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, DialogButtonText);
         DrawTextW(hdc, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        if (focused) {
+            RECT focus = rc;
+            InflateRect(&focus, -4, -4);
+            DrawFocusRect(hdc, &focus);
+        }
     }
 
     LRESULT CALLBACK PromptWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -210,6 +218,8 @@ namespace {
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
                 cancelLeft, btnTop, kDlgBtnW, kDlgBtnH, hWnd, (HMENU)ID_CANCEL, GetModuleHandleW(nullptr), nullptr);
             SendMessageW(hCancel, WM_SETFONT, (WPARAM)hPromptFont, TRUE);
+            InstallButtonFeedback(GetDlgItem(hWnd, ID_OK));
+            InstallButtonFeedback(hCancel);
             return 0;
         }
         case WM_CTLCOLORSTATIC: {

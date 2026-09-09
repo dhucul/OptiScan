@@ -69,17 +69,17 @@ static void PaintProceduralBackdrop(Gdiplus::Graphics& g, int width, int height)
 
         // Deepen the lower canvas without flattening the tint in the upper-left.
         Gdiplus::LinearGradientBrush depth(full,
-            ThemeArgb(0, p.backdropDepth), ThemeArgb(58, p.backdropDepth),
+            ThemeArgb(0, p.backdropDepth), ThemeArgb(32, p.backdropDepth),
             Gdiplus::LinearGradientModeVertical);
         g.FillRectangle(&depth, full);
 
         const float scanX = W * 1.015f;
         const float scanY = H * 0.40f;
-        PaintGlow(g, scanX, scanY, min(W, H) * 0.34f, 92, p.backdropGlow);
+        PaintGlow(g, scanX, scanY, min(W, H) * 0.34f, 42, p.backdropGlow);
 
         // Sparse measurement matrix, concentrated on the right half.
-        Gdiplus::SolidBrush dot(ThemeArgb(30, p.backdropInstrument));
-        const int dotStep = max(ScalePx(24), 12);
+        Gdiplus::SolidBrush dot(ThemeArgb(14, p.backdropInstrument));
+        const int dotStep = max(ScalePx(36), 18);
         for (int y = ScalePx(18); y < (int)(H * 0.82f); y += dotStep)
             for (int x = (int)(W * 0.40f); x < width; x += dotStep)
                 g.FillEllipse(&dot, (Gdiplus::REAL)x, (Gdiplus::REAL)y, ScaleReal(2), ScaleReal(2));
@@ -89,12 +89,12 @@ static void PaintProceduralBackdrop(Gdiplus::Graphics& g, int width, int height)
         for (int i = 1; i <= 11; ++i)
         {
             const float r = maxRadius * ((float)i / 11.0f);
-            Gdiplus::Pen arc(ThemeArgb((BYTE)(30 + (i % 3) * 12), p.backdropInstrument),
+            Gdiplus::Pen arc(ThemeArgb((BYTE)(12 + (i % 3) * 5), p.backdropInstrument),
                               max(1.0f, ScaleReal(i % 4 == 0 ? 2 : 1)));
             g.DrawEllipse(&arc, scanX - r, scanY - r, r * 2.0f, r * 2.0f);
         }
-        Gdiplus::Pen ray(ThemeArgb(38, p.backdropGlow), max(1.0f, ScaleReal(1)));
-        for (int degrees = 150; degrees <= 210; degrees += 5)
+        Gdiplus::Pen ray(ThemeArgb(16, p.backdropGlow), max(1.0f, ScaleReal(1)));
+        for (int degrees = 150; degrees <= 210; degrees += 10)
         {
             const float radians = degrees * 3.14159265f / 180.0f;
             g.DrawLine(&ray, scanX, scanY,
@@ -103,7 +103,7 @@ static void PaintProceduralBackdrop(Gdiplus::Graphics& g, int width, int height)
         }
 
         // Horizon glow below the primary action cards.
-        Gdiplus::Pen horizon(ThemeArgb(105, p.backdropInstrument), max(1.0f, ScaleReal(2)));
+        Gdiplus::Pen horizon(ThemeArgb(34, p.backdropInstrument), max(1.0f, ScaleReal(1)));
         g.DrawLine(&horizon, W * 0.10f, H * 0.185f, W * 0.88f, H * 0.185f);
     }
 }
@@ -327,13 +327,14 @@ static void DrawUnifiedBackground(Gdiplus::Graphics& graphics, const RECT& rc)
     for (int i = 0; i < kNavItemCount; ++i)
     {
         const int y = NavItemTop(i);
-        if (i == selectedNav)
+        if (i == selectedNav || i == GetHoveredNavIndex())
         {
             Gdiplus::GraphicsPath selectedPath;
             AddRoundedRectangle(selectedPath, ScalePx(18), y, sidebarWidth - ScalePx(36), ScalePx(kNavItemHeight), ScalePx(10));
-            Gdiplus::SolidBrush selectedBg(ThemeArgb(255, p.surfaceSunken));
+            Gdiplus::SolidBrush selectedBg(ThemeArgb(255, i == selectedNav ? p.surfaceSunken : p.surfaceHover));
             graphics.FillPath(&selectedBg, &selectedPath);
-            graphics.FillRectangle(&blue, ScalePx(18), y + ScalePx(10), ScalePx(5), ScalePx(38));
+            if (i == selectedNav)
+                graphics.FillRectangle(&blue, ScalePx(18), y + ScalePx(10), ScalePx(5), ScalePx(38));
         }
         Gdiplus::Pen iconPen(i == selectedNav ? ThemeArgb(255, p.accentPrimary)
                                     : ThemeArgb(255, p.cardInkMuted), max(1.0f, ScaleReal(2)));
@@ -346,7 +347,7 @@ static void DrawUnifiedBackground(Gdiplus::Graphics& graphics, const RECT& rc)
     // Drive status remains visible without competing with the command area.
     Gdiplus::Pen sidebarRule(ThemeArgb(255, p.hairline), 1.0f);
     graphics.DrawLine(&sidebarRule, ScalePx(28), height - ScalePx(215), sidebarWidth - ScalePx(28), height - ScalePx(215));
-    Gdiplus::SolidBrush ready(ThemeArgb(255, p.ok));
+    Gdiplus::SolidBrush ready(ThemeArgb(255, p.readyInk));
     graphics.FillEllipse(&ready, ScaleReal(34), (Gdiplus::REAL)(height - ScalePx(172)), ScaleReal(10), ScaleReal(10));
     graphics.DrawString(L"Drive ready", -1, &navSelected,
                         Gdiplus::PointF(ScaleReal(58), (Gdiplus::REAL)(height - ScalePx(187))), &ink);
@@ -433,9 +434,11 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
 
     HDC hdc = drawItem->hDC;
     RECT rc = drawItem->rcItem;
-    const bool pressed = (drawItem->itemState & ODS_SELECTED) != 0;
-    const bool focused = (drawItem->itemState & ODS_FOCUS) != 0;
     const bool disabled = (drawItem->itemState & ODS_DISABLED) != 0;
+    const bool pressed = !disabled && (drawItem->itemState & ODS_SELECTED) != 0;
+    const bool focused = !disabled && (drawItem->itemState & ODS_FOCUS) != 0
+        && (drawItem->itemState & ODS_NOFOCUSRECT) == 0;
+    const bool hovered = !disabled && GetPropW(drawItem->hwndItem, L"OptiScan.CommandHover") != nullptr;
     const int commandIndex = drawItem->CtlID - IDC_INFO_BUTTON1;
     const bool exitCommand = commandIndex == kExitButtonIndex;
 
@@ -488,17 +491,20 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
         default: break;
         }
 
+        if (pressed) rc.top += max(1, ScalePx(2));
+        const int inset = max(2, ScalePx(4));
         Gdiplus::GraphicsPath card;
-        AddRoundedRectangle(card, rc.left + ScalePx(1), rc.top + ScalePx(1),
-                            rc.right - rc.left - ScalePx(2), rc.bottom - rc.top - ScalePx(2),
+        AddRoundedRectangle(card, rc.left + inset, rc.top + inset,
+                            rc.right - rc.left - inset * 2, rc.bottom - rc.top - inset * 2,
                             primary ? ScalePx(14) : ScalePx(8));
-        if (!pressed)
+        if (!pressed && !disabled)
         {
             Gdiplus::GraphicsPath shadow;
-            AddRoundedRectangle(shadow, rc.left + ScalePx(2), rc.top + ScalePx(4),
-                                rc.right - rc.left - ScalePx(4), rc.bottom - rc.top - ScalePx(3),
+            AddRoundedRectangle(shadow, rc.left + inset, rc.top + inset + max(1, ScalePx(2)),
+                                rc.right - rc.left - inset * 2, rc.bottom - rc.top - inset * 2,
                                 primary ? ScalePx(14) : ScalePx(8));
-            Gdiplus::SolidBrush shadowBrush(ThemeArgb(primary ? 18 : 10, p.shadowInk));
+            const bool light = CurrentThemeId() == ThemeId::AppleLight;
+            Gdiplus::SolidBrush shadowBrush(ThemeArgb(light ? (primary ? 12 : 7) : (primary ? 22 : 14), p.shadowInk));
             graphics.FillPath(&shadowBrush, &shadow);
         }
 
@@ -506,15 +512,27 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
         // the danger surface so it reads as destructive at a glance.
         const Gdiplus::Color face = exitCommand
             ? ThemeArgb(255, p.dangerSurface)
-            : (pressed ? ThemeArgb(255, p.surfaceSunken) : ThemeArgb(255, p.surfaceRaised));
+            : ThemeArgb(255, pressed ? p.surfaceSunken : (hovered ? p.surfaceHover : p.surfaceRaised));
         Gdiplus::SolidBrush faceBrush(face);
         graphics.FillPath(&faceBrush, &card);
+        if (exitCommand && (hovered || pressed)) {
+            Gdiplus::SolidBrush dangerFeedback(ThemeArgb(pressed ? 32 : 16, p.dangerInk));
+            graphics.FillPath(&dangerFeedback, &card);
+        }
         Gdiplus::Pen cardBorder(
-            focused ? ThemeArgb(255, p.accentPrimary)
-                    : (exitCommand ? ThemeArgb(255, p.dangerBorder)
-                                   : ThemeArgb(255, p.hairline)),
-            focused ? max(1.0f, ScaleReal(2)) : max(1.0f, ScaleReal(1)));
+            (hovered || pressed) ? ThemeArgb(255, exitCommand ? p.dangerInk : p.accentPrimary)
+                    : (exitCommand ? ThemeArgb(255, p.dangerBorder) : ThemeArgb(180, p.hairline)),
+            max(1.0f, ScaleReal(1)));
         graphics.DrawPath(&cardBorder, &card);
+        if (focused) {
+            // Separate outer ring: keyboard focus stays visible over hover/press.
+            Gdiplus::GraphicsPath focusRing;
+            AddRoundedRectangle(focusRing, rc.left + 1, rc.top + 1,
+                rc.right - rc.left - 2, rc.bottom - rc.top - 2,
+                primary ? ScalePx(16) : ScalePx(10));
+            Gdiplus::Pen focusPen(ThemeArgb(255, p.accentPrimary), max(2.0f, ScaleReal(3)));
+            graphics.DrawPath(&focusPen, &focusRing);
+        }
 
         Gdiplus::FontFamily uiFamily(UiFamily(), UiFontCollection());
         Gdiplus::SolidBrush ink(disabled ? ThemeArgb(255, p.disabledText)
@@ -644,4 +662,3 @@ static void SplitCommandLabel(LPCWSTR source, WCHAR* number, int numberLength, L
         ++(*label);
     }
 }
-

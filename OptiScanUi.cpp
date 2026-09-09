@@ -44,6 +44,7 @@ ULONG_PTR gGdiPlusToken;
 double gUiScale = 1.0;
 HMONITOR gUiMonitor = nullptr;
 static int gProfessionalNavIndex = 0;
+static int gHoveredNavIndex = -1;
 
 int SidebarWidth() { return ScalePx(360); }
 int NavItemTop(int index) { return ScalePx(145 + index * 76); }
@@ -51,6 +52,25 @@ int NavItemTop(int index) { return ScalePx(145 + index * 76); }
 int GetNavIndex()
 {
     return gProfessionalNavIndex;
+}
+
+int GetHoveredNavIndex() { return gHoveredNavIndex; }
+
+void HandleSidebarHover(HWND hWnd, int x, int y)
+{
+    int hovered = -1;
+    if (x >= ScalePx(18) && x < SidebarWidth() - ScalePx(18)) {
+        for (int i = 0; i < kNavItemCount; ++i)
+            if (y >= NavItemTop(i) && y < NavItemTop(i) + ScalePx(kNavItemHeight)) hovered = i;
+    }
+    if (hovered == gHoveredNavIndex) return;
+    gHoveredNavIndex = hovered;
+    TRACKMOUSEEVENT tracking{ sizeof(tracking), TME_LEAVE, hWnd, 0 };
+    TrackMouseEvent(&tracking);
+    RECT rail{};
+    GetClientRect(hWnd, &rail);
+    rail.right = SidebarWidth();
+    InvalidateRect(hWnd, &rail, FALSE);
 }
 
 bool HandleSidebarClick(HWND hWnd, int x, int y)
@@ -387,4 +407,3 @@ void AppendInfoText(HWND /*hCtrl*/, LPCWSTR text)
     // path also mirrors to the accessible EDIT, so no separate MirrorText call.
     GuiSink::AppendDirectColored(text, (size_t)lstrlenW(text), MenuTextOrange);
 }
-

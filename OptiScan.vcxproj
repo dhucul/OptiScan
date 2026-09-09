@@ -82,6 +82,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Accessibility.h" />
+    <ClInclude Include="ButtonFeedback.h" />
     <ClInclude Include="AccessibleAnnounce.h" />
     <ClInclude Include="AccurateRip.h" />
     <ClInclude Include="AnalysisTypes.h" />

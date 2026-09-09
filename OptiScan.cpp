@@ -567,6 +567,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         if (HandleSidebarClick(hWnd, (short)LOWORD(lParam), (short)HIWORD(lParam)))
             return 0;
         break;
+    case WM_MOUSEMOVE:
+        HandleSidebarHover(hWnd, (short)LOWORD(lParam), (short)HIWORD(lParam));
+        break;
+    case WM_MOUSELEAVE:
+        HandleSidebarHover(hWnd, -1, -1);
+        break;
     case WM_SIZE:
         LayoutMainControls(hWnd);
         InvalidateRect(hWnd, nullptr, TRUE);
