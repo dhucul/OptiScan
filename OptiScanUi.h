@@ -3,14 +3,15 @@
 #include "framework.h"
 
 constexpr int MAX_LOADSTRING = 100;
-constexpr int COMMAND_BUTTON_COUNT = 36;
+constexpr int COMMAND_BUTTON_COUNT = 37;
 
 // Button-index constants. Kept in sync with CommandLabels[].
-// Indices 33..35 are the "special" buttons that don't dispatch a single menu
+// Indices 34..36 are the "special" buttons that don't dispatch a single menu
 // choice via DispatchMenuChoice: Batch, Clear/Cancel, and Exit.
-constexpr int kBatchButtonIndex = 33;
-constexpr int kClearButtonIndex = 34;
-constexpr int kExitButtonIndex  = 35;
+constexpr int kAccurateRipButtonIndex = 33;
+constexpr int kBatchButtonIndex = 34;
+constexpr int kClearButtonIndex = 35;
+constexpr int kExitButtonIndex  = 36;
 
 // Posted by GuiSink and worker threads back to the UI thread.
 constexpr UINT WM_APP_DRAIN_OUTPUT = WM_APP + 1;

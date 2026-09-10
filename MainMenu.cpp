@@ -43,7 +43,7 @@ PioneerMenuReadPolicy GetPioneerMenuReadPolicy(int operation) {
     case 5:  case 6:  case 7:  case 8:  case 9:  case 10:
     case 14: case 15: case 16: case 17: case 18:
     case 20: case 21: case 22: case 24:
-    case 28: case 29: case 30: case 32:
+    case 28: case 29: case 30: case 32: case 34:
         return PioneerMenuReadPolicy::RawMeasurement;
 
     default:
@@ -140,6 +140,79 @@ void RunPioneerCdCheck(OpticalDrive& copier, DiscInfo& disc) {
     }
 }
 
+// Standalone wiring for the existing read, offset, and AccurateRip verifier.
+bool RunAccurateRipCheck(OpticalDrive& copier, const DiscInfo& disc) {
+    Console::Heading("\n=== Check CD against AccurateRip ===\n");
+    auto cancelled = []() {
+        if (!g_interrupt.IsInterrupted() && !g_interrupt.CheckEscapeKey()) return false;
+        Console::Warning("AccurateRip check cancelled.\n");
+        return true;
+    };
+    if (cancelled()) return false;
+    if (std::none_of(disc.tracks.begin(), disc.tracks.end(),
+        [](const TrackInfo& track) { return track.isAudio; })) {
+        Console::Warning("No audio tracks found on this disc.\n");
+        return false;
+    }
+
+    DiscInfo checkDisc = disc;
+    checkDisc.rawSectors.clear();
+    // Match the existing copy workflow: enhanced CDs keep their data session
+    // in the TOC for disc IDs, but only the audio session is read.
+    checkDisc.selectedSession = disc.sessionCount > 1 ? 1 : 0;
+    if (checkDisc.selectedSession == 1)
+        Console::Info("Multi-session disc detected - using session 1 (audio).\n");
+    checkDisc.pregapMode = PregapMode::Include;
+    checkDisc.includeSubchannel = false;
+    checkDisc.enableC2Detection = false;
+    checkDisc.enableCacheDefeat = false;
+
+    if (!checkDisc.accurateRipLookupAttempted)
+        AccurateRip::Lookup(checkDisc, checkDisc.accurateRipPressings);
+    if (cancelled()) return false;
+    if (checkDisc.accurateRipPressings.empty()) {
+        Console::Warning("CD NOT VERIFIED: no AccurateRip reference records are available.\n");
+        return false;
+    }
+
+    ScopedDriveSpeed restoreSpeed(copier.GetDriveRef());
+    const int speed = copier.SelectSpeed();
+    if (cancelled()) return false;
+    bool offsetOk = false;
+    checkDisc.driveOffset = copier.SelectOffset(&offsetOk);
+    if (cancelled() || !offsetOk) return false;
+
+    ProgressIndicator progress;
+    progress.SetLabel("AccurateRip read");
+    progress.Start();
+    const bool readOk = copier.ReadDiscBurst(checkDisc,
+        MakeProgressCallback(&progress), speed, /*errorMode=*/1);
+    progress.Finish(readOk);
+    if (cancelled()) return false;
+    if (!readOk || checkDisc.errorCount > 0) {
+        Console::Warning("CD NOT VERIFIED: the read failed or was cancelled.\n");
+        return false;
+    }
+
+    if (checkDisc.driveOffset != 0)
+        copier.ApplyOffsetCorrection(checkDisc);
+    if (cancelled()) return false;
+
+    const auto result = AccurateRip::VerifyCRCs(checkDisc, checkDisc.accurateRipPressings);
+    // The precise checksum engine is synchronous. Honour a cancellation that
+    // arrived while it ran before reporting workflow success or advancing a batch.
+    if (cancelled()) return false;
+    if (result == AccurateRipVerificationResult::Verified) {
+        Console::Success("CD VERIFIED against AccurateRip.\n");
+        return true;
+    }
+    if (result == AccurateRipVerificationResult::Mismatch)
+        Console::Error("CD NOT VERIFIED: one or more AccurateRip track checksums did not match.\n");
+    else
+        Console::Warning("CD NOT VERIFIED: AccurateRip verification was inconclusive.\n");
+    return false;
+}
+
 }  // namespace
 
 int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
@@ -189,6 +262,17 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 	}
 	{
 		switch (choice) {
+
+		case 34:
+			if (isPioneer) {
+				if (rawMeasurementPureRead.confirmedOff())
+					Console::Success("Pioneer PureRead: OFF. Real-Time PureRead: OFF. "
+						"Confirmed for this AccurateRip check; previous settings will be restored afterward.\n");
+				else
+					Console::Info("Pioneer PureRead is not supported by this drive.\n");
+			}
+			if (!RunAccurateRipCheck(copier, disc)) dispatchStatus = 1;
+			break;
 
 			// ════════════════════════════════════════════════════════════
 			//  Ripping

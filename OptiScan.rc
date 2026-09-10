@@ -45,7 +45,7 @@ BEGIN
     BEGIN
         MENUITEM "&Accessible output (read-only)\tCtrl+Shift+A", IDM_TOGGLE_ACCESSIBLE
         MENUITEM SEPARATOR
-        MENUITEM "&Clear output",        IDC_INFO_BUTTON35
+        MENUITEM "&Clear output",        IDC_INFO_BUTTON36
         MENUITEM SEPARATOR
         POPUP "&Theme"
         BEGIN
@@ -62,6 +62,7 @@ BEGIN
     END
     POPUP "&Help"
     BEGIN
+        MENUITEM "&Test descriptions",   IDC_INFO_BUTTON29
         MENUITEM "&About ...",           IDM_ABOUT
     END
 END

@@ -321,6 +321,7 @@ PioneerPureReadOffGuard::PioneerPureReadOffGuard(ScsiDrive& drive, bool active)
     PioneerCapabilities capabilities;
     if (!m_pioneer.ReadCapabilities(capabilities))
         return;
+    m_pureReadSupported = capabilities.pureReadSupport;
     if (!capabilities.pureReadSupport) {
         m_engaged = true;
         return;

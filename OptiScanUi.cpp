@@ -140,9 +140,10 @@ extern const LPCWSTR CommandLabels[COMMAND_BUTTON_COUNT] =
     L"31. Jitter / beta scan (LiteOn) *",
     L"32. Erase CD-RW (rewritable)",
     L"33. FE/TE servo scan (experimental, LiteOn) *",
-    L"34. Batch run (multiple ops, 1 prescan)",
-    L"35. Clear info box",
-    L"36. Exit"
+    L"34. Check CD against AccurateRip *",
+    L"35. Batch run (multiple ops, 1 prescan)",
+    L"36. Clear info box",
+    L"37. Exit"
 };
 
 void SetInitialAccessibleMode(bool enabled)

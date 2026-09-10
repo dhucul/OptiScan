@@ -448,7 +448,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 // were inserted, kClearButtonIndex shifted but the menu item did not -- leaving
 // "Clear output" wired to Batch run. Pin it so the next insertion breaks the
 // build instead of the menu.
-static_assert(IDC_INFO_BUTTON35 - IDC_INFO_BUTTON1 == kClearButtonIndex,
+static_assert(IDC_INFO_BUTTON36 - IDC_INFO_BUTTON1 == kClearButtonIndex,
               "View > Clear output in OptiScan.rc must post the Clear command's id");
 
 static void CheckThemeMenuRadio(HWND hWnd, ThemeId id)
@@ -655,6 +655,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             case IDC_INFO_BUTTON34:
             case IDC_INFO_BUTTON35:
             case IDC_INFO_BUTTON36:
+            case IDC_INFO_BUTTON37:
                 if (HIWORD(wParam) == BN_CLICKED)
                 {
                     // The screen reader already announces the button press, so
@@ -707,7 +708,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                     std::string raw = GuiInput::PromptString(
                                         "Batch run",
                                         "Enter menu numbers to run, separated by spaces or commas\n"
-                                        "(valid range: 1-33; duplicates ignored; example: 7 8 9 10)",
+                                        "(valid range: 1-34; duplicates ignored; example: 7 8 9 10)",
                                         std::string(), &ok);
                                     if (!ok) {
                                         Console::Info("Batch cancelled.\n");
@@ -809,15 +810,22 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                         // `choice` is the displayed button number; map it to
                                         // the stable op id the dispatcher expects.
                                         const int batchOpId = ButtonToMenuChoice(choice - 1);
-                                        // Copy disc (1) and Rip tracks (2) force a full
+                                        // Copy disc (1), Rip tracks (2), and AccurateRip (34) force a full
                                         // close/reopen refresh so a disc swapped in mid-batch is
                                         // picked up — matching their single-click behaviour. The
                                         // shared up-front Prescan only re-reads the existing
                                         // handle, which can report a stale TOC after a swap. Skip
                                         // only on the very first step when the drive was just
                                         // opened with a fresh TOC (nothing could have changed yet).
-                                        if (batchOpId == 1 || batchOpId == 2) {
+                                        if (batchOpId == 1 || batchOpId == 2 || batchOpId == 34) {
                                             if (!(i == 0 && freshlyScanned)) {
+                                                // AccurateRip must use the current audio source,
+                                                // including a disc moved to another drive mid-batch.
+                                                if (batchOpId == 34 && !ReselectSourceDriveIfMultiple()) {
+                                                    Console::Info("Batch cancelled during drive selection.\n");
+                                                    batchEnd = BatchEnd::Cancelled;
+                                                    break;
+                                                }
                                                 if (!RefreshDisc()) {
                                                     Console::Error("The drive could not be refreshed — batch stopped.\n");
                                                     batchEnd = BatchEnd::DiscGone;
@@ -828,6 +836,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                                     batchEnd = BatchEnd::Cancelled;
                                                     break;
                                                 }
+                                            }
+                                            if (batchOpId == 34 && !g_hasTOC) {
+                                                Console::Error("No valid source TOC is available for AccurateRip verification.\n");
+                                                batchEnd = BatchEnd::DiscGone;
+                                                break;
                                             }
                                         }
                                         // Every other step rides the single shared prescan, which

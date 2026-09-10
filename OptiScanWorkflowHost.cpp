@@ -316,10 +316,11 @@ int ButtonToMenuChoice(int btnIndex) {
     if (btnIndex >= 6 && btnIndex <= 30) return btnIndex - 1; // shifted display, original op id
     if (btnIndex == 31) return 31;                            // Erase CD-RW → op id 31
     if (btnIndex == 32) return 32;                            // FE/TE servo scan → op id 32
+    if (btnIndex == kAccurateRipButtonIndex) return 34;       // AccurateRip check → op id 34
     return -1;                                                // Batch/Clear/Exit
 }
 
-// Parse a space- or comma-separated list of menu numbers (1..29) into a vector
+// Parse a space- or comma-separated list of menu numbers (1..34) into a vector
 // of valid choices, in the user's listed order with duplicates dropped. Returns
 // empty if the input has nothing recognisable.
 std::vector<int> ParseBatchChoices(const std::string& input) {
@@ -329,7 +330,7 @@ std::vector<int> ParseBatchChoices(const std::string& input) {
         if (token.empty()) return;
         try {
             int v = std::stoi(token);
-            if (v >= 1 && v <= 33 &&
+            if (v >= 1 && v <= 34 &&
                 std::find(out.begin(), out.end(), v) == out.end()) {
                 out.push_back(v);
             }

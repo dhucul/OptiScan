@@ -423,6 +423,9 @@ public:
     PioneerPureReadOffGuard& operator=(const PioneerPureReadOffGuard&) = delete;
 
     bool engaged() const { return m_engaged; }
+    // engaged() also accepts drives without PureRead. Only this accessor
+    // means both settings were actually read back as Off.
+    bool confirmedOff() const { return m_engaged && m_pureReadSupported; }
     bool Restore();
 
 private:
@@ -430,6 +433,7 @@ private:
     bool m_active = false;
     bool m_restore = false;
     bool m_engaged = false;
+    bool m_pureReadSupported = false;
     PureReadMode m_previousMode = PureReadMode::Off;
     bool m_previousRealTime = false;
 };

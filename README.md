@@ -60,6 +60,7 @@ The original command-line workflow has been ported to a native Win32 GUI: every 
 - **Configurable write speed** with drive speed selection
 
 ### Disc Quality
+- **Check CD against AccurateRip** — standalone full-track verification without saving rip files; uses the lowest drive-supported read speed and temporarily disables Pioneer PureRead and Real-Time PureRead
 - **Hardware quality scan** — Plextor Q-Check, Pioneer, or LiteOn/MediaTek scanning with backend-accurate graphs (Pioneer reports C1/BLER plus diagnostic E22, not verified C2/CU)
 - **C2 error scan** — quick pass/fail quality check
 - **BLER scan** — detailed per-second error rate with Red Book compliance check
@@ -138,13 +139,16 @@ The table below lists every operation with the number shown on its card. That nu
 | 31 | Drive Tools | Jitter / beta scan (LiteOn) |
 | 32 | Drive Tools | Erase CD-RW (rewritable) |
 | 33 | Drive Tools | FE/TE servo scan (experimental, LiteOn) |
-| 34 | Utilities | Batch run (multiple ops, 1 prescan) |
-| 35 | Utilities | Clear info box |
-| 36 | Utilities | Exit |
+| 34 | Disc Quality | Check CD against AccurateRip |
+| 35 | Utilities | Batch run (multiple ops, 1 prescan) |
+| 36 | Utilities | Clear info box |
+| 37 | Utilities | Exit |
 
 Operations marked with **\*** in the Operations menu use pre-gap analysis (scan range includes pregap sectors). Some cards shorten the full name to fit — the Operations menu always carries the complete wording.
 
 **Clear info box** (card caption: *Clear output*) clears the console when idle and acts as a Cancel for the active workflow — or for the current step of a batch — while one is running.
+
+**Check CD against AccurateRip** reads the audio session on enhanced CDs while retaining the complete TOC for the database lookup. In a batch, it refreshes the current source disc before checking, except when it is the first step immediately after a fresh open. Cancellation during checksum calculation takes effect when the existing verifier returns.
 
 ---
 

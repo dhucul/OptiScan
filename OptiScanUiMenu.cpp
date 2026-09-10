@@ -76,7 +76,7 @@ void BuildOperationsMenu(HWND hWnd)
     if (!bar) return;
 
     struct Category { const wchar_t* name; int first; int last; };
-    // Ranges are button indices (0-based). Clear (34) and Exit (35) are left
+    // Ranges are button indices (0-based). Clear (35) and Exit (36) are left
     // out: Exit lives in the File menu, Clear in the View menu, and both
     // remain reachable via Tab.
     static const Category categories[] = {
@@ -84,7 +84,7 @@ void BuildOperationsMenu(HWND hWnd)
         { L"Disc &Quality", 6,  12 },
         { L"Disc I&nfo",    13, 18 },
         { L"Dri&ve",        19, 25 },
-        { L"&Utility",      26, 33 },
+        { L"&Utility",      26, 34 },
     };
 
     HMENU operations = CreatePopupMenu();
@@ -97,8 +97,15 @@ void BuildOperationsMenu(HWND hWnd)
         std::wstring usedKeys;  // distinct access keys within this submenu
         for (int i = cat.first; i <= cat.last && i < COMMAND_BUTTON_COUNT; ++i)
         {
+            if (i == kAccurateRipButtonIndex) continue; // Listed under Disc Quality below.
             const std::wstring label = MakeOperationMenuLabel(CommandLabels[i], usedKeys);
             AppendMenuW(sub, MF_STRING, (UINT_PTR)(IDC_INFO_BUTTON1 + i), label.c_str());
+        }
+        if (cat.first == 6) {
+            const std::wstring label = MakeOperationMenuLabel(
+                CommandLabels[kAccurateRipButtonIndex], usedKeys);
+            AppendMenuW(sub, MF_STRING,
+                IDC_INFO_BUTTON1 + kAccurateRipButtonIndex, label.c_str());
         }
         AppendMenuW(operations, MF_POPUP, (UINT_PTR)sub, cat.name);
     }
@@ -119,4 +126,3 @@ void BuildOperationsMenu(HWND hWnd)
         DrawMenuBar(hWnd);
     }
 }
-

@@ -181,7 +181,7 @@ void LayoutMainControls(HWND hWnd)
 
     // Batch every child move into one DeferWindowPos transaction so children
     // don't repaint individually as the layout walks across them. Total
-    // children: 1 output + 2 progress + 2 accessible + 35 buttons = 40.
+    // children: output, progress, accessible controls, and command buttons.
     //
     // On the first pass, children were created hidden — fold SWP_SHOWWINDOW
     // into the batch so positioning and reveal happen as one atomic update.
@@ -189,7 +189,7 @@ void LayoutMainControls(HWND hWnd)
     bool buttonVisible[COMMAND_BUTTON_COUNT]{};
     HWND priorFocus = GetFocus();
 
-    HDWP hdwp = BeginDeferWindowPos(41);
+    HDWP hdwp = BeginDeferWindowPos(COMMAND_BUTTON_COUNT + 5);
     auto move = [&](HWND h, int x, int y, int w, int hgt) {
         if (!h) return;
         for (int i = 0; i < COMMAND_BUTTON_COUNT; ++i) {
@@ -250,10 +250,10 @@ void LayoutMainControls(HWND hWnd)
             };
 
             const int ripCopy[] = { 2, 3, 4, 5 };
-            const int discQuality[] = { 7, 8, 9, 10, 11, 12 };
+            const int discQuality[] = { 7, 8, 9, 10, 11, 12, kAccurateRipButtonIndex };
             const int analysis[] = { 13, 14, 15, 16, 17, 18 };
             const int driveTools[] = { 19, 20, 21, 22, 23, 24, 25, 29, 30, 31, 32 };
-            const int utilities[] = { 26, 27, 28, 33, 34, 35 };
+            const int utilities[] = { 26, 27, 28, kBatchButtonIndex, kClearButtonIndex, kExitButtonIndex };
 
             int groupTitleTop = ScalePx(370);
             int groupBottom = placeGroup(ripCopy, ARRAYSIZE(ripCopy), groupTitleTop + ScalePx(40));
@@ -270,10 +270,10 @@ void LayoutMainControls(HWND hWnd)
         else
         {
             const int ripCopy[] = { 0, 1, 2, 3, 4, 5 };
-            const int discQuality[] = { 6, 7, 8, 9, 10, 11, 12 };
+            const int discQuality[] = { 6, 7, 8, 9, 10, 11, 12, kAccurateRipButtonIndex };
             const int analysis[] = { 13, 14, 15, 16, 17, 18 };
             const int driveTools[] = { 19, 20, 21, 22, 23, 24, 25, 29, 30, 31, 32 };
-            const int utilities[] = { 26, 27, 28, 33, 34, 35 };
+            const int utilities[] = { 26, 27, 28, kBatchButtonIndex, kClearButtonIndex, kExitButtonIndex };
             const int* indices = ripCopy;
             int count = ARRAYSIZE(ripCopy);
             if (navIndex == 2) { indices = discQuality; count = ARRAYSIZE(discQuality); }

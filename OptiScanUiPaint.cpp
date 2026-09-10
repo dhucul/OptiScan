@@ -372,7 +372,7 @@ static void DrawUnifiedBackground(Gdiplus::Graphics& graphics, const RECT& rc)
     if (selectedNav == 0)
     {
         const wchar_t* groupNames[] = { L"Rip & Copy", L"Disc Quality", L"Analysis", L"Drive Tools", L"Utilities" };
-        const int groupCounts[] = { 4, 6, 6, 11, 6 };
+        const int groupCounts[] = { 4, 7, 6, 11, 6 };
         const int overviewColumns = 6;
         int groupTitleTop = ScalePx(370);
         const int buttonHeight = ScalePx(56);
@@ -486,8 +486,9 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
         case 17: displayLabel = L"Verify subchannel burn"; break;
         case 29: displayLabel = L"Pioneer audio quality check"; break;
         case 32: displayLabel = L"FE/TE servo scan (LiteOn)"; break;
-        case 33: displayLabel = L"Batch run"; break;
-        case 34: displayLabel = L"Clear output"; break;
+        case kAccurateRipButtonIndex: displayLabel = L"Check AccurateRip"; break;
+        case kBatchButtonIndex: displayLabel = L"Batch run"; break;
+        case kClearButtonIndex: displayLabel = L"Clear output"; break;
         default: break;
         }
 

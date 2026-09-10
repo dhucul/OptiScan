@@ -421,7 +421,22 @@ void PrintHelpMenu() {
 		"   Cancel remains available if the drive stalls or the media is unreadable.",
 		"Diagnosing tracking, focus, or mechanical readability problems." });
 
-	PrintEntry({ "34. Batch Run (multiple ops, 1 prescan)",
+	PrintEntry({ "34. Check CD against AccurateRip",
+		"Reads the current CD and checks its audio against AccurateRip reference\n"
+		"   checksums using the existing full-track verifier. No rip files are saved.\n"
+		"   Uses the lowest read speed the drive honors and the existing drive-offset\n"
+		"   selection. Pregap audio is included for correct track boundaries.\n"
+		"   Enhanced CDs use session 1 (audio); the data session is not read.\n"
+		"   Pioneer PureRead and Real-Time PureRead are temporarily turned off;\n"
+		"   their previous settings are restored when the check ends or is cancelled.\n"
+		"   Internet access is needed for reference lookup. Missing references,\n"
+		"   read errors, cancellation, or inconclusive results do not count as verified.\n"
+		"   Cancel during checksum calculation takes effect when the verifier returns.\n"
+		"   In a batch, the source disc is refreshed before checking unless this is\n"
+		"   the first step immediately after a fresh drive open.",
+		"Checking an audio CD against AccurateRip without saving an image." });
+
+	PrintEntry({ "35. Batch Run (multiple ops, 1 prescan)",
 		"Runs several menu items in succession with a single shared pre-scan\n"
 		"   (TOC + CD-Text + ISRC) at the start, so the disc only spins up once\n"
 		"   for the whole batch.\n"
@@ -439,7 +454,7 @@ void PrintHelpMenu() {
 		"   active drive partway through.",
 		"Running several quality scans or info readouts back-to-back on one disc." });
 
-	PrintEntry({ "35. Clear Info Box",
+	PrintEntry({ "36. Clear Info Box",
 		"Clears the output/info pane in the GUI.\n"
 		"   Does not affect the disc, drive, or any in-progress operation -\n"
 		"   only the on-screen log buffer is wiped. While a workflow is running\n"
@@ -447,7 +462,7 @@ void PrintHelpMenu() {
 		"   to stop at the next checkpoint.",
 		"Tidying the output area between operations, or cancelling a running workflow." });
 
-	PrintEntry({ "36. Exit",
+	PrintEntry({ "37. Exit",
 		"Exits the program. If a workflow is running, it is asked to cancel first.",
 		"Closing the tool when done." });
 
