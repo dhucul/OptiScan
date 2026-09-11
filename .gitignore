@@ -366,3 +366,4 @@ FodyWeavers.xsd
 .claude/
 # Scratch dumps produced by scans
 toc_dump.bin
+installer/Output/OptiScan-3.34-Setup.exe
