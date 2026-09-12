@@ -1,4 +1,4 @@
-﻿#define NOMINMAX
+#define NOMINMAX
 #include "OpticalDrive.h"
 #include "AccurateRip.h"
 #include "InterruptHandler.h"
@@ -118,9 +118,9 @@ static double ProbePregapAudioReadable(ScsiDrive& drive, DWORD windowStart, DWOR
 		// adjacent sector (windowEnd-1). A pregap — and the failing subchannel
 		// reads — sit right before the track boundary, so that end must be
 		// represented; sampling only from windowStart would miss boundary damage.
-		DWORD lba = (SAMPLES > 1)
-			? windowStart + (span - 1) * static_cast<DWORD>(k) / (SAMPLES - 1)
-			: windowStart;
+        DWORD lba = windowStart;
+        if constexpr (SAMPLES > 1)
+            lba = windowStart + (span - 1) * static_cast<DWORD>(k) / (SAMPLES - 1);
 		attempted++;
 		if (drive.ReadSectorAudioOnly(lba, buf)) ok++;
 	}

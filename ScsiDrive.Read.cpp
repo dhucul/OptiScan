@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // ScsiDrive.Read.cpp - SCSI sector reading and C2 handling
 // ============================================================================
 #include "ScsiDrive.h"
@@ -270,9 +270,13 @@ bool ScsiDrive::ReadSectorWithC2Ex(DWORD lba, BYTE* audio, BYTE* subchannel,
 	}
 
 	if (m_c2Mode == C2Mode::PlextorD8) {
-		return PlextorReadC2(lba, audio, c2Errors, c2Raw, options.countBytes,
-			outSenseKey, outASC, outASCQ,
-			outC1BlockErrors, outC2BlockErrors);
+        if (!PlextorReadC2(lba, audio, c2Errors, c2Raw, options.countBytes,
+            outSenseKey, outASC, outASCQ, outC1BlockErrors, outC2BlockErrors)) return false;
+        if (subchannel) {
+            BYTE ignoredAudio[AUDIO_SECTOR_SIZE]{};
+            if (!ReadSector(lba, ignoredAudio, subchannel)) return false;
+        }
+        return true;
 	}
 
 	BYTE cdb[12] = {};

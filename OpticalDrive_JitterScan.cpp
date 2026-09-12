@@ -10,6 +10,7 @@
 #define NOMINMAX
 #include "OpticalDrive.h"
 #include "InterruptHandler.h"
+#include "WorkflowChecks.h"
 #include <iostream>
 #include <iomanip>
 #include <sstream>
@@ -19,6 +20,7 @@
 #include <cmath>
 
 bool OpticalDrive::RunJitterScan(const DiscInfo& disc, JitterResult& result, int scanSpeed) {
+    result = JitterResult{};
 	std::cout << "\n=== CD Jitter / Beta Scan ===\n";
 
 	if (!m_drive.SupportsLiteOnJitter()) {
@@ -54,12 +56,16 @@ bool OpticalDrive::RunJitterScan(const DiscInfo& disc, JitterResult& result, int
 	m_drive.SetSpeed(scanSpeed);
 	if (!m_drive.LiteOnJitterStart(firstLBA, lastLBA)) {
 		std::cout << "ERROR: Failed to start jitter scan.\n";
-		m_drive.SetSpeed(0);
 		return false;
 	}
 
+    struct ScanStop {
+        ScsiDrive& drive;
+        ~ScanStop() { drive.LiteOnJitterStop(); }
+    } scanStop{m_drive};
+
 	auto start = std::chrono::steady_clock::now();
-	auto lastProgress = start;
+	WorkflowChecks::ScanProgressWatch progressWatch(start);
 	bool scanDone = false;
 	int sampleIndex = 0;
 	DWORD lastReportedLBA = DWORD(-1);
@@ -69,8 +75,6 @@ bool OpticalDrive::RunJitterScan(const DiscInfo& disc, JitterResult& result, int
 	while (!scanDone) {
 		if (InterruptHandler::Instance().IsInterrupted()
 			|| InterruptHandler::Instance().CheckEscapeKey()) {
-			m_drive.LiteOnJitterStop();
-			m_drive.SetSpeed(0);
 			std::cout << "\n*** Jitter scan cancelled ***\n";
 			return false;
 		}
@@ -78,21 +82,17 @@ bool OpticalDrive::RunJitterScan(const DiscInfo& disc, JitterResult& result, int
 		int jitter = 0, beta = 0;
 		DWORD currentLBA = 0;
 		if (!m_drive.LiteOnJitterPoll(jitter, beta, currentLBA, scanDone)) {
-			m_drive.LiteOnJitterStop();
-			if (!result.samples.empty()) break;   // partial data — still useful
+			// Samples remain available to the caller as incomplete evidence.
 			std::cout << "\nERROR: Lost communication with drive.\n";
-			m_drive.SetSpeed(0);
 			return false;
 		}
 		auto pollNow = std::chrono::steady_clock::now();
-		if (currentLBA != lastReportedLBA) lastProgress = pollNow;
-		else if (!scanDone && pollNow - lastProgress > std::chrono::seconds(30)) {
-			m_drive.LiteOnJitterStop();
-			std::cout << "\nERROR: Jitter scan stalled for 30 seconds.\n";
-			return false;
-		}
+        if (currentLBA >= lastLBA) scanDone = true;
+        if (progressWatch.Stalled(currentLBA, scanDone, pollNow)) {
+            std::cout << "\nERROR: Scan stalled for 30 seconds; partial data is incomplete.\n";
+            return false;
+        }
 		if (pollNow - start > std::chrono::minutes(90)) {
-			m_drive.LiteOnJitterStop();
 			std::cout << "\nERROR: Jitter scan exceeded the 90-minute safety limit.\n";
 			return false;
 		}
@@ -103,7 +103,7 @@ bool OpticalDrive::RunJitterScan(const DiscInfo& disc, JitterResult& result, int
 		lastReportedLBA = currentLBA;
 
 		// Discard first 3 raw samples — startup artefacts (matches QCheck)
-		if (sampleIndex < 3) { sampleIndex++; continue; }
+		if (sampleIndex < 3 && !scanDone) { sampleIndex++; continue; }
 
 		if (currentLBA >= lastLBA) scanDone = true;
 
@@ -169,8 +169,6 @@ bool OpticalDrive::RunJitterScan(const DiscInfo& disc, JitterResult& result, int
 		std::cout << out << std::flush;
 	}
 
-	m_drive.LiteOnJitterStop();
-	m_drive.SetSpeed(0);
 
 	if (!result.samples.empty()) {
 		result.avgJitter = static_cast<double>(result.totalJitter) / result.samples.size();
@@ -180,6 +178,11 @@ bool OpticalDrive::RunJitterScan(const DiscInfo& disc, JitterResult& result, int
 	}
 
 	std::cout << "\n";
+    if (result.samples.empty()) {
+        Console::Error("Scan ended without usable measurements.\n");
+        return false;
+    }
+    result.completed = true;
 	PrintJitterReport(result);
 	return true;
 }
@@ -187,6 +190,7 @@ bool OpticalDrive::RunJitterScan(const DiscInfo& disc, JitterResult& result, int
 bool OpticalDrive::SaveJitterLog(const JitterResult& result, const std::wstring& filename) {
 	std::ofstream f(filename);
 	if (!f) return false;
+    f << "# completed=" << (result.completed ? "true" : "false") << "\n";
 	f << "lba,jitter,beta\n";
 	for (const auto& s : result.samples)
 		f << s.lba << "," << s.jitter << "," << s.beta << "\n";

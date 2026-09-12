@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // WriteFromCueWorkflow.cpp - Write an audio CD from a CUE sheet plus the WAV or
 // FLAC files it references.
 //
@@ -30,6 +30,8 @@
 #include "InterruptHandler.h"
 #include "MenuHelpers.h"
 #include "Progress.h"
+#include "WorkflowChecks.h"
+#include "WriteFeatureGuard.h"
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
@@ -497,6 +499,21 @@ void RunWriteFromCueWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 	CleanupTempWavs(payloads);
 
 	// ── 7. Media state and blanking ─────────────────────────────────────
+	bool plxTestWrite = false;
+	bool plxVariRecOn = false;
+	int  plxVariRecOff = 0;
+	if (copier.SelectPlextorWriteOptions(plxTestWrite, plxVariRecOn, plxVariRecOff) == -1)
+		return;
+
+    bool restoreTest = false, restoreVariRec = false;
+    WriteFeatureGuard featureGuard{copier.GetDriveRef(), restoreTest, restoreVariRec};
+    if (plxTestWrite || WorkflowChecks::SimulationRequested()) {
+        bool full = false, rewritable = false, blank = false;
+        if (!copier.CheckRewritableDisk(full, rewritable, true, &blank) || !blank) {
+            Console::Error("Simulation requires a blank disc; existing media will not be erased.\n");
+            return;
+        }
+    }
 	bool isFull = false, isRewritable = false;
 	if (!copier.CheckRewritableDisk(isFull, isRewritable, /*quiet=*/true)) {
 		Console::Error("Cannot determine disc type\n");
@@ -522,7 +539,7 @@ void RunWriteFromCueWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 		if (!copier.BlankRewritableDisk(eraseSpeed, choice == 1)) return;
 		wasBlanked = true;
 	}
-	else if (isRewritable && !isFull) {
+	else if (isRewritable && !isFull && !plxTestWrite && !WorkflowChecks::SimulationRequested()) {
 		Console::Info("CD-RW disc detected with available space.\n");
 		bool ok = false;
 		const int choice = GetMenuChoice("CD-RW with free space - what now?",
@@ -558,24 +575,20 @@ void RunWriteFromCueWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 	if (!calibrationOk) { Console::Info("Write cancelled.\n"); return; }
 	const bool useCal = (calibChoice == 1);
 
-	bool plxTestWrite = false;
-	bool plxVariRecOn = false;
-	int  plxVariRecOff = 0;
-	if (copier.SelectPlextorWriteOptions(plxTestWrite, plxVariRecOn, plxVariRecOff) == -1)
-		return;
-
+    // Apply write features after media preparation, immediately before burning.
 	if (plxTestWrite) {
+        restoreTest = true;
 		if (copier.GetDriveRef().SetPlextorTestWrite(true)) {
 			Console::Warning("TEST WRITE MODE - laser will stay at read power; "
 				"nothing will be burned.\n");
 		}
 		else {
-			Console::Warning("Test write: drive rejected the request - proceeding "
-				"with a real burn.\n");
-			plxTestWrite = false;
+			Console::Error("Test Write is unavailable. Write cancelled.\n");
+            return;
 		}
 	}
 	if (plxVariRecOn) {
+        restoreVariRec = true;
 		if (copier.GetDriveRef().SetVariRecCD(true, plxVariRecOff)) {
 			Console::Info("VariRec applied (offset ");
 			std::cout << plxVariRecOff << ")\n";
@@ -589,14 +602,12 @@ void RunWriteFromCueWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 
 	// ── 9. Burn ─────────────────────────────────────────────────────────
 	const bool writeOk =
-		copier.WriteDisc(binPath, cueOutPath, L"", speed, useCal, wasBlanked);
+		copier.WriteDisc(binPath, cueOutPath, L"", speed, useCal, wasBlanked, false, plxTestWrite);
 
-	if (plxTestWrite) copier.GetDriveRef().SetPlextorTestWrite(false);
-	if (plxVariRecOn) copier.GetDriveRef().SetVariRecCD(false, 0);
 
 	if (writeOk) {
 		if (outCompleted) *outCompleted = true;
-		Console::Success(plxTestWrite
+		Console::Success((plxTestWrite || WorkflowChecks::SimulationRequested())
 			? "Test write completed successfully (no data burned)\n"
 			: "Disc write completed successfully\n");
 	}

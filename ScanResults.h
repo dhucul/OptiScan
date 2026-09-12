@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // ScanResults.h - Disc quality scanning results
 // ============================================================================
 #pragma once
@@ -282,6 +282,7 @@ struct JitterSample {
 
 // ── Jitter / beta scan result (LiteOn 0xDF/0x1B vendor command) ─────────────
 struct JitterResult {
+    bool completed = false;
 	bool supported = false;
 	DWORD totalSectors = 0;
 	DWORD totalSeconds = 0;
@@ -311,6 +312,7 @@ struct FeTeSample {
 // Servo-level physical measurement. Field interpretation is tentative — see
 // ScsiDrive.LiteOnFeTe.cpp. Magnitudes are relative, not absolute.
 struct FeTeResult {
+    bool completed = false;
 	bool supported = false;
 	DWORD totalSectors = 0;
 	DWORD totalSeconds = 0;

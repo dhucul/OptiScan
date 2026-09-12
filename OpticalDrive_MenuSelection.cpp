@@ -1,4 +1,4 @@
-﻿#define NOMINMAX
+#define NOMINMAX
 #include "OpticalDrive.h"
 #include "AccurateRip.h"
 #include "GuiInput.h"
@@ -343,9 +343,11 @@ int OpticalDrive::SelectPlextorWriteOptions(bool& outTestWrite,
 
 	if (v == 1) {
 		outVariRecEnable = true;
+        bool offsetAccepted = false;
 		outVariRecOffset = GuiInput::PromptInt("VariRec offset",
 			"Laser-power offset (-4 to +4, 0 = no change):",
-			-4, 4, 0);
+			-4, 4, 0, &offsetAccepted);
+        if (!offsetAccepted) { outVariRecEnable = false; return -1; }
 		std::cout << "VariRec ENABLED with offset " << outVariRecOffset << "\n";
 	}
 

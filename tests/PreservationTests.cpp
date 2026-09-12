@@ -16,6 +16,8 @@
 
 // Defined in CueSheetImportTests.cpp; returns its own failure count.
 int RunCueSheetImportTests();
+int RunAuditRegressionTests();
+int RunWriteRetryTests();
 
 namespace {
 
@@ -905,6 +907,8 @@ int main() {
 		"Manifest creation fails when an expected artifact is missing");
 
 	failures += RunCueSheetImportTests();
+    failures += RunAuditRegressionTests();
+    failures += RunWriteRetryTests();
 
 	manifestInput.close();
 	std::error_code cleanupError;

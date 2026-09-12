@@ -1,4 +1,4 @@
-﻿#define NOMINMAX
+#define NOMINMAX
 #include "OpticalDrive.h"
 #include "InterruptHandler.h"
 #include <iostream>
@@ -24,6 +24,7 @@ bool OpticalDrive::CheckLeadAreas(DiscInfo& disc, int scanSpeed) {
 
 	int leadInErrors = 0, leadOutErrors = 0;
 	int leadInScanned = 0, leadOutScanned = 0;
+    int leadInFailed = 0, leadOutFailed = 0;
 	std::vector<BYTE> buf(AUDIO_SECTOR_SIZE);
 
 	// ── Lead-in check ───────────────────────────────────────────────────────
@@ -45,7 +46,7 @@ bool OpticalDrive::CheckLeadAreas(DiscInfo& disc, int scanSpeed) {
 			if (m_drive.ReadSectorWithC2(static_cast<DWORD>(lba), buf.data(), nullptr, c2)) {
 				leadInScanned++;
 				if (c2 > 0) leadInErrors++;
-			}
+			} else { leadInFailed++; }
 		}
 	}
 	else {
@@ -60,7 +61,7 @@ bool OpticalDrive::CheckLeadAreas(DiscInfo& disc, int scanSpeed) {
 			if (m_drive.ReadSectorWithC2(lba, buf.data(), nullptr, c2)) {
 				leadInScanned++;
 				if (c2 > 0) leadInErrors++;
-			}
+			} else { leadInFailed++; }
 		}
 	}
 
@@ -83,7 +84,7 @@ bool OpticalDrive::CheckLeadAreas(DiscInfo& disc, int scanSpeed) {
 		if (m_drive.ReadSectorWithC2(lba, buf.data(), nullptr, c2)) {
 			leadOutScanned++;
 			if (c2 > 0) leadOutErrors++;
-		}
+		} else { leadOutFailed++; }
 	}
 
 	m_drive.SetSpeed(0);
@@ -98,17 +99,22 @@ bool OpticalDrive::CheckLeadAreas(DiscInfo& disc, int scanSpeed) {
 		std::cout << "(pregap LBA 0-149):      ";
 	std::cout << leadInScanned << " sectors read, " << leadInErrors << " errors";
 	if (leadInScanned == 0) std::cout << "  [SKIP - no sectors readable]";
-	else if (leadInErrors == 0) std::cout << "  [OK]";
+	else if (leadInErrors == 0 && leadInFailed == 0) std::cout << "  [OK]";
 	else std::cout << "  [WARN - TOC area may be degraded]";
 	std::cout << "\n";
 
 	std::cout << "  Lead-out (last 150 sectors):   "
 		<< leadOutScanned << " sectors read, " << leadOutErrors << " errors";
 	if (leadOutScanned == 0) std::cout << "  [SKIP - no sectors readable]";
-	else if (leadOutErrors == 0) std::cout << "  [OK]";
+	else if (leadOutErrors == 0 && leadOutFailed == 0) std::cout << "  [OK]";
 	else std::cout << "  [WARN - outer edge damage]";
 	std::cout << "\n";
 
+    if (leadInFailed > 0 || leadOutFailed > 0 || leadInScanned == 0 || leadOutScanned == 0) {
+        std::cout << "\n  INCOMPLETE: " << leadInFailed << " inner and " << leadOutFailed
+                  << " outer reads failed. Lead-area health could not be established.\n";
+        return false;
+    }
 	if (leadInErrors > 0 || leadOutErrors > 0) {
 		std::cout << "\n  Note: Lead area errors can cause disc recognition problems\n";
 		std::cout << "        and indicate edge-region physical damage.\n";
@@ -120,8 +126,13 @@ bool OpticalDrive::CheckLeadAreas(DiscInfo& disc, int scanSpeed) {
 	}
 }
 
-void OpticalDrive::GenerateSurfaceMap(DiscInfo& disc, const std::wstring& filename, int scanSpeed) {
+bool OpticalDrive::GenerateSurfaceMap(DiscInfo& disc, const std::wstring& filename, int scanSpeed) {
 	std::cout << "\n=== Generating Disc Surface Map ===\n";
+    if (!m_drive.CheckC2Support()) {
+        Console::Warning("Surface map unavailable: C2 measurement is not supported.\n");
+        return false;
+    }
+    ScopedDriveSpeed restoreSpeed(m_drive);
 	m_drive.SetSpeed(scanSpeed);
 
 	DWORD totalSectors = CalculateTotalAudioSectors(disc);
@@ -129,7 +140,7 @@ void OpticalDrive::GenerateSurfaceMap(DiscInfo& disc, const std::wstring& filena
 	if (totalSectors == 0) {
 		std::cout << "No audio tracks to scan.\n";
 		m_drive.SetSpeed(0);
-		return;
+		return false;
 	}
 
 	std::ofstream mapFile;
@@ -138,7 +149,7 @@ void OpticalDrive::GenerateSurfaceMap(DiscInfo& disc, const std::wstring& filena
 		if (!mapFile) {
 			std::cout << "ERROR: Cannot create map file.\n";
 			m_drive.SetSpeed(0);
-			return;
+			return false;
 		}
 	}
 
@@ -153,7 +164,7 @@ void OpticalDrive::GenerateSurfaceMap(DiscInfo& disc, const std::wstring& filena
 	catch (const std::bad_alloc&) {
 		std::cout << "ERROR: Failed to allocate sector buffer.\n";
 		m_drive.SetSpeed(0);
-		return;
+		return false;
 	}
 
 	DWORD scannedSectors = 0;
@@ -179,7 +190,7 @@ void OpticalDrive::GenerateSurfaceMap(DiscInfo& disc, const std::wstring& filena
 				if (mapFile.is_open()) mapFile.flush();
 				m_drive.SetSpeed(0);
 				progress.Finish(false);
-				return;
+				return false;
 			}
 
 			int c2Errors = 0;
@@ -231,12 +242,24 @@ void OpticalDrive::GenerateSurfaceMap(DiscInfo& disc, const std::wstring& filena
 		}
 	}
 
+    if (scannedSectors == 0) {
+        Console::Error("No sectors were measured.\n");
+        return false;
+    }
 	// If no problems were found, write a clean summary instead
 	if (mapFile.is_open() && !headerWritten) {
 		mapFile << "No errors detected. All " << scannedSectors
 			<< " sectors read successfully with zero C2 errors.\n";
 	}
 
+    if (mapFile.is_open()) {
+        mapFile.close();
+        if (!mapFile.good()) {
+            Console::Error("Surface map could not be saved completely.\n");
+            progress.Finish(false);
+            return false;
+        }
+    }
 	progress.Finish(true);
 	m_drive.SetSpeed(0);
 
@@ -272,4 +295,5 @@ void OpticalDrive::GenerateSurfaceMap(DiscInfo& disc, const std::wstring& filena
 			std::cout << "  (No errors - clean disc)\n";
 	}
 	std::cout << std::string(60, '=') << "\n";
+    return true;
 }

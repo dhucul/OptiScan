@@ -40,6 +40,7 @@ namespace {
         std::wstring text;
         bool         direct = false;
         COLORREF     color  = 0;
+        bool themeColor = false;
     };
     std::deque<QueueItem> g_queue;      // output waiting for the UI thread
     bool g_drainPending = false;
@@ -539,6 +540,10 @@ namespace GuiSink {
         EnqueueItem(QueueItem{ std::wstring(text, len), /*direct=*/true, color });
     }
 
+    void AppendInfo(const wchar_t* text, size_t len) {
+        if (text && len) EnqueueItem(QueueItem{std::wstring(text, len), true, 0, true});
+    }
+
     void DrainOutputQueue() {
         std::deque<QueueItem> local;
         {
@@ -566,7 +571,7 @@ namespace GuiSink {
                 flushStream();
                 if (g_hOutput) {
                     OutputControl::Append(g_hOutput, item.text.c_str(),
-                                          item.text.size(), item.color,
+                                          item.text.size(), item.themeColor ? ActiveTheme().accentWarm : item.color,
                                           /*isExplicit=*/true);
                 }
                 AppendToMirrorEdit(item.text);

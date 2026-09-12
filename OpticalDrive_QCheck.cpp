@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // OpticalDrive_QCheck.cpp - Hardware-driven CD quality scan
 //
 // Performs a hardware error-rate scan using either Plextor Q-Check vendor
@@ -155,7 +155,11 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 	// a scan aimed at the wrong (or emptied) drive says so in plain words.
 	{
 		DriveHealthCheck media;
-		if (m_drive.GetMediaStatus(media) && !media.mediaPresent) {
+        if (!m_drive.GetMediaStatus(media)) {
+            Console::Error("Cannot confirm media state; quality scan was not started.\n");
+            return false;
+        }
+		if (!media.mediaPresent) {
 			std::cout << "ERROR: No disc in this drive"
 				<< (media.trayOpen ? " (tray is open)." : ".") << "\n";
 			std::cout << "       If you moved the disc to another drive, run "
@@ -164,6 +168,10 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 			result.supported = false;
 			return false;
 		}
+        if (!media.mediaReady && !m_drive.WaitForDriveReady(15)) {
+            Console::Error("Media did not become ready; quality scan was not started.\n");
+            return false;
+        }
 	}
 
 	// ── Probe drive for hardware quality scan support ────────

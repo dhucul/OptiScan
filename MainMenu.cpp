@@ -1,4 +1,4 @@
-﻿#include "MainMenu.h"
+#include "MainMenu.h"
 #include "AccurateRip.h"
 #include "CopyWorkflow.h"
 #include "Drive.h"
@@ -54,11 +54,11 @@ PioneerMenuReadPolicy GetPioneerMenuReadPolicy(int operation) {
 // Pioneer CD Check standalone UI. Measurement mechanics live in the shared
 // OpticalDrive engine so every workflow uses identical inspection-state,
 // PureRead, retry, cancellation, cleanup, and validity semantics.
-void RunPioneerCdCheck(OpticalDrive& copier, DiscInfo& disc) {
+bool RunPioneerCdCheck(OpticalDrive& copier, DiscInfo& disc) {
     PioneerVendor pioneer(copier.GetDriveRef());
     if (!pioneer.IsPioneerDrive()) {
         Console::Warning("Pioneer CD Check requires a Pioneer drive.\n");
-        return;
+        return false;
     }
 
     PioneerCapabilities capabilities;
@@ -79,7 +79,7 @@ void RunPioneerCdCheck(OpticalDrive& copier, DiscInfo& disc) {
         "2. Full scan\n"
         "   Measures the complete audio range; can take up to disc duration.",
         1, 2, 1, &choiceAccepted);
-    if (!choiceAccepted) return;
+    if (!choiceAccepted) return false;
 
     const PioneerCdCheckScanMode mode = choice == 1
         ? PioneerCdCheckScanMode::Quick : PioneerCdCheckScanMode::Full;
@@ -90,7 +90,7 @@ void RunPioneerCdCheck(OpticalDrive& copier, DiscInfo& disc) {
     PioneerCdCheckSummary summary;
     copier.RunPioneerCdCheckMeasurement(disc, mode, summary, "  CD Check");
     if (!summary.completed || summary.validSamples == 0)
-        return;
+        return false;
 
     const PioneerCdCheckGrade grade = summary.sawInvalidMeasurement
         ? PioneerCdCheckGrade::D : summary.worstGrade;
@@ -138,6 +138,7 @@ void RunPioneerCdCheck(OpticalDrive& copier, DiscInfo& disc) {
         Console::Info("  Severe uncorrectable or tracking errors were detected.\n");
         break;
     }
+    return !summary.sawInvalidMeasurement;
 }
 
 // Standalone wiring for the existing read, offset, and AccurateRip verifier.
@@ -218,6 +219,7 @@ bool RunAccurateRipCheck(OpticalDrive& copier, const DiscInfo& disc) {
 int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
                        const std::wstring& workDir, wchar_t& audioDrive,
                        bool& hasTOC, int choice) {
+    if (g_interrupt.IsInterrupted()) return 2;
 	int dispatchStatus = 0;
 	auto requiresTOC = [](int operation) {
 		switch (operation) {
@@ -281,6 +283,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			// ── 1. Copy disc ────────────────────────────────────────────
 		case 1:
 			if (!RunCopyWorkflow(copier, disc, workDir)) dispatchStatus = 1;
+            else { disc = DiscInfo{}; hasTOC = false; }
 			break;
 
 			// ── 2. Rip tracks (WAV/FLAC) ────────────────────────────────
@@ -444,7 +447,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 		case 9: {
 			int speed = copier.SelectScanSpeed();
 			std::wstring mapFile = workDir + L"\\surface_map.csv";
-			copier.GenerateSurfaceMap(disc, mapFile, speed);
+			if (!copier.GenerateSurfaceMap(disc, mapFile, speed)) dispatchStatus = 1;
 			break;
 		}
 
@@ -458,7 +461,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 				"Number of full read passes to compare for consistency.\n\n"
 				"Enter a value from 2 to 10 (recommended: 3).",
 				2, 10, 3, &passesOk);
-			if (!passesOk) { Console::Info("Verification cancelled.\n"); break; }
+			if (!passesOk) { Console::Info("Verification cancelled.\n"); dispatchStatus = 2; break; }
 			std::vector<MultiPassResult> results;
 			if (!copier.RunMultiPassVerification(disc, results, passes, speed))
 				dispatchStatus = 1;
@@ -770,7 +773,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			   // ── 17. Copy-protection check ─────────────────────────────
 		case 17: {
 			int speed = copier.SelectScanSpeed();
-			RunProtectionCheck(copier, disc, workDir, speed);
+			if (!RunProtectionCheck(copier, disc, workDir, speed)) dispatchStatus = 1;
 			break;
 		}
 
@@ -1046,7 +1049,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			   // ── 26. Check for updates ─────────────────────────────────
 		case 26: {
-			CheckForUpdates(APP_VERSION);
+			if (!CheckForUpdates(APP_VERSION)) dispatchStatus = 1;
 			break;
 		}
 
@@ -1057,7 +1060,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 
 			// ── 28. Pioneer CD Check ────────────────────────────────
 		case 28:
-			RunPioneerCdCheck(copier, disc);
+			if (!RunPioneerCdCheck(copier, disc)) dispatchStatus = 1;
 			break;
 
 			// ── 29. Jitter / beta scan (LiteOn) ─────────────────────
@@ -1076,6 +1079,12 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					std::wcout << logPath << L"\n";
 				}
 			}
+            else if (!jr.samples.empty()) {
+                const auto partialPath = workDir + L"\\jitter_scan_partial.csv";
+                if (copier.SaveJitterLog(jr, partialPath))
+                    Console::Warning("Incomplete scan samples saved separately; this step did not complete.\n");
+                dispatchStatus = 1;
+            }
 			else if (!jr.supported) {
 				Console::Warning("Jitter scan requires legacy LiteOn 0xDF/0x1B jitter support.\n");
 				dispatchStatus = 1;
@@ -1103,6 +1112,12 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					std::wcout << logPath << L"\n";
 				}
 			}
+            else if (!fr.samples.empty()) {
+                const auto partialPath = workDir + L"\\fete_scan_partial.csv";
+                if (copier.SaveFeTeLog(fr, partialPath))
+                    Console::Warning("Incomplete scan samples saved separately; this step did not complete.\n");
+                dispatchStatus = 1;
+            }
 			else if (!fr.supported) {
 				Console::Warning("FE/TE scan requires LiteOn/MediaTek 0xDF/0x08 servo support.\n");
 				dispatchStatus = 1;
@@ -1120,6 +1135,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			// consensus instead of trusting the drive's C2.
 		case 30:
 			if (!RunRecoveryRipWorkflow(copier, disc, workDir)) dispatchStatus = 1;
+            else { disc = DiscInfo{}; hasTOC = false; }
 			break;
 
 			// ── 31. Erase CD-RW (rewritable) ────────────────────────
@@ -1153,7 +1169,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 				if (eraseCdDrives.size() > 1) {
 					Console::Info("\nPick the drive holding the disc to erase.\n");
 					pick = SelectWriterDrive(eraseCdDrives, audioDrive);
-					if (!pick) { Console::Info("Erase cancelled.\n"); break; }
+					if (!pick) { Console::Info("Erase cancelled.\n"); dispatchStatus = 2; break; }
 				}
 
 				if (pick != audioDrive) {
@@ -1187,6 +1203,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 					"Attempt to blank it anyway?  This recovers a CD-RW; on a write-once\n"
 					"CD-R it will simply fail without doing any harm.")) {
 					Console::Info("Erase cancelled.\n");
+                    dispatchStatus = 2;
 					break;
 				}
 				forceUnreadable = true;
@@ -1210,7 +1227,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 				"Full erase wipes the entire surface and takes much longer\n"
 				"(more reliable for recovering a bad/unreadable disc).\n\n"
 				"Yes = Quick erase    No = Full erase    Cancel = abort");
-			if (mode == -1) { Console::Info("Erase cancelled.\n"); break; }
+			if (mode == -1) { Console::Info("Erase cancelled.\n"); dispatchStatus = 2; break; }
 			bool quickBlank = (mode == 1);
 
 			int speed = copier.SelectWriteSpeed();
@@ -1253,5 +1270,5 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 		dispatchStatus = 1;
 	}
 
-	return dispatchStatus;
+	return g_interrupt.IsInterrupted() ? 2 : dispatchStatus;
 }

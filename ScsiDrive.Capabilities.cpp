@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // ScsiDrive.Capabilities.cpp - Capability and feature detection
 // ============================================================================
 #include "ScsiDrive.h"
@@ -632,7 +632,7 @@ bool ScsiDrive::ProbeC1BlockErrors() {
 			if (ok) {
 				if (c1Block > 0) {
 					char msg[64];
-					snprintf(msg, 64, "ProbeC1: LBA %d returned C1=%d\n", lba, c1Block);
+					snprintf(msg, 64, "ProbeC1: LBA %lu returned C1=%d\n", lba, c1Block);
 					OutputDebugStringA(msg);
 					return true;
 				}

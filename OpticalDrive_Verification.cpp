@@ -1,4 +1,4 @@
-﻿#define NOMINMAX
+#define NOMINMAX
 #include "OpticalDrive.h"
 #include "DiscCrcComparison.h"
 #include "InterruptHandler.h"
@@ -140,8 +140,9 @@ bool OpticalDrive::RunMultiPassVerification(DiscInfo& disc, std::vector<MultiPas
 			r.allMatch = allMatch;
 			r.majorityHash = majorityHash;
 
-			if (allMatch) {
-				perfectMatches++;
+            if (allMatch) {
+                results.push_back(r);
+                perfectMatches++;
 			}
 			else if (matchCount >= (passes + 1) / 2) {
 				partialMatches++;
@@ -177,7 +178,7 @@ bool OpticalDrive::RunMultiPassVerification(DiscInfo& disc, std::vector<MultiPas
 		std::cout << failures << "\n";
 	}
 
-	if (!results.empty()) {
+	if (partialMatches > 0 || failures > 0) {
 		std::cout << "\n=== Most Inconsistent Sectors ===\n";
 		std::sort(results.begin(), results.end(),
 			[](const MultiPassResult& a, const MultiPassResult& b) {
@@ -185,8 +186,9 @@ bool OpticalDrive::RunMultiPassVerification(DiscInfo& disc, std::vector<MultiPas
 			});
 
 		int shown = 0;
-		for (const auto& r : results) {
-			if (shown++ >= 10) break;
+        for (const auto& r : results) {
+            if (r.allMatch) continue;
+            if (shown++ >= 10) break;
 			if (r.passesMatched == 0 && r.majorityHash == 0)
 				std::cout << "  LBA " << std::setw(6) << r.lba << ": READ FAILURE\n";
 			else

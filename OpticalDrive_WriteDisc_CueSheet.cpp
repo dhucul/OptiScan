@@ -1,4 +1,4 @@
-﻿#define NOMINMAX
+#define NOMINMAX
 #include "OpticalDrive.h"
 #include "ConsoleColors.h"
 #include "WriteDiscInternal.h"
@@ -21,7 +21,7 @@ static void LBAtoMSF(int lba, BYTE& m, BYTE& s, BYTE& f) {
 // ============================================================================
 // Helper: Set Write Parameters Mode Page 0x05
 // ============================================================================
-static bool SetWriteParametersPage(ScsiDrive& drive, int subchannelMode, bool quiet = false) {
+static bool SetWriteParametersPage(ScsiDrive& drive, int subchannelMode, bool quiet = false, bool simulate = false) {
 	BYTE modeData[60] = { 0 };
 
 	BYTE* page = modeData + 8;
@@ -78,15 +78,10 @@ static bool SetWriteParametersPage(ScsiDrive& drive, int subchannelMode, bool qu
 	// that advertises Test Write (Drive capabilities -> "Test Write (Simulate)").
 	// Post-write readback verification will report a mismatch in this mode (the
 	// disc stays blank) -- that is expected for a simulated burn.
-	{
-		char sim[8] = {};
-		DWORD simLen = GetEnvironmentVariableA("OPTISCAN_SIMULATE_WRITE", sim, sizeof(sim));
-		if (simLen > 0 && simLen < sizeof(sim) && sim[0] != '0') {
-			page[2] |= 0x10;  // Test Write (simulate)
-			if (!quiet)
-				Console::Warning("SIMULATE (Test Write) enabled -- nothing will be committed to the disc\n");
-		}
-	}
+    if (simulate) {
+        page[2] |= 0x10;
+        if (!quiet) Console::Warning("SIMULATE enabled -- nothing will be committed.\n");
+    }
 
 	page[3] = 0x00;
 	page[5] = 0x00;
@@ -115,9 +110,13 @@ static bool SetWriteParametersPage(ScsiDrive& drive, int subchannelMode, bool qu
 			if (!quiet) Console::Warning("Drive returned an unusable Write Parameters page\n");
 			// MODE SELECT itself succeeded; an unusable optional readback is not
 			// proof that the drive rejected the requested write parameters.
-			return true;
+			return !simulate;
 		}
 		BYTE* vPage = verifyBuf + 8 + bdLen;
+        if (simulate && !(vPage[2] & 0x10)) {
+            Console::Error("Drive did not confirm Test Write; aborting.\n");
+            return false;
+        }
 		BYTE writeType = vPage[2] & 0x0F;
 		BYTE blockType = vPage[4];
 		const char* modeName = (writeType == 0x03) ? "Raw" : "SAO";
@@ -142,7 +141,10 @@ static bool SetWriteParametersPage(ScsiDrive& drive, int subchannelMode, bool qu
 			}
 			return false;
 		}
-	}
+	} else if (simulate) {
+        Console::Error("Cannot verify Test Write mode; aborting.\n");
+        return false;
+    }
 
 	return true;
 }
@@ -347,7 +349,7 @@ bool WriteDiscInternal::BuildAndSendCueSheet(ScsiDrive& drive,
 // ============================================================================
 // Helper: Prepare drive for writing
 // ============================================================================
-bool WriteDiscInternal::PrepareDriveForWrite(ScsiDrive& drive, int subchannelMode, bool quiet) {
+bool WriteDiscInternal::PrepareDriveForWrite(ScsiDrive& drive, int subchannelMode, bool quiet, bool simulate) {
 	if (!quiet) Console::Info("Checking drive readiness...\n");
 	if (!WriteDiscInternal::WaitForDriveReady(drive, 15)) {
 		if (!quiet) Console::Error("Drive did not become ready\n");
@@ -356,7 +358,7 @@ bool WriteDiscInternal::PrepareDriveForWrite(ScsiDrive& drive, int subchannelMod
 	if (!quiet) Console::Success("Drive is ready\n");
 
 	if (!quiet) Console::Info("Configuring write parameters...\n");
-	if (!SetWriteParametersPage(drive, subchannelMode, quiet)) {
+	if (!SetWriteParametersPage(drive, subchannelMode, quiet, simulate)) {
 		if (!quiet) Console::Error("Failed to configure write parameters\n");
 		return false;
 	}

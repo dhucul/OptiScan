@@ -82,6 +82,14 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Accessibility.h" />
+    <ClInclude Include="ArtifactTransaction.h" />
+    <ClInclude Include="TrackFileOutput.h" />
+    <ClInclude Include="NumericInput.h" />
+    <ClInclude Include="WorkflowChecks.h" />
+    <ClInclude Include="ImageSource.h" />
+    <ClInclude Include="WriteFeatureGuard.h" />
+    <ClInclude Include="ImapiCancelMonitor.h" />
+
     <ClInclude Include="ButtonFeedback.h" />
     <ClInclude Include="AccessibleAnnounce.h" />
     <ClInclude Include="AccurateRip.h" />

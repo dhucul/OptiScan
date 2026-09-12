@@ -1,4 +1,4 @@
-﻿#define NOMINMAX
+#define NOMINMAX
 #include "OpticalDrive.h"
 #include "InterruptHandler.h"
 #include <iostream>
@@ -119,7 +119,7 @@ bool OpticalDrive::RunSpeedComparisonTest(DiscInfo& disc, std::vector<SpeedCompa
 				(r.highSpeedC2 > 0 && r.highSpeedC2 > r.lowSpeedC2 * 2) ||
 				(r.lowSpeedC2 > 0 && r.lowSpeedC2 > r.highSpeedC2 * 2);
 
-			if (r.lowSpeedC2 != 0 || r.highSpeedC2 != 0) results.push_back(r);
+			results.push_back(r);
 			tested++;
 			progress.Update(tested, totalSamples);
 		}

@@ -2,9 +2,9 @@
 #include "OpticalDrive.h"
 #include <string>
 
-// Runs a single menu action. Returns 0 normally, non-zero on fatal error
-// (e.g. drive could not be reopened).  `choice` is the original 1..30 menu
-// number from the legacy console menu; the GUI maps button clicks onto it.
+// Runs a single operation: 0 = completed, 1 = failed/incomplete/unsupported,
+// 2 = cancelled. Every nonzero result stops a batch. `choice` is a stable
+// operation ID; the GUI maps displayed button numbers onto these IDs.
 int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
                        const std::wstring& workDir, wchar_t& audioDrive,
                        bool& hasTOC, int choice);

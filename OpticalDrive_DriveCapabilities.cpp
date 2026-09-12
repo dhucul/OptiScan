@@ -1,4 +1,4 @@
-﻿#define NOMINMAX
+#define NOMINMAX
 #include "OpticalDrive.h"
 #include "DriveCapabilityParsing.h"
 #include "PioneerVendor.h"
@@ -651,10 +651,10 @@ void OpticalDrive::ShowDriveRecommendations() {
 }
 
 void OpticalDrive::EnsureCapabilitiesDetected() {
-	if (!m_capabilitiesDetected) {
-		DriveCapabilities caps;
-		DetectDriveCapabilities(caps);
-	}
+    m_hasAccurateStream = false;
+    m_capabilitiesDetected = false;
+    DriveCapabilities caps;
+    DetectDriveCapabilities(caps);
 }
 
 // ============================================================================

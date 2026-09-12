@@ -22,6 +22,7 @@ inline int GetMenuChoice(const char* title, const char* message,
                          int minChoice, int maxChoice, int defaultChoice = 1,
                          bool* outOk = nullptr) {
     auto cancelResult = [&]() {
+        g_interrupt.SetInterrupted(true);
         if (outOk) *outOk = false;
         // When the caller didn't ask for a Cancel signal, fall through to
         // minChoice so the dominant "0 = back" sub-menu pattern naturally
@@ -37,7 +38,7 @@ inline int GetMenuChoice(const char* title, const char* message,
     int v = GuiInput::PromptInt(title, message,
                                 minChoice, maxChoice, defaultChoice, &ok);
     std::cout << "\n";
-    if (!ok) return cancelResult();
+    if (!ok || (minChoice == 0 && v == 0)) return cancelResult();
     if (outOk) *outOk = true;
     return v;
 }

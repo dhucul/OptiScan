@@ -1,4 +1,4 @@
-﻿#define NOMINMAX
+#define NOMINMAX
 #include "OpticalDrive.h"
 #include "InterruptHandler.h"
 #include "PioneerVendor.h"
@@ -97,9 +97,9 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 	// so ~60% of samples fall in the outer 40% of the disc, where wobble
 	// effects are strongest (centrifugal force ∝ radius²).
 	for (int i = 0; i < SAMPLE_COUNT && maxLBA > 0; i++) {
-		double t = SAMPLE_COUNT > 1
-			? static_cast<double>(i) / static_cast<double>(SAMPLE_COUNT - 1)
-			: 0.0;
+        double t = 0.0;
+        if constexpr (SAMPLE_COUNT > 1)
+            t = static_cast<double>(i) / static_cast<double>(SAMPLE_COUNT - 1);
 		// Concave bias toward outer edge: 1-(1-t)² = 2t - t²
 		// maps [0,1] → [0,1] with higher sample density near 1.0
 		double biased = 2.0 * t - t * t;

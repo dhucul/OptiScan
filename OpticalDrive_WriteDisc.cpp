@@ -1,10 +1,12 @@
-﻿#define NOMINMAX
+#define NOMINMAX
 #include "OpticalDrive.h"
 #include "ConsoleColors.h"
 #include "GuiInput.h"
 #include "Progress.h"
 #include "InterruptHandler.h"
 #include "WriteDiscInternal.h"
+#include "WorkflowChecks.h"
+#include "ImageSource.h"
 #include "PioneerVendor.h"
 #include <algorithm>
 #include <iostream>
@@ -16,13 +18,19 @@
 // ============================================================================
 // WriteDisc - Write disc from .bin/.cue/.sub files
 // ============================================================================
-bool OpticalDrive::WriteDisc(const std::wstring& binFile,
-	const std::wstring& cueFile, const std::wstring& subFile,
-	int speed, bool usePowerCalibration, bool discAlreadyBlanked,
-	bool /*attemptSubchannel_deprecated*/) {
-
-	Console::BoxHeading("Write Disc from Files");
-
+bool OpticalDrive::LoadWriteSource(const std::wstring& binFile,
+    const std::wstring& cueFile, const std::wstring& subFile,
+    std::vector<TrackWriteInfo>& tracks, DWORD& totalSectors,
+    std::string& discTitle, std::string& discPerformer, std::string& discMCN) {
+    std::wstring referencedImage;
+    std::string sourceError;
+    std::error_code ec;
+    if (!ResolveCueImage(cueFile, referencedImage, sourceError) ||
+        !std::filesystem::equivalent(binFile, referencedImage, ec) || ec) {
+        Console::Error("The selected BIN does not match the CUE FILE reference.\n");
+        if (!sourceError.empty()) std::cout << sourceError << "\n";
+        return false;
+    }
 	// Validate the complete source image before checking or erasing destination
 	// media. Invalid inputs must never cause an existing CD-RW to be destroyed.
 	std::ifstream binStream(binFile, std::ios::binary);
@@ -49,15 +57,13 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 		Console::Error("Invalid .bin file size; sector count exceeds the write-address limit\n");
 		return false;
 	}
-	DWORD totalSectors = static_cast<DWORD>(sectorCount);
+	totalSectors = static_cast<DWORD>(sectorCount);
 
 	// Subchannel is drive-generated via the SAO path.  Raw P-W writes are not
 	// portable: some recorders accept MODE SELECT and SEND CUE SHEET, then reject
 	// the first 2448-byte WRITE at LBA -150 with INVALID ADDRESS FOR WRITE.
 	// Validate a supplied .sub file for user feedback, but do not let its presence
 	// silently switch the recording mode.
-	bool hasSubchannel = false;
-	bool needsDeinterleave = false;
 	if (!subFile.empty()) {
 		std::ifstream subStream(subFile, std::ios::binary);
 		if (subStream.is_open()) {
@@ -83,8 +89,6 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 	}
 
 	// Parse CUE sheet -- also extracts TITLE/PERFORMER/CATALOG for CD-Text and MCN
-	std::vector<TrackWriteInfo> tracks;
-	std::string discTitle, discPerformer, discMCN;
 	if (!ParseCueSheet(cueFile, tracks, discTitle, discPerformer, discMCN)) {
 		Console::Error("Failed to parse CUE sheet\n");
 		return false;
@@ -129,6 +133,27 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 			return false;
 		}
 	}
+
+    return true;
+}
+
+bool OpticalDrive::WriteDisc(const std::wstring& binFile,
+	const std::wstring& cueFile, const std::wstring& subFile,
+	int speed, bool usePowerCalibration, bool discAlreadyBlanked,
+	bool /*attemptSubchannel_deprecated*/, bool simulate) {
+
+	if (g_interrupt.IsInterrupted()) return false;
+	Console::BoxHeading("Write Disc from Files");
+
+    simulate = simulate || WorkflowChecks::SimulationRequested();
+    std::vector<TrackWriteInfo> tracks;
+    std::string discTitle, discPerformer, discMCN;
+    DWORD totalSectors = 0;
+    if (!LoadWriteSource(binFile, cueFile, subFile, tracks, totalSectors,
+        discTitle, discPerformer, discMCN)) return false;
+    if (g_interrupt.IsInterrupted()) return false;
+    const bool hasSubchannel = false;
+    const bool needsDeinterleave = false;
 
 	bool blankedForThisWrite = discAlreadyBlanked;
 
@@ -269,7 +294,7 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 	};
 
 	Console::Info("Checking disc media status...\n");
-	if (!ensureBlankWritableMedia(!discAlreadyBlanked, true) ||
+	if (!ensureBlankWritableMedia(!discAlreadyBlanked && !simulate, true) ||
 		!verifyCapacity()) {
 		return false;
 	}
@@ -394,6 +419,7 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 	// raw P-W; accepting the layout does not prove the drive can write that mode.
 	int subchannelMode = 0;
 
+	if (g_interrupt.IsInterrupted()) return false;
 	// ── CD-Text: choose a delivery method BEFORE sending the cue sheet ───
 	// Two mechanisms:
 	//   1. WRITE BUFFER (0x3B): the classic Plextor vendor path. The drive
@@ -432,7 +458,7 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 	// ── Send the disc layout (cue sheet) once, flagged for a CD-Text lead-in
 	// only when we will write that lead-in ourselves ───────────────────
 	bool layoutAccepted = false;
-	if (WriteDiscInternal::PrepareDriveForWrite(m_drive, subchannelMode)) {
+	if (WriteDiscInternal::PrepareDriveForWrite(m_drive, subchannelMode, false, simulate)) {
 		Console::Info("\nSending disc layout to drive...\n");
 		if (WriteDiscInternal::BuildAndSendCueSheet(
 				m_drive, tracks, totalSectors, subchannelMode, true, false, cdTextViaLeadIn)) {
@@ -459,6 +485,10 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 	// SEND CUE SHEET (0x5D) path for CD-DA in *every* mode -- a firmware
 	// limitation, not a malformed cue sheet. When no raw layout is accepted,
 	// fall back to the Windows IMAPI2 Disc-At-Once writer.
+    if (!layoutAccepted && simulate) {
+        Console::Error("Simulation is unavailable for this layout. No real-write fallback will be used.\n");
+        return false;
+    }
 	if (!layoutAccepted) {
 		Console::Warning("Drive rejected every raw-SCSI disc layout\n");
 		std::string fallbackWarning =
@@ -510,7 +540,7 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 				return false;
 			}
 			m_drive.SetSpeed(speed, speed);  // re-apply speed dropped with the handle
-			if (!WriteDiscInternal::PrepareDriveForWrite(m_drive, subchannelMode) ||
+			if (!WriteDiscInternal::PrepareDriveForWrite(m_drive, subchannelMode, false, simulate) ||
 				!WriteDiscInternal::BuildAndSendCueSheet(m_drive, tracks, totalSectors, subchannelMode)) {
 				Console::Error("Failed to restore normal write layout\n");
 				return false;
@@ -528,14 +558,10 @@ bool OpticalDrive::WriteDisc(const std::wstring& binFile,
 	// In simulate (Test Write) mode nothing is committed, so readback
 	// verification would always fail against the still-blank disc. Skip it and
 	// report the dry-run as a success instead of a spurious write failure.
-	{
-		char sim[8] = {};
-		DWORD simLen = GetEnvironmentVariableA("OPTISCAN_SIMULATE_WRITE", sim, sizeof(sim));
-		if (simLen > 0 && simLen < sizeof(sim) && sim[0] != '0') {
-			Console::Success("SIMULATE complete -- pipeline ran; nothing committed, verification skipped\n");
-			return true;
-		}
-	}
+    if (simulate) {
+        Console::Success("Simulation completed; nothing committed.\n");
+        return true;
+    }
 
 	return VerifyWriteCompletion(binFile);
 }

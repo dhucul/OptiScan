@@ -1,4 +1,4 @@
-﻿#define NOMINMAX
+#define NOMINMAX
 #include "OpticalDrive.h"
 #include "InterruptHandler.h"
 #include <iostream>
@@ -125,11 +125,13 @@ bool OpticalDrive::RunSeekTimeAnalysis(DiscInfo& disc, std::vector<SeekTimeResul
 				// Force the head to physically move to fromLBA by defeating
 				// the drive's read-ahead cache, then read that sector so
 				// the head is genuinely positioned there.
-				DefeatDriveCache(fromLBA, audioRanges.back().second);
-				m_drive.ReadSectorAudioOnly(fromLBA, buf.data());
-				// Also defeat the cache around the destination so the
-				// subsequent seek can't be satisfied from the buffer.
-				DefeatDriveCache(toLBA, audioRanges.back().second);
+                DefeatDriveCache(toLBA, audioRanges.back().second);
+                DefeatDriveCache(fromLBA, audioRanges.back().second);
+                if (!m_drive.ReadSectorAudioOnly(fromLBA, buf.data()) ||
+                    !m_drive.SeekToLBA(fromLBA)) {
+                    anyReadFailed = true;
+                    continue;
+                }
 
 				// Time only the seek command itself (no data transfer).
 				auto startTime = std::chrono::high_resolution_clock::now();
@@ -144,7 +146,12 @@ bool OpticalDrive::RunSeekTimeAnalysis(DiscInfo& disc, std::vector<SeekTimeResul
 			// Take the median of 5 repeats — robust against outliers caused
 			// by occasional OS scheduling jitter or drive retries.
 			std::sort(timings.begin(), timings.end());
-			double medianSeekMs = timings[REPEATS_PER_PAIR / 2];
+			if (timings.empty()) {
+                    Console::Error("Could not position the head at the requested origin; seek timing is incomplete.\n");
+                    progress.Finish(false);
+                    return false;
+                }
+                double medianSeekMs = timings[timings.size() / 2];
 
 			// Record the result for this directed pair.
 			SeekTimeResult r;

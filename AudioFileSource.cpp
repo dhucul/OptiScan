@@ -348,7 +348,7 @@ bool FlacDecoderAvailable() {
     const DWORD len = GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
     if (len == 0 || len >= MAX_PATH) return false;
     std::wstring beside(modulePath, len);
-    const size_t slash = beside.find_last_of(L"\/");
+    const size_t slash = beside.find_last_of(L"\\/");
     if (slash == std::wstring::npos) return false;
     beside.replace(slash + 1, std::wstring::npos, L"flac.exe");
     return GetFileAttributesW(beside.c_str()) != INVALID_FILE_ATTRIBUTES;

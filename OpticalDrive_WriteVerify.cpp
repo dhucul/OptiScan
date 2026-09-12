@@ -1,8 +1,10 @@
-﻿#define NOMINMAX
+#define NOMINMAX
 #include "OpticalDrive.h"
 #include "ConsoleColors.h"
 #include "Progress.h"
 #include "WriteDiscInternal.h"
+#include "WorkflowChecks.h"
+#include "InterruptHandler.h"
 #include <iostream>
 #include <windows.h>
 
@@ -10,49 +12,38 @@
 // VerifyWriteCompletion - Flush cache and close session
 // ============================================================================
 bool OpticalDrive::VerifyWriteCompletion(const std::wstring& /*binFile*/) {
-	Console::Info("Flushing write cache...\n");
-	if (!WriteDiscInternal::SynchronizeCache(m_drive)) {
-		Console::Warning("Cache flush reported failure (disc may still finalize)\n");
-	}
-
-	WriteDiscInternal::WaitForDriveReady(m_drive, 60);
-
-	Console::Info("Closing session (writing lead-out)...\n");
-	BYTE closeCmd[10] = { 0x5B, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-	BYTE senseKey = 0, asc = 0, ascq = 0;
-
-	if (!m_drive.SendSCSIWithSense(closeCmd, sizeof(closeCmd), nullptr, 0,
-		&senseKey, &asc, &ascq, false)) {
-		if (senseKey == 0x02 && asc == 0x04) {
-			Console::Info("Waiting for finalization");
-		}
-		else if (senseKey == 0x05) {
-			// SAO writing finalizes the session as part of the cue-sheet write, so
-			// an explicit CLOSE TRACK SESSION has nothing left to close and reports
-			// Illegal Request. This is expected, not an error.
-			Console::Info("Session already finalized by the SAO write\n");
-		}
-		else {
-			Console::Warning("CLOSE SESSION command returned: ");
-			std::cout << m_drive.GetSenseDescription(senseKey, asc, ascq) << "\n";
-		}
-	}
-
-	Console::Info("Finalizing disc");
-	for (int i = 0; i < 120; i++) {
-		BYTE testCmd[6] = { 0x00 };
-		if (m_drive.SendSCSI(testCmd, sizeof(testCmd), nullptr, 0, true)) {
-			std::cout << "\n";
-			Console::Success("Disc finalized successfully\n");
-			return true;
-		}
-		if (i % 5 == 0) std::cout << ".";
-		Sleep(1000);
-	}
-
-	std::cout << "\n";
-	Console::Warning("Finalization timeout -- disc may still be usable\n");
-	return false;
+    Console::Info("Flushing write cache...\n");
+    const bool flushed = WriteDiscInternal::SynchronizeCache(m_drive);
+    if (!flushed) Console::Warning("Cache flush failed; checking final session state.\n");
+    if (!WriteDiscInternal::WaitForDriveReady(m_drive, 60)) {
+        Console::Error("Drive did not become ready for session finalization.\n");
+        return false;
+    }
+    BYTE closeCmd[10] = {0x5B, 0, 2};
+    BYTE sk = 0, asc = 0, ascq = 0;
+    const bool closed = m_drive.SendSCSIWithSense(closeCmd, sizeof(closeCmd),
+        nullptr, 0, &sk, &asc, &ascq, false);
+    // SAO may have finalized already, and asynchronous close may be busy.
+    // Neither case proves success until READ DISC INFORMATION confirms it.
+    if (!closed && sk != 0x05 && !(sk == 0x02 && asc == 0x04)) {
+        Console::Error("Session close failed.\n");
+        return false;
+    }
+    for (int attempt = 0; attempt < 120; ++attempt) {
+        if (g_interrupt.IsInterrupted()) return false;
+        if (m_drive.TestUnitReady()) {
+            BYTE command[10] = {0x51, 0, 0, 0, 0, 0, 0, 0, 34, 0};
+            BYTE data[34]{};
+            if (m_drive.SendSCSI(command, sizeof(command), data, sizeof(data)) &&
+                WorkflowChecks::DiscSessionComplete(data, sizeof(data))) {
+                Console::Success("Disc and last session are finalized (content not read back).\n");
+                return true;
+            }
+        }
+        Sleep(1000);
+    }
+    Console::Error("Could not confirm a complete disc/session.\n");
+    return false;
 }
 
 // ============================================================================

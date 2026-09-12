@@ -1,4 +1,4 @@
-﻿#define NOMINMAX
+#define NOMINMAX
 #include "OpticalDrive.h"
 #include "InterruptHandler.h"
 #include "ConsoleColor.h"
@@ -647,19 +647,19 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 	// Pioneer bitmap is deliberately not rendered as a green clean graph.
 	int peakDiscRotC2 = *std::max_element(discRotC2PerSecond.begin(), discRotC2PerSecond.end());
 	if (peakDiscRotC2 > 0) {
-		Console::GraphOptions c2Opts;
-		c2Opts.title = "Disc Rot C2 Distribution";
-		c2Opts.subtitle = "Retained C2 error-pointer activity per second during Phase 1";
-		c2Opts.width = 60;
-		c2Opts.height = 10;
-		c2Opts.unitSuffix = "/sec";
-		c2Opts.severityLowThreshold = 5;
-		c2Opts.severityHighThreshold = 20;
-		c2Opts.severityLowLabel = "1-4/sec low";
-		c2Opts.severityModerateLabel = "5-19/sec moderate";
-		c2Opts.severityHighLabel = "20+/sec high";
-		auto c2Buckets = Console::BucketData(discRotC2PerSecond, c2Opts.width);
-		Console::DrawBarGraph(c2Buckets, peakDiscRotC2, c2Opts,
+		Console::GraphOptions graphOptions;
+		graphOptions.title = "Disc Rot C2 Distribution";
+		graphOptions.subtitle = "Retained C2 error-pointer activity per second during Phase 1";
+		graphOptions.width = 60;
+		graphOptions.height = 10;
+		graphOptions.unitSuffix = "/sec";
+		graphOptions.severityLowThreshold = 5;
+		graphOptions.severityHighThreshold = 20;
+		graphOptions.severityLowLabel = "1-4/sec low";
+		graphOptions.severityModerateLabel = "5-19/sec moderate";
+		graphOptions.severityHighLabel = "20+/sec high";
+		auto c2Buckets = Console::BucketData(discRotC2PerSecond, graphOptions.width);
+		Console::DrawBarGraph(c2Buckets, peakDiscRotC2, graphOptions,
 			static_cast<DWORD>(discRotC2PerSecond.size()));
 	}
 	else if (isPioneerDrive) {

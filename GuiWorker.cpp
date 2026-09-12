@@ -7,18 +7,22 @@
 #include <mutex>
 #include <thread>
 #include <utility>
+#include <exception>
+#include <iostream>
 #include <windows.h>
 
 namespace {
     std::atomic<bool> g_running{ false };
     std::atomic<bool> g_done{ false };       // worker has finished but not yet joined
+    std::atomic<uint64_t> g_jobId{0};
+    thread_local int g_outcome = 1;
     std::thread       g_thread;
     std::mutex        g_threadMutex;
 }
 
 namespace GuiWorker {
 
-    bool RunAsync(Job job, Job afterCompletion) {
+    bool RunAsync(Job job, Completion afterCompletion) {
         // Reject if another workflow is in progress.
         if (g_running.exchange(true)) return false;
 
@@ -29,16 +33,26 @@ namespace GuiWorker {
             std::lock_guard<std::mutex> lock(g_threadMutex);
             if (g_thread.joinable()) g_thread.join();
             g_done.store(false);
-            g_thread = std::thread([j = std::move(job),
+            const auto id = g_jobId.fetch_add(1) + 1;
+            g_thread = std::thread([id, j = std::move(job),
                 completion = std::move(afterCompletion)]() {
+                g_outcome = 1;
                 try {
                     j();
+                } catch (const std::exception& error) {
+                    g_outcome = 1;
+                    std::cerr << "\nOperation failed unexpectedly: " << error.what() << "\n";
                 } catch (...) {
-                    // Swallow exceptions so the worker thread always terminates cleanly.
+                    g_outcome = 1;
+                    std::cerr << "\nOperation failed with an unexpected exception.\n";
                 }
+                const int outcome = InterruptHandler::Instance().IsInterrupted() ? 2 : g_outcome;
                 g_done.store(true);
                 g_running.store(false);
-                if (completion) completion();
+                // Completion callbacks post only; the generation travels with the
+                // result so delayed notifications cannot finish a subsequent job.
+                try { if (completion) completion(id, outcome); }
+                catch (...) { std::cerr << "Could not deliver operation completion.\n"; }
             });
         }
         catch (...) {
@@ -48,6 +62,9 @@ namespace GuiWorker {
         }
         return true;
     }
+
+    void SetOutcome(int outcome) { g_outcome = outcome; }
+    uint64_t CurrentJobId() { return g_jobId.load(); }
 
     bool IsRunning() { return g_running.load(); }
 
@@ -62,9 +79,9 @@ namespace GuiWorker {
     }
 
     bool WaitAndJoin(int timeoutMs) {
-        // The worker clears g_running as its very last act (after the job has
-        // fully returned), so once it reads false the job is no longer touching
-        // any shared state and join() completes immediately.
+        // The workflow has returned before g_running clears. The remaining
+        // completion callback only posts a notification and must not block;
+        // join also waits for that callback before releasing worker resources.
         auto deadline = std::chrono::steady_clock::now()
             + std::chrono::milliseconds(timeoutMs);
         while (g_running.load()) {

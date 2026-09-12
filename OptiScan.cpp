@@ -1,4 +1,4 @@
-﻿// OptiScan.cpp : Defines the entry point for the application.
+// OptiScan.cpp : Defines the entry point for the application.
 //
 
 #include "framework.h"
@@ -684,8 +684,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                     else if (commandIndex == kBatchButtonIndex)
                     {
                         // Batch run: prompt for a list of menu numbers, then
-                        // run EnsureDriveOpen + one Prescan, then dispatch each
-                        // chosen op in turn without re-prescanning.
+                        // prepare and refresh the source for each dependent
+                        // operation, then dispatch in the requested order.
                         if (GuiWorker::IsRunning())
                         {
                             AppendInfoText(hInfoEdit,
@@ -712,6 +712,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                         std::string(), &ok);
                                     if (!ok) {
                                         Console::Info("Batch cancelled.\n");
+                                        GuiWorker::SetOutcome(2);
                                         return;
                                     }
                                     std::vector<int> choices = ParseBatchChoices(raw);
@@ -730,61 +731,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                         Console::Info(summary.c_str());
                                     }
 
-                                    // Audio disc required if ANY chosen op needs it. Write Disc
-                                    // (choice 3) is the only one that doesn't.
-                                    bool needsAudio = false;
-                                    bool needsDrive = false;
-                                    for (int c : choices) {
-                                        if (ButtonNeedsAudioDisc(c - 1)) needsAudio = true;
-                                        if (ButtonNeedsDrive(c - 1)) needsDrive = true;
-                                    }
-                                    bool freshlyScanned = false;
-                                    if (needsDrive) {
-                                        // If the batch only contains file-based writing/erase
-                                        // operations, opening the drive is sufficient.  Trying to
-                                        // read a TOC from the blank destination makes a successful
-                                        // fresh open look stale and duplicates the drive announcement.
-                                        if (!EnsureDriveOpen(hWndCopy, &freshlyScanned,
-                                                             needsAudio, needsAudio)) {
-                                            return;
-                                        }
-                                        // Single shared prescan up front — workflows in the loop
-                                        // see the same TOC/pregap/CD-Text data.
-                                        if (!freshlyScanned) {
-                                            Console::Info("Running shared pre-scan for all batched ops...\n");
-                                            // Prescan() re-reads the TOC on the EXISTING handle, so
-                                            // it can't see past a stale one: a batch could never
-                                            // follow a disc moved to another drive, only fail on it.
-                                            // Do the same re-select + reopen a single-click
-                                            // asterisked op does — once, which still honours the
-                                            // advertised "1 prescan" while landing on the drive
-                                            // that actually holds the disc.
-                                            if (needsAudio) {
-                                                if (!ReselectSourceDriveIfMultiple()) {
-                                                    Console::Info("Batch cancelled during drive selection.\n");
-                                                    return;
-                                                }
-                                                if (!RefreshDisc()) {
-                                                    Console::Error("The drive could not be refreshed — batch stopped.\n");
-                                                    return;
-                                                }
-                                            } else {
-                                                Prescan();
-                                            }
-                                            if (g_interrupt.IsInterrupted()) {
-                                                Console::Warning("Batch cancelled by user.\n");
-                                                return;
-                                            }
-                                            // RefreshDisc closes before it reopens, so a failed
-                                            // reopen leaves no handle at all. Stop here rather than
-                                            // run every step against a closed drive.
-                                            if (!g_driveOpen) {
-                                                Console::Error("The drive could not be reopened — "
-                                                               "batch stopped.\n");
-                                                return;
-                                            }
-                                        }
-                                    }
+                                    // Prepare each step when it begins. A file-write step
+                                    // can therefore precede a read of the newly written disc.
 
                                     // How the loop ended, so the closing line reports what actually
                                     // happened. This used to print "Batch complete." unconditionally
@@ -810,76 +758,26 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                         // `choice` is the displayed button number; map it to
                                         // the stable op id the dispatcher expects.
                                         const int batchOpId = ButtonToMenuChoice(choice - 1);
-                                        // Copy disc (1), Rip tracks (2), and AccurateRip (34) force a full
-                                        // close/reopen refresh so a disc swapped in mid-batch is
-                                        // picked up — matching their single-click behaviour. The
-                                        // shared up-front Prescan only re-reads the existing
-                                        // handle, which can report a stale TOC after a swap. Skip
-                                        // only on the very first step when the drive was just
-                                        // opened with a fresh TOC (nothing could have changed yet).
-                                        if (batchOpId == 1 || batchOpId == 2 || batchOpId == 34) {
-                                            if (!(i == 0 && freshlyScanned)) {
-                                                // AccurateRip must use the current audio source,
-                                                // including a disc moved to another drive mid-batch.
-                                                if (batchOpId == 34 && !ReselectSourceDriveIfMultiple()) {
-                                                    Console::Info("Batch cancelled during drive selection.\n");
-                                                    batchEnd = BatchEnd::Cancelled;
-                                                    break;
-                                                }
-                                                if (!RefreshDisc()) {
-                                                    Console::Error("The drive could not be refreshed — batch stopped.\n");
-                                                    batchEnd = BatchEnd::DiscGone;
-                                                    break;
-                                                }
-                                                if (g_interrupt.IsInterrupted()) {
-                                                    Console::Warning("Batch cancelled by user.\n");
-                                                    batchEnd = BatchEnd::Cancelled;
-                                                    break;
-                                                }
-                                            }
-                                            if (batchOpId == 34 && !g_hasTOC) {
-                                                Console::Error("No valid source TOC is available for AccurateRip verification.\n");
-                                                batchEnd = BatchEnd::DiscGone;
+                                        bool freshlyScanned = false;
+                                        if (batchOpId != 25 && ButtonNeedsDrive(choice - 1)) {
+                                            const bool needsAudio = ButtonNeedsAudioDisc(choice - 1);
+                                            if (!EnsureDriveOpen(hWndCopy, &freshlyScanned, needsAudio, needsAudio)) {
+                                                batchEnd = g_interrupt.IsInterrupted()
+                                                    ? BatchEnd::Cancelled : BatchEnd::StepFailed;
                                                 break;
                                             }
                                         }
-                                        // Every other step rides the single shared prescan, which
-                                        // re-reads the TOC on the EXISTING handle and so can never
-                                        // notice the disc leaving (or moving to another drive).
-                                        // Vendor scan commands answer GOOD on an empty tray, so a
-                                        // step would happily "scan" a drive holding nothing, using
-                                        // the departed disc's track layout. Confirm the medium is
-                                        // still there and stop the batch if it isn't.
-                                        else if (ButtonNeedsPrescan(choice - 1)) {
-											// A prior write/erase step may have switched to a burner or
-											// replaced the medium and invalidated the shared source TOC.
-											// Re-acquire the audio source instead of applying stale track
-											// boundaries to the burner/blank.
-											if (!g_hasTOC) {
-												if (!ReselectSourceDriveIfMultiple()) {
-													batchEnd = BatchEnd::Cancelled;
-													break;
-												}
-											if (!RefreshDisc()) {
-												batchEnd = BatchEnd::DiscGone;
-												break;
-											}
-											if (!g_hasTOC) {
-													Console::Error("No valid source TOC is available for this batch step.\n");
-													batchEnd = BatchEnd::DiscGone;
-													break;
-												}
-											}
-                                            DriveHealthCheck media;
-											if (!g_copier.GetDriveRef().GetMediaStatus(media) ||
-												!media.mediaPresent) {
-                                                Console::Error(
-                                                    "Disc is no longer in the drive this batch "
-                                                    "started on.\n");
-                                                Console::Info(
-                                                    "Run \"Rescan disc\", or start the batch again — "
-                                                    "it re-selects the drive holding the disc.\n");
-                                                batchEnd = BatchEnd::DiscGone;
+                                        if (ButtonNeedsPrescan(choice - 1)) {
+                                            if (!freshlyScanned) {
+                                                if (!ReselectSourceDriveIfMultiple() || !RefreshDisc()) {
+                                                    batchEnd = g_interrupt.IsInterrupted()
+                                                        ? BatchEnd::Cancelled : BatchEnd::DiscGone;
+                                                    break;
+                                                }
+                                            }
+                                            if (g_interrupt.IsInterrupted() || !g_hasTOC) {
+                                                batchEnd = g_interrupt.IsInterrupted()
+                                                    ? BatchEnd::Cancelled : BatchEnd::DiscGone;
                                                 break;
                                             }
                                         }
@@ -889,14 +787,21 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                             DispatchMenuChoice(g_copier, g_disc, g_workDir,
                                                                g_audioDrive, g_hasTOC,
                                                                batchOpId);
+                                        if (batchOpId == 25) {
+                                            g_driveOpen = g_copier.GetDriveRef().IsOpen();
+                                            if (g_driveOpen && g_workDir.empty()) g_workDir = GetWorkingDirectory();
+                                        }
                                         stepsRun = i + 1;
                                         if (stepStatus != 0) {
-                                            batchEnd = g_interrupt.IsInterrupted()
+                                            batchEnd = (g_interrupt.IsInterrupted() || stepStatus == 2)
                                                 ? BatchEnd::Cancelled
                                                 : BatchEnd::StepFailed;
                                             break;
                                         }
                                     }
+                                    if (g_interrupt.IsInterrupted()) batchEnd = BatchEnd::Cancelled;
+                                    GuiWorker::SetOutcome(batchEnd == BatchEnd::Completed ? 0 :
+                                        (batchEnd == BatchEnd::Cancelled ? 2 : 1));
                                     Console::Info("\n");
                                     if (batchEnd == BatchEnd::Completed) {
                                         Console::Success("Batch complete.\n");
@@ -911,8 +816,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                         else
                                             Console::Error(("Batch stopped — " + msg).c_str());
                                     }
-                                }, [hWndCopy]() {
-                                    PostMessageW(hWndCopy, WM_APP_WORKER_DONE, 0, 0);
+                                }, [hWndCopy](uint64_t id, int outcome) {
+                                    PostMessageW(hWndCopy, WM_APP_WORKER_DONE, static_cast<WPARAM>(id), outcome);
                                 });
                             if (!started) {
                                 SetMenuButtonsEnabled(true);
@@ -951,8 +856,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                 [hWndCopy, choice, needsPrescan, needsAudioDisc, needsDrive]() {
                                     if (!needsDrive) {
                                         // Help / Check-updates: no drive interaction.
-                                        DispatchMenuChoice(g_copier, g_disc, g_workDir,
-                                                           g_audioDrive, g_hasTOC, choice);
+                                        GuiWorker::SetOutcome(DispatchMenuChoice(g_copier, g_disc, g_workDir,
+                                                           g_audioDrive, g_hasTOC, choice));
                                         return;
                                     }
 
@@ -968,10 +873,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                     // ops don't trigger another open-time scan — the
                                     // rescan can't touch these GUI-local globals itself.
                                     if (choice == 25) {
-                                        DispatchMenuChoice(g_copier, g_disc, g_workDir,
-                                                           g_audioDrive, g_hasTOC, choice);
+                                        GuiWorker::SetOutcome(DispatchMenuChoice(g_copier, g_disc, g_workDir,
+                                                           g_audioDrive, g_hasTOC, choice));
                                         if (g_audioDrive) {
-                                            g_driveOpen = true;
+                                            g_driveOpen = g_copier.GetDriveRef().IsOpen();
                                             if (g_workDir.empty()) g_workDir = GetWorkingDirectory();
                                         }
                                         return;
@@ -1001,35 +906,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                         // up. The lighter Prescan() can't see past a stale handle
                                         // or switch drives.
                                         //
-                                        // Write disc (3) and Write tracks (4) are the exception:
-                                        // they read the source TOC on the current handle and then
-                                        // run their own SelectWriterDrive picker internally, so
-                                        // they keep the same-handle Prescan(). Write disc from CUE
-                                        // (33) never gets here at all -- its label carries no "*",
-                                        // so needsPrescan is false and no disc is touched.
                                         if (needsPrescan && !freshlyScanned) {
-                                            if (choice == 3 || choice == 4) {
-                                                Prescan();
-                                            }
-                                            else {
-                                                // Decide the source drive, then refresh the disc
-                                                // on it back-to-back so g_audioDrive and the open
-                                                // handle never diverge. RefreshDisc has its own
-                                                // interrupt checks during the TOC retry loop.
-                                                if (!ReselectSourceDriveIfMultiple()) return;
-                                                if (!RefreshDisc()) return;
-                                            }
+                                            if (!ReselectSourceDriveIfMultiple() || !RefreshDisc()) return;
                                             if (g_interrupt.IsInterrupted()) return;
                                         }
                                         // A fresh open announced the hardware before its TOC/
                                         // pregap scan. Reused handles still need a per-item line.
                                         if (!freshlyScanned)
                                             PrintDriveIdentity(g_audioDrive);
-                                        DispatchMenuChoice(g_copier, g_disc, g_workDir,
-                                                           g_audioDrive, g_hasTOC, choice);
+                                        GuiWorker::SetOutcome(DispatchMenuChoice(g_copier, g_disc, g_workDir,
+                                                           g_audioDrive, g_hasTOC, choice));
                                     }
-                                }, [hWndCopy]() {
-                                    PostMessageW(hWndCopy, WM_APP_WORKER_DONE, 0, 0);
+                                }, [hWndCopy](uint64_t id, int outcome) {
+                                    PostMessageW(hWndCopy, WM_APP_WORKER_DONE, static_cast<WPARAM>(id), outcome);
                                 });
                             if (!started) {
                                 // Couldn't claim the worker (shouldn't happen on the
@@ -1111,12 +1000,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         GuiSink::DrainOutputQueue();
         return 0;
     case WM_APP_WORKER_DONE:
-        if (g_isClosing) return 0;
+        if (g_isClosing || static_cast<uint64_t>(wParam) != GuiWorker::CurrentJobId()) return 0;
         // Make sure any final output is visible before joining the worker.
         GuiSink::DrainOutputQueue();
         GuiWorker::ReapIfDone();
         SetMenuButtonsEnabled(true);
-        AccessibleAnnounce::Announce(L"Operation finished.");
+        AccessibleAnnounce::Announce(lParam == 0 ? L"Operation completed." :
+            (lParam == 2 ? L"Operation cancelled." : L"Operation failed or incomplete. See the output."));
         return 0;
     case WM_TIMER:
         if (wParam == kDeferredExitTimer) {

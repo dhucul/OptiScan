@@ -1,4 +1,4 @@
-﻿#include "CopyWorkflow.h"
+#include "CopyWorkflow.h"
 #include "FileUtils.h"
 #include "ConsoleColors.h"
 #include "AccurateRip.h"
@@ -9,6 +9,9 @@
 #include "MenuHelpers.h"
 #include "PioneerVendor.h"
 #include "Preservation.h"
+#include "ImageSource.h"
+#include "WorkflowChecks.h"
+#include "WriteFeatureGuard.h"
 #include <windows.h>
 #include <iostream>
 
@@ -49,6 +52,7 @@ void TryApplyPioneerAudioPreset(OpticalDrive& copier) {
         chosenMode = (c == 2) ? PureReadMode::Perfect : PureReadMode::Master;
     }
 
+    if (g_interrupt.IsInterrupted()) return;
     const char* modeName = (chosenMode == PureReadMode::Perfect) ? "Perfect" : "Master";
 
     bool changed = pioneer.ApplyAudioExtractionPreset(/*persist=*/false, chosenMode);
@@ -693,6 +697,26 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc,
 void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 	wchar_t& audioDrive, bool* outCompleted) {
 	if (outCompleted) *outCompleted = false;
+    const std::wstring cueFile = GuiInput::PromptForFile(
+        L"Choose the image CUE sheet to write", L"CUE sheets", L"*.cue", workDir);
+    if (cueFile.empty()) return;
+    std::wstring binFile, subFile;
+    std::string sourceError;
+    if (!ResolveCueImage(cueFile, binFile, sourceError)) {
+        Console::Error(sourceError.c_str());
+        return;
+    }
+    auto companion = std::filesystem::path(binFile).replace_extension(L".sub");
+    std::error_code companionError;
+    if (std::filesystem::is_regular_file(companion, companionError)) subFile = companion.wstring();
+    std::vector<OpticalDrive::TrackWriteInfo> validatedTracks;
+    DWORD validatedSectors = 0;
+    std::string title, performer, mcn;
+    if (!copier.LoadWriteSource(binFile, cueFile, subFile, validatedTracks,
+        validatedSectors, title, performer, mcn)) return;
+    std::wcout << L"Source image: " << binFile << L"\n";
+    Console::Info("SAO preserves the cue layout; the drive generates subchannel.\n");
+
 	// ── Burner drive selection ──────────────────────────────────────
 	// The drive opened at startup is the audio-source drive — likely not the
 	// burner. Let the user pick which CD/DVD drive to write with, defaulting
@@ -758,6 +782,23 @@ void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 		}
 	}
 
+	// Plextor-only: optional test-write + VariRec tuning
+	bool plxTestWrite = false;
+	bool plxVariRecOn = false;
+	int  plxVariRecOff = 0;
+	if (copier.SelectPlextorWriteOptions(plxTestWrite, plxVariRecOn, plxVariRecOff) == -1) {
+		return;
+	}
+
+    bool restoreTest = false, restoreVariRec = false;
+    WriteFeatureGuard featureGuard{copier.GetDriveRef(), restoreTest, restoreVariRec};
+    if (plxTestWrite || WorkflowChecks::SimulationRequested()) {
+        bool full = false, rewritable = false, blank = false;
+        if (!copier.CheckRewritableDisk(full, rewritable, true, &blank) || !blank) {
+            Console::Error("Simulation requires a blank disc; existing media will not be erased.\n");
+            return;
+        }
+    }
 	// Detect disc type and status. Quiet: WriteDisc re-reports the media type
 	// just before the burn, so suppress the duplicate readout here.
 	bool isFull, isRewritable;
@@ -803,7 +844,7 @@ void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 
 		if (!GuiInput::PromptYesNo("Continue?", "Continue with writing now?")) return;
 	}
-	else if (isRewritable && !isFull) {
+	else if (isRewritable && !isFull && !plxTestWrite && !WorkflowChecks::SimulationRequested()) {
 		// CD-RW with space — optionally erase before writing
 		Console::Info("CD-RW disc detected with available space.\n");
 		std::cout << "1. Write directly\n";
@@ -850,61 +891,6 @@ void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 		}
 	}
 
-	// Auto-detect .bin/.cue/.sub files from folder via native folder picker.
-	Console::Info("\nChoose the folder containing .bin/.cue/.sub files...\n");
-	std::wstring folder = GuiInput::PromptForFolder(
-		L"Choose folder with .bin/.cue/.sub files", workDir);
-	if (folder.empty()) {
-		Console::Info("Cancelled (no source folder selected).\n");
-		return;
-	}
-	folder = NormalizePath(folder);
-	while (!folder.empty() && (folder.back() == L'\\' || folder.back() == L'/'))
-		folder.pop_back();
-
-	// Scan folder for .bin, .cue, .sub files
-	std::wstring binFile, cueFile, subFile;
-	WIN32_FIND_DATAW fd;
-	HANDLE hFind = FindFirstFileW((folder + L"\\*").c_str(), &fd);
-	if (hFind != INVALID_HANDLE_VALUE) {
-		do {
-			if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-			std::wstring name(fd.cFileName);
-			std::wstring lower = name;
-			for (auto& ch : lower) ch = towlower(ch);
-
-			if (lower.size() > 4 && lower.substr(lower.size() - 4) == L".bin" && binFile.empty())
-				binFile = folder + L"\\" + name;
-			else if (lower.size() > 4 && lower.substr(lower.size() - 4) == L".cue" && cueFile.empty())
-				cueFile = folder + L"\\" + name;
-			else if (lower.size() > 4 && lower.substr(lower.size() - 4) == L".sub" && subFile.empty())
-				subFile = folder + L"\\" + name;
-		} while (FindNextFileW(hFind, &fd));
-		FindClose(hFind);
-	}
-
-	// Validate required files
-	if (binFile.empty()) {
-		Console::Error("No .bin file found in folder\n");
-		return;
-	}
-	if (cueFile.empty()) {
-		Console::Error("No .cue file found in folder\n");
-		return;
-	}
-
-	// Display detected files
-	Console::Success("Detected files:\n");
-	std::wcout << L"  BIN: " << binFile << L"\n";
-	std::wcout << L"  CUE: " << cueFile << L"\n";
-	if (!subFile.empty()) {
-		std::wcout << L"  SUB: " << subFile << L"\n";
-		Console::Info("The raw writer will preserve the supplied P-W subchannel when supported.\n");
-	}
-	else {
-		Console::Info("No .sub file found; cue MCN/ISRC will be synthesized when present.\n");
-	}
-
 	// ── FIX #2: Reuse erase speed if already selected, else prompt ──
 	int speed;
 	if (wasBlanked) {
@@ -930,25 +916,19 @@ void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 	}
 	bool useCal = (calibChoice == 1);
 
-	// Plextor-only: optional test-write + VariRec tuning
-	bool plxTestWrite = false;
-	bool plxVariRecOn = false;
-	int  plxVariRecOff = 0;
-	if (copier.SelectPlextorWriteOptions(plxTestWrite, plxVariRecOn, plxVariRecOff) == -1) {
-		return;
-	}
-
-	// Apply Plextor write-time vendor settings
+    // Apply write features after media preparation, immediately before burning.
 	if (plxTestWrite) {
+        restoreTest = true;
 		if (copier.GetDriveRef().SetPlextorTestWrite(true)) {
 			Console::Warning("TEST WRITE MODE - laser will stay at read power; nothing will be burned.\n");
 		}
 		else {
-			Console::Warning("Test write: drive rejected the request - proceeding with a real burn.\n");
-			plxTestWrite = false;
+			Console::Error("Test Write is unavailable. Write cancelled.\n");
+            return;
 		}
 	}
 	if (plxVariRecOn) {
+        restoreVariRec = true;
 		if (copier.GetDriveRef().SetVariRecCD(true, plxVariRecOff)) {
 			Console::Info("VariRec applied (offset ");
 			std::cout << plxVariRecOff << ")\n";
@@ -960,17 +940,13 @@ void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 	}
 
 	// Perform the write. WriteDisc selects compatible SAO for plain audio and
-	// raw P-W when a valid .sub or cue MCN/ISRC requires exact Q data.
+	// drive-generated subchannel while retaining the existing CD-Text delivery.
 	bool writeOk = copier.WriteDisc(binFile, cueFile, subFile, speed, useCal,
-		wasBlanked);
-
-	// Restore drive state regardless of outcome
-	if (plxTestWrite) copier.GetDriveRef().SetPlextorTestWrite(false);
-	if (plxVariRecOn) copier.GetDriveRef().SetVariRecCD(false, 0);
+		wasBlanked, false, plxTestWrite);
 
 	if (writeOk) {
 		if (outCompleted) *outCompleted = true;
-		Console::Success(plxTestWrite
+		Console::Success((plxTestWrite || WorkflowChecks::SimulationRequested())
 			? "Test write completed successfully (no data burned)\n"
 			: "Disc write completed successfully\n");
 	}

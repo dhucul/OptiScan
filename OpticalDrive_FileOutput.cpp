@@ -1,4 +1,4 @@
-﻿#define NOMINMAX
+#define NOMINMAX
 #include "OpticalDrive.h"
 #include "AccurateRip.h"
 #include "InterruptHandler.h"
@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iomanip>
 #include <filesystem>
+#include "ArtifactTransaction.h"
 // ... other includes as needed
 
 namespace {
@@ -28,20 +29,7 @@ bool WideToUtf8(const std::wstring& input, std::string& output) {
 // ============================================================================
 
 bool OpticalDrive::SaveToFile(const DiscInfo& disc, const std::wstring& base) {
-	struct PartialOutputCleanup {
-		std::vector<std::filesystem::path> paths;
-		bool committed = false;
-		~PartialOutputCleanup() {
-			if (committed) return;
-			for (const auto& path : paths) {
-				std::error_code ec;
-				std::filesystem::remove(path, ec);
-			}
-		}
-	} cleanup{ { std::filesystem::path(base + L".bin"),
-		std::filesystem::path(base + L".cue") } };
-	if (disc.includeSubchannel)
-		cleanup.paths.push_back(std::filesystem::path(base + L".sub"));
+	ArtifactTransaction transaction{std::filesystem::path(base)};
 	// Calculate and display original disc IDs for verification
 	uint32_t originalDiscID1 = AccurateRip::CalculateDiscID1(disc);
 	uint32_t originalDiscID2 = AccurateRip::CalculateDiscID2(disc);
@@ -58,12 +46,12 @@ bool OpticalDrive::SaveToFile(const DiscInfo& disc, const std::wstring& base) {
 		<< std::setw(8) << originalCDDB << std::dec << std::setfill(' ') << "\n";
 	std::cout << "These IDs are saved in the .cue file for reference.\n\n";
 
-	std::ofstream img(std::filesystem::path(base + L".bin"), std::ios::binary);
+	std::ofstream img(transaction.Stage(base + L".bin"), std::ios::binary);
 	if (!img) return false;
 
 	std::ofstream sub;
 	if (disc.includeSubchannel) {
-		sub.open(std::filesystem::path(base + L".sub"), std::ios::binary);
+		sub.open(transaction.Stage(base + L".sub"), std::ios::binary);
 		if (!sub) return false;
 	}
 
@@ -86,15 +74,13 @@ bool OpticalDrive::SaveToFile(const DiscInfo& disc, const std::wstring& base) {
 		else if (disc.pregapMode == PregapMode::Separate && t.pregapLBA < t.startLBA) {
 			std::wstring pregapPath = base + L"_track" +
 				std::to_wstring(t.trackNumber) + L"_pregap.bin";
-			cleanup.paths.push_back(std::filesystem::path(pregapPath));
-			std::ofstream pregapFile(std::filesystem::path(pregapPath), std::ios::binary);
+			std::ofstream pregapFile(transaction.Stage(pregapPath), std::ios::binary);
 			if (!pregapFile) return false;
 			std::wstring pregapSubPath = base + L"_track" +
 				std::to_wstring(t.trackNumber) + L"_pregap.sub";
 			std::ofstream pregapSub;
 			if (disc.includeSubchannel) {
-				cleanup.paths.push_back(std::filesystem::path(pregapSubPath));
-				pregapSub.open(std::filesystem::path(pregapSubPath), std::ios::binary);
+				pregapSub.open(transaction.Stage(pregapSubPath), std::ios::binary);
 				if (!pregapSub) return false;
 			}
 
@@ -112,11 +98,11 @@ bool OpticalDrive::SaveToFile(const DiscInfo& disc, const std::wstring& base) {
 					if (!pregapSub) return false;
 				}
 			}
-			pregapFile.flush();
+			pregapFile.close();
 			if (!pregapFile.good()) return false;
 			pregapFiles.push_back(pregapPath);
 			if (disc.includeSubchannel) {
-				pregapSub.flush();
+				pregapSub.close();
 				if (!pregapSub.good()) return false;
 				pregapFiles.push_back(pregapSubPath);
 			}
@@ -153,7 +139,7 @@ bool OpticalDrive::SaveToFile(const DiscInfo& disc, const std::wstring& base) {
 	size_t p = fn.find_last_of("/\\");
 	if (p != std::string::npos) fn = fn.substr(p + 1);
 
-	std::ofstream cue(std::filesystem::path(base + L".cue"));
+	std::ofstream cue(transaction.Stage(base + L".cue"));
 	if (!cue) return false;
 
 	if (!disc.cdText.albumArtist.empty()) {
@@ -239,6 +225,11 @@ bool OpticalDrive::SaveToFile(const DiscInfo& disc, const std::wstring& base) {
 	cue.flush();
 	if (!cue.good()) return false;
 
+    img.close();
+    if (!img.good()) return false;
+    if (sub.is_open()) { sub.close(); if (!sub.good()) return false; }
+    cue.close();
+    if (!cue.good() || !transaction.Commit()) return false;
 	std::cout << "\n=== Files Created ===\n";
 	std::wcout << L"  " << base << L".bin\n";
 	if (disc.includeSubchannel) std::wcout << L"  " << base << L".sub\n";
@@ -248,7 +239,6 @@ bool OpticalDrive::SaveToFile(const DiscInfo& disc, const std::wstring& base) {
 		std::wcout << L"  " << pf << L"\n";
 	}
 
-	cleanup.committed = true;
 	return true;
 }
 

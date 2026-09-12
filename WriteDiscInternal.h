@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "OpticalDrive.h"
 #include <string>
 #include <vector>
@@ -15,7 +15,7 @@ namespace WriteDiscInternal {
 		DWORD binSector, bool& isInPregap);
 
 	// Drive configuration
-	bool PrepareDriveForWrite(ScsiDrive& drive, int subchannelMode, bool quiet = false);
+	bool PrepareDriveForWrite(ScsiDrive& drive, int subchannelMode, bool quiet = false, bool simulate = false);
 	bool BuildAndSendCueSheet(ScsiDrive& drive,
 		const std::vector<OpticalDrive::TrackWriteInfo>& tracks,
 		DWORD totalSectors, int subchannelMode, bool verbose = true, bool quiet = false,

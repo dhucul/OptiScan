@@ -1,9 +1,10 @@
-﻿#define NOMINMAX
+#define NOMINMAX
 #include "OpticalDrive.h"
 #include "ConsoleColors.h"
 #include "Progress.h"
 #include "InterruptHandler.h"
 #include "WriteDiscInternal.h"
+#include "WorkflowChecks.h"
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -167,6 +168,15 @@ bool OpticalDrive::WriteAudioSectors(const std::wstring& binFile,
 			}
 		}
 
+        const DWORD sourceSector = sectorsWritten >= PREGAP_SECTORS
+            ? sectorsWritten - PREGAP_SECTORS : 0;
+        if (!WorkflowChecks::RewindWriteSource(binInput, sourceSector, AUDIO_SECTOR_SIZE) ||
+            (hasSubFile && !WorkflowChecks::RewindWriteSource(subInput, sourceSector, SUBCHANNEL_SIZE))) {
+            Console::Error("Cannot position the pending write payload.\n");
+            progress.Finish(false);
+            return false;
+        }
+
 		for (DWORD s = 0; s < batchSize; s++) {
 			BYTE* dest = writeBuffer.data() + s * sectorSize;
 			DWORD globalSector = sectorsWritten + s;
@@ -224,7 +234,7 @@ bool OpticalDrive::WriteAudioSectors(const std::wstring& binFile,
 							subInput.read(reinterpret_cast<char*>(rawSub), SUBCHANNEL_SIZE);
 							size_t subRead = subInput.gcount();
 							if (subRead < SUBCHANNEL_SIZE) {
-								std::fill(rawSub + subRead, rawSub + SUBCHANNEL_SIZE, 0x00);
+								std::fill(rawSub + subRead, rawSub + SUBCHANNEL_SIZE, static_cast<BYTE>(0));
 							}
 							WriteDiscInternal::DeinterleaveSubchannel(rawSub, subDest);
 						}
@@ -232,7 +242,7 @@ bool OpticalDrive::WriteAudioSectors(const std::wstring& binFile,
 							subInput.read(reinterpret_cast<char*>(subDest), SUBCHANNEL_SIZE);
 							size_t subRead = subInput.gcount();
 							if (subRead < SUBCHANNEL_SIZE) {
-								std::fill(subDest + subRead, subDest + SUBCHANNEL_SIZE, 0x00);
+								std::fill(subDest + subRead, subDest + SUBCHANNEL_SIZE, static_cast<BYTE>(0));
 							}
 						}
 					}

@@ -1,10 +1,11 @@
-﻿#define NOMINMAX
+#define NOMINMAX
 #include "OpticalDrive.h"
 #include "ConsoleColors.h"
 #include "Drive.h"
 #include "GuiInput.h"
 #include "InterruptHandler.h"
 #include "MenuHelpers.h"
+#include "WorkflowChecks.h"
 #include <chrono>
 #include <iomanip>
 #include <iostream>
@@ -129,6 +130,11 @@ bool OpticalDrive::CheckRewritableDisk(bool& isFull, bool& isRewritable, bool qu
 // BlankRewritableDisk - Erase rewritable media (quick or full)
 // ============================================================================
 bool OpticalDrive::BlankRewritableDisk(int speed, bool quickBlank, bool skipConfirm) {
+    if (g_interrupt.IsInterrupted()) return false;
+    if (WorkflowChecks::SimulationRequested()) {
+        Console::Warning("Simulation is enabled; disc erasure was not started.\n");
+        return false;
+    }
 	Console::Warning(quickBlank ? "\nQuick blanking rewritable disc...\n"
 		: "\nFull blanking rewritable disc...\n");
 	Console::Info("[!] This operation will erase all data on the disc!\n");
@@ -138,7 +144,13 @@ bool OpticalDrive::BlankRewritableDisk(int speed, bool quickBlank, bool skipConf
 		return false;
 	}
 
+    if (g_interrupt.IsInterrupted()) return false;
 	m_drive.SetSpeed(speed);
+    auto sendBlank = [&](BYTE* command, BYTE length) {
+        return WorkflowChecks::RunMediaAction([&] {
+            return m_drive.SendSCSI(command, length, nullptr, 0, false);
+        });
+    };
 
 	BYTE standardType = (quickBlank ? 0x01 : 0x00) | 0x10;
 	BYTE cmd[12] = { 0xA1, standardType, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
@@ -146,21 +158,22 @@ bool OpticalDrive::BlankRewritableDisk(int speed, bool quickBlank, bool skipConf
 	bool blankStarted = false;
 	const char* usedMethod = quickBlank ? "quick blank" : "full blank";
 
-	if (m_drive.SendSCSI(cmd, sizeof(cmd), nullptr, 0, false)) {
+	if (sendBlank(cmd, sizeof(cmd))) {
 		blankStarted = true;
 	}
 	else {
+		if (g_interrupt.IsInterrupted()) return false;
 		Console::Warning("Standard blank failed - trying erase session recovery...\n");
 
 		BYTE recoveryCmd[12] = { 0xA1, 0x16, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
-		if (m_drive.SendSCSI(recoveryCmd, sizeof(recoveryCmd), nullptr, 0, false)) {
+		if (sendBlank(recoveryCmd, sizeof(recoveryCmd))) {
 			Console::Info("Erase session in progress...\n");
-			WaitForDriveReady(m_drive, 120);
+			if (!WaitForDriveReady(m_drive, 120) || g_interrupt.IsInterrupted()) return false;
 
 			Console::Info("Retrying ");
 			std::cout << usedMethod << "...\n";
-			if (m_drive.SendSCSI(cmd, sizeof(cmd), nullptr, 0, false)) {
+			if (sendBlank(cmd, sizeof(cmd))) {
 				blankStarted = true;
 			}
 			else {
@@ -280,6 +293,7 @@ bool OpticalDrive::BlankRewritableDisk(int speed, bool quickBlank, bool skipConf
 // PerformPowerCalibration - Calibrate laser power for writing
 // ============================================================================
 bool OpticalDrive::PerformPowerCalibration() {
+    if (g_interrupt.IsInterrupted()) return false;
 	Console::Info("Performing power calibration (OPC)...\n");
 
 	// SEND OPC INFORMATION (0x54). Try IMMED first so the drive returns as soon
@@ -289,7 +303,9 @@ bool OpticalDrive::PerformPowerCalibration() {
 	auto trySend = [&](BYTE immed) {
 		BYTE cmd[10] = { 0x54, immed, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 		sk = asc = ascq = 0;
-		return m_drive.SendSCSIWithSense(cmd, sizeof(cmd), nullptr, 0, &sk, &asc, &ascq, false);
+		return WorkflowChecks::RunMediaAction([&] {
+            return m_drive.SendSCSIWithSense(cmd, sizeof(cmd), nullptr, 0, &sk, &asc, &ascq, false);
+        });
 	};
 
 	bool ok = trySend(0x01);
@@ -297,6 +313,7 @@ bool OpticalDrive::PerformPowerCalibration() {
 		ok = trySend(0x00);  // retry without IMMED
 	}
 
+	if (g_interrupt.IsInterrupted()) return false;
 	if (!ok) {
 		char msg[160];
 		std::snprintf(msg, sizeof(msg),

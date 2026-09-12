@@ -58,6 +58,11 @@
   <ItemGroup>
     <ClCompile Include="PreservationTests.cpp" />
     <ClCompile Include="CueSheetImportTests.cpp" />
+    <ClCompile Include="AuditRegressionTests.cpp" />
+    <ClCompile Include="WriteRetryTests.cpp" />
+    <ClCompile Include="..\OpticalDrive_WriteAudioSectors.cpp" />
+    <ClCompile Include="..\GuiWorker.cpp" />
+    <ClCompile Include="..\OpticalDrive_FileOutput.cpp" />
     <ClCompile Include="..\CueSheetImport.cpp" />
     <ClCompile Include="..\AccurateRip.cpp" />
     <ClCompile Include="..\Preservation.cpp" />

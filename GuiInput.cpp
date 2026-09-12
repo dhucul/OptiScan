@@ -3,6 +3,8 @@
 #include "FontLoader.h"
 #include "Theme.h"
 #include "ButtonFeedback.h"
+#include "InterruptHandler.h"
+#include "NumericInput.h"
 
 #include <windows.h>
 #include <commctrl.h>
@@ -485,17 +487,21 @@ namespace GuiInput {
                   minVal, maxVal, defaultVal);
         wMsg += suffix;
         std::wstring value = std::to_wstring(defaultVal);
-        bool ok = RunOnOwnerThread([&]() { return RunPrompt(wTitle, wMsg, value); });
-        if (outOk) *outOk = ok;
-        if (!ok) return defaultVal;
-        try {
-            int v = std::stoi(value);
-            if (v < minVal) v = minVal;
-            if (v > maxVal) v = maxVal;
-            return v;
-        } catch (...) {
-            return defaultVal;
+        if (outOk) *outOk = false;
+        bool invalid = false;
+        while (!g_interrupt.IsInterrupted()) {
+            const auto prompt = wMsg + (invalid
+                ? L"\r\nPlease enter a whole number within the displayed range." : L"");
+            const bool ok = RunOnOwnerThread([&]() { return RunPrompt(wTitle, prompt, value); });
+            if (!ok) { g_interrupt.SetInterrupted(true); return defaultVal; }
+            int parsed = 0;
+            if (ParseBoundedInteger(value, minVal, maxVal, parsed)) {
+                if (outOk) *outOk = true;
+                return parsed;
+            }
+            invalid = true;
         }
+        return defaultVal;
     }
 
     std::string PromptString(const char* title, const char* message,
@@ -504,6 +510,7 @@ namespace GuiInput {
         std::wstring wMsg = ToWide(message ? message : "");
         std::wstring value = ToWide(defaultVal.c_str());
         bool ok = RunOnOwnerThread([&]() { return RunPrompt(wTitle, wMsg, value); });
+        if (!ok) g_interrupt.SetInterrupted(true);
         if (outOk) *outOk = ok;
         if (!ok) return defaultVal;
         return FromWide(value);
@@ -516,6 +523,7 @@ namespace GuiInput {
             return RunPrompt(title ? title : L"Input",
                 message ? message : L"", value);
         });
+        if (!ok) g_interrupt.SetInterrupted(true);
         if (outOk) *outOk = ok;
         if (!ok) return defaultVal;
         return value;
@@ -530,6 +538,7 @@ namespace GuiInput {
         });
         if (r == IDYES) return 1;
         if (r == IDNO) return 0;
+        g_interrupt.SetInterrupted(true);
         return -1;
     }
 
@@ -545,7 +554,7 @@ namespace GuiInput {
 
     std::wstring PromptForFolder(const wchar_t* title,
                                  const std::wstring& initialDir) {
-        return RunOnOwnerThread([&]() {
+        auto selected = RunOnOwnerThread([&]() {
         std::wstring result;
 
         HRESULT hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -589,13 +598,15 @@ namespace GuiInput {
         if (needUninit) CoUninitialize();
         return result;
         });
+        if (selected.empty()) g_interrupt.SetInterrupted(true);
+        return selected;
     }
 
     std::wstring PromptForFile(const wchar_t* title,
                                const wchar_t* filterName,
                                const wchar_t* filterSpec,
                                const std::wstring& initialDir) {
-        return RunOnOwnerThread([&]() {
+        auto selected = RunOnOwnerThread([&]() {
         std::wstring result;
 
         HRESULT hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -653,6 +664,8 @@ namespace GuiInput {
         if (needUninit) CoUninitialize();
         return result;
         });
+        if (selected.empty()) g_interrupt.SetInterrupted(true);
+        return selected;
     }
 
     void WaitForKey(const char* message) {

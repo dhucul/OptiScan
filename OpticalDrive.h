@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // OpticalDrive.h - Main audio CD copying orchestration
 // ============================================================================
 #pragma once
@@ -19,8 +19,16 @@ public:
 	~OpticalDrive() { Close(); }
 
 	// Drive access
-	bool Open(wchar_t driveLetter) { return m_drive.Open(driveLetter); }
-	void Close() { m_drive.Close(); }
+    bool Open(wchar_t driveLetter) {
+        const bool opened = m_drive.Open(driveLetter);
+        if (opened) { m_capabilitiesDetected = false; m_hasAccurateStream = false; }
+        return opened;
+    }
+    void Close() {
+        m_drive.Close();
+        m_capabilitiesDetected = false;
+        m_hasAccurateStream = false;
+    }
 
 	// Drive identity / validation forwarders. GetDriveInfo is non-const because
 	// the underlying ScsiDrive method is.
@@ -143,7 +151,7 @@ public:
 	// Additional disc rot detection
 	bool RunSpeedComparisonTest(DiscInfo& disc, std::vector<SpeedComparisonResult>& results);
 	bool CheckLeadAreas(DiscInfo& disc, int scanSpeed = 4);
-	void GenerateSurfaceMap(DiscInfo& disc, const std::wstring& filename, int scanSpeed = 8);
+	bool GenerateSurfaceMap(DiscInfo& disc, const std::wstring& filename, int scanSpeed = 8);
 
 	// Additional error detection methods
 	bool RunMultiPassVerification(DiscInfo& disc, std::vector<MultiPassResult>& results,
@@ -227,7 +235,7 @@ public:
 	bool WriteDisc(const std::wstring& binFile,
 		const std::wstring& cueFile, const std::wstring& subFile,
 		int speed, bool usePowerCalibration, bool discAlreadyBlanked = false,
-		bool /*attemptSubchannel_deprecated*/ = false);
+		bool /*attemptSubchannel_deprecated*/ = false, bool simulate = false);
 
 	// quiet=true suppresses the console readout (media type / status) for callers
 	// that only need the isFull/isRewritable results and re-report the disc state
@@ -263,6 +271,10 @@ public:
 		std::string performer; // CD-Text: track performer from CUE PERFORMER command
 	};
 
+    bool LoadWriteSource(const std::wstring& binFile, const std::wstring& cueFile,
+        const std::wstring& subFile, std::vector<TrackWriteInfo>& tracks,
+        DWORD& totalSectors, std::string& discTitle, std::string& discPerformer,
+        std::string& discMCN);
 	bool ParseCueSheet(const std::wstring& cueFile,
 		std::vector<TrackWriteInfo>& tracks);
 	// Overload that also extracts disc-level CD-Text metadata and MCN

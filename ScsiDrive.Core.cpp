@@ -1,8 +1,9 @@
-﻿// ============================================================================
+// ============================================================================
 // ScsiDrive.Core.cpp - Core SCSI drive communication
 // ============================================================================
 #include "ScsiDrive.h"
 #include "DriveCapabilityParsing.h"
+#include "WorkflowChecks.h"
 #include <chrono>
 #include <thread>
 #include <vector>
@@ -214,8 +215,10 @@ bool ScsiDrive::SendSCSI(void* cdb, BYTE cdbLength, void* buffer, DWORD bufferSi
 bool ScsiDrive::SendSCSIWithSense(void* cdb, BYTE cdbLength, void* buffer, DWORD bufferSize,
 	BYTE* senseKey, BYTE* asc, BYTE* ascq, bool dataIn, DWORD timeoutSec) {
 	if (m_handle == INVALID_HANDLE_VALUE) {
-		if (senseKey) *senseKey = 0x02;  // Not Ready
-		return false;
+        if (senseKey) *senseKey = 0xFF;
+        if (asc) *asc = 0;
+        if (ascq) *ascq = 0;
+        return false;
 	}
 
 	constexpr DWORD SENSE_SIZE = 32;
@@ -423,7 +426,7 @@ int ScsiDrive::GetLowestHonoredSpeed(bool apply) {
 	WORD actualRead = 0, actualWrite = 0;
 	int lowest = 1;
 	if (TrySetSpeedAndVerify(1, -1, &actualRead, &actualWrite) || actualRead > 0) {
-		if (actualRead > 0 && CD_SPEED_1X > 0) {
+		if (actualRead > 0) {
 			// Round to nearest multiplier; clamp to at least 1x.
 			lowest = (static_cast<int>(actualRead) + CD_SPEED_1X / 2) / CD_SPEED_1X;
 			if (lowest < 1) lowest = 1;
@@ -650,9 +653,9 @@ bool ScsiDrive::GetMediaStatus(DriveHealthCheck& status) {
 
 	const bool commandOk = SendSCSIWithSense(
 		cdb, 6, dummy, 0, &senseKey, &asc, &ascq, true);
-	// A failed transport leaves the sense buffer at zero. Do not turn that
-	// shape into the same result as a successful TEST UNIT READY command.
-	if (!commandOk && senseKey == 0 && asc == 0 && ascq == 0)
+    // Only explicit readiness/no-medium/spin-up responses establish media
+    // state. Transport errors and unknown sense data remain unavailable.
+	if (!WorkflowChecks::MediaStateKnown(commandOk, senseKey, asc))
 		return false;
 
 	status.mediaReady = commandOk;

@@ -24,6 +24,7 @@
 #include "RecoveryCheckpoint.h"
 #include "InterruptHandler.h"
 #include "MenuHelpers.h"
+#include "WorkflowChecks.h"
 #include <iostream>
 #include <fstream>
 #include <filesystem>
@@ -357,7 +358,7 @@ bool OpticalDrive::RescueSectorConsensus(DWORD lba, BYTE* audioOut,
 			}
 
 			audioOut[i] = topVal;
-			bool isConfirmed = (topCount >= cfg.quorum);
+			bool isConfirmed = WorkflowChecks::HasUniqueQuorum(tally, cfg.quorum);
 			if (isConfirmed) confirmed++;
 			// Annotate: consensus accepted this byte, but C2 flagged it bad on a
 			// majority of its verdicts. The drive disputes a value we kept.

@@ -1,4 +1,4 @@
-﻿// OptiScanUi.cpp - shared Win32 UI state and lifecycle helpers.
+// OptiScanUi.cpp - shared Win32 UI state and lifecycle helpers.
 
 #include "framework.h"
 #include "OptiScanUiInternal.h"
@@ -109,7 +109,7 @@ extern const LPCWSTR CommandLabels[COMMAND_BUTTON_COUNT] =
 {
     L"1. Copy disc *",
     L"2. Rip tracks (WAV/FLAC) *",
-    L"3. Write disc (.bin/.cue/.sub files) *",
+    L"3. Write disc (.bin/.cue/.sub files)",
     L"4. Write tracks to disc using current disc's pregaps *",
     L"5. Write disc from CUE sheet + audio files",
     L"6. Recovery rip (drive-independent) *",
@@ -141,7 +141,7 @@ extern const LPCWSTR CommandLabels[COMMAND_BUTTON_COUNT] =
     L"32. Erase CD-RW (rewritable)",
     L"33. FE/TE servo scan (experimental, LiteOn) *",
     L"34. Check CD against AccurateRip *",
-    L"35. Batch run (multiple ops, 1 prescan)",
+    L"35. Batch run (multiple operations)",
     L"36. Clear info box",
     L"37. Exit"
 };
@@ -406,5 +406,5 @@ void AppendInfoText(HWND /*hCtrl*/, LPCWSTR text)
     // vectors off the UI thread raced with the concurrent drain and corrupted
     // the log (random heap-corruption crash in vector reallocation). The queue
     // path also mirrors to the accessible EDIT, so no separate MirrorText call.
-    GuiSink::AppendDirectColored(text, (size_t)lstrlenW(text), MenuTextOrange);
+    GuiSink::AppendInfo(text, (size_t)lstrlenW(text));
 }

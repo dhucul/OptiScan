@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // TrackRipWorkflow.cpp - Rip individual tracks to WAV or FLAC
 //
 // Workflow: track selection → format (WAV/FLAC) → speed → burst/safe mode →
@@ -17,6 +17,7 @@
 #include "PioneerVendor.h"
 #include "Preservation.h"
 #include "Progress.h"
+#include "TrackFileOutput.h"
 #include <algorithm>
 #include <fstream>
 #include <iomanip>
@@ -113,6 +114,7 @@ static bool WriteWavFile(const std::wstring& path,
 	size_t buffered = 0;
 
 	for (size_t i = 0; i < sectorCount; i++) {
+        if (g_interrupt.IsInterrupted()) return false;
 		size_t idx = startSector + i;
 		memcpy(buf.data() + buffered * AUDIO_SECTOR_SIZE,
 			sectors[idx].data(), AUDIO_SECTOR_SIZE);
@@ -128,6 +130,7 @@ static bool WriteWavFile(const std::wstring& path,
 			buffered * AUDIO_SECTOR_SIZE);
 	}
 
+	out.close();
 	return out.good();
 }
 
@@ -154,21 +157,25 @@ static bool ConvertWavToFlac(const std::wstring& wavPath, const std::wstring& fl
 	}
 
 	bool cancelled = false;
-	while (WaitForSingleObject(pi.hProcess, 100) == WAIT_TIMEOUT) {
+    DWORD waitResult = WAIT_TIMEOUT;
+	while ((waitResult = WaitForSingleObject(pi.hProcess, 100)) == WAIT_TIMEOUT) {
 		if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
-			TerminateProcess(pi.hProcess, ERROR_CANCELLED);
-			WaitForSingleObject(pi.hProcess, 5000);
+            const BOOL terminated = TerminateProcess(pi.hProcess, ERROR_CANCELLED);
+            if (!terminated) OutputDebugStringA("Waiting for FLAC exit after failed termination request.\n");
+            // Do not delete its staging files while the encoder can still write.
+            waitResult = WaitForSingleObject(pi.hProcess, INFINITE);
 			cancelled = true;
 			break;
 		}
 	}
 
 	DWORD exitCode = 1;
-	GetExitCodeProcess(pi.hProcess, &exitCode);
+    const bool exited = waitResult == WAIT_OBJECT_0 &&
+        GetExitCodeProcess(pi.hProcess, &exitCode) && exitCode != STILL_ACTIVE;
 	CloseHandle(pi.hProcess);
 	CloseHandle(pi.hThread);
 
-	return !cancelled && exitCode == 0;
+	return !cancelled && exited && exitCode == 0;
 }
 
 // Writes a track file in the requested format.
@@ -181,37 +188,11 @@ static bool WriteTrackFile(TrackOutputFormat format,
 	std::wstring& actualPath,            // [out] final file path
 	bool& flacFallback)                  // [out] true if fell back to WAV
 {
-	flacFallback = false;
-
-	if (format == TrackOutputFormat::WAV) {
-		actualPath = basePath + L".wav";
-		return WriteWavFile(actualPath, sectors, startSector, sectorCount);
-	}
-
-	// FLAC: write temp WAV → convert → delete WAV
-	std::wstring wavPath = basePath + L".wav";
-	std::wstring flacPath = basePath + L".flac";
-
-	if (!WriteWavFile(wavPath, sectors, startSector, sectorCount)) {
-		DeleteFileW(wavPath.c_str());
-		return false;
-	}
-
-	if (ConvertWavToFlac(wavPath, flacPath)) {
-		DeleteFileW(wavPath.c_str());
-		actualPath = flacPath;
-		return true;
-	}
-	if (g_interrupt.IsInterrupted()) {
-		DeleteFileW(wavPath.c_str());
-		DeleteFileW(flacPath.c_str());
-		return false;
-	}
-
-	// flac.exe not found or failed — keep the WAV
-	flacFallback = true;
-	actualPath = wavPath;
-	return true;
+    return SaveTrackArtifact(basePath, format == TrackOutputFormat::FLAC,
+        [&](const std::wstring& path) {
+            return WriteWavFile(path, sectors, startSector, sectorCount);
+        }, ConvertWavToFlac,
+        [] { return g_interrupt.IsInterrupted(); }, actualPath, flacFallback);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -378,7 +359,8 @@ static void ApplyAndConfirmPioneerPreset(PioneerVendor& pioneer, const PioneerCa
 		chosenMode = (c == 2) ? PureReadMode::Perfect : PureReadMode::Master;
 	}
 
-	const char* modeName = (chosenMode == PureReadMode::Perfect) ? "Perfect" : "Master";
+	if (g_interrupt.IsInterrupted()) return;
+    const char* modeName = (chosenMode == PureReadMode::Perfect) ? "Perfect" : "Master";
 
 	if (pioneer.ApplyAudioExtractionPreset(/*persist=*/false, chosenMode)) {
 		std::string applied = " Pioneer audio preset applied (PureRead ";

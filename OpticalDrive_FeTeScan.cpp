@@ -11,6 +11,7 @@
 #define NOMINMAX
 #include "OpticalDrive.h"
 #include "InterruptHandler.h"
+#include "WorkflowChecks.h"
 #include <iostream>
 #include <iomanip>
 #include <sstream>
@@ -19,6 +20,7 @@
 #include <fstream>
 
 bool OpticalDrive::RunFeTeScan(const DiscInfo& disc, FeTeResult& result, int scanSpeed) {
+    result = FeTeResult{};
 	std::cout << "\n=== CD Focus / Tracking-Error Scan (experimental) ===\n";
 
 	if (!m_drive.SupportsLiteOnFeTe()) {
@@ -53,12 +55,16 @@ bool OpticalDrive::RunFeTeScan(const DiscInfo& disc, FeTeResult& result, int sca
 	m_drive.SetSpeed(scanSpeed);
 	if (!m_drive.LiteOnFeTeStart(firstLBA, lastLBA)) {
 		std::cout << "ERROR: Failed to start FE/TE scan.\n";
-		m_drive.SetSpeed(0);
 		return false;
 	}
 
+    struct ScanStop {
+        ScsiDrive& drive;
+        ~ScanStop() { drive.LiteOnFeTeStop(); }
+    } scanStop{m_drive};
+
 	auto startTime = std::chrono::steady_clock::now();
-	auto lastProgress = startTime;
+	WorkflowChecks::ScanProgressWatch progressWatch(startTime);
 	bool scanDone = false;
 	int sampleIndex = 0;
 	DWORD lastReportedLBA = DWORD(-1);
@@ -68,8 +74,6 @@ bool OpticalDrive::RunFeTeScan(const DiscInfo& disc, FeTeResult& result, int sca
 	while (!scanDone) {
 		if (InterruptHandler::Instance().IsInterrupted()
 			|| InterruptHandler::Instance().CheckEscapeKey()) {
-			m_drive.LiteOnFeTeStop();
-			m_drive.SetSpeed(0);
 			std::cout << "\n*** FE/TE scan cancelled ***\n";
 			return false;
 		}
@@ -77,21 +81,17 @@ bool OpticalDrive::RunFeTeScan(const DiscInfo& disc, FeTeResult& result, int sca
 		int fe = 0, te = 0;
 		DWORD currentLBA = 0;
 		if (!m_drive.LiteOnFeTePoll(fe, te, currentLBA, scanDone)) {
-			m_drive.LiteOnFeTeStop();
-			if (!result.samples.empty()) break;
+			// Samples remain available to the caller as incomplete evidence.
 			std::cout << "\nERROR: Lost communication with drive.\n";
-			m_drive.SetSpeed(0);
 			return false;
 		}
 		auto pollNow = std::chrono::steady_clock::now();
-		if (currentLBA != lastReportedLBA) lastProgress = pollNow;
-		else if (!scanDone && pollNow - lastProgress > std::chrono::seconds(30)) {
-			m_drive.LiteOnFeTeStop();
-			std::cout << "\nERROR: FE/TE scan stalled for 30 seconds.\n";
-			return false;
-		}
+        if (currentLBA >= lastLBA) scanDone = true;
+        if (progressWatch.Stalled(currentLBA, scanDone, pollNow)) {
+            std::cout << "\nERROR: Scan stalled for 30 seconds; partial data is incomplete.\n";
+            return false;
+        }
 		if (pollNow - startTime > std::chrono::minutes(90)) {
-			m_drive.LiteOnFeTeStop();
 			std::cout << "\nERROR: FE/TE scan exceeded the 90-minute safety limit.\n";
 			return false;
 		}
@@ -99,7 +99,7 @@ bool OpticalDrive::RunFeTeScan(const DiscInfo& disc, FeTeResult& result, int sca
 		if (currentLBA == 0 && fe == 0 && te == 0 && !scanDone) { Sleep(10); continue; }
 		if (currentLBA == lastReportedLBA && !scanDone) { Sleep(10); continue; }
 		lastReportedLBA = currentLBA;
-		if (sampleIndex < 3) { sampleIndex++; continue; }   // discard startup artefacts
+		if (sampleIndex < 3 && !scanDone) { sampleIndex++; continue; }   // discard startup artefacts
 		if (currentLBA >= lastLBA) scanDone = true;
 
 		FeTeSample s;
@@ -146,8 +146,6 @@ bool OpticalDrive::RunFeTeScan(const DiscInfo& disc, FeTeResult& result, int sca
 		std::cout << out << std::flush;
 	}
 
-	m_drive.LiteOnFeTeStop();
-	m_drive.SetSpeed(0);
 
 	if (!result.samples.empty()) {
 		result.avgFe = static_cast<double>(result.totalFe) / result.samples.size();
@@ -155,6 +153,11 @@ bool OpticalDrive::RunFeTeScan(const DiscInfo& disc, FeTeResult& result, int sca
 	}
 
 	std::cout << "\n";
+    if (result.samples.empty()) {
+        Console::Error("Scan ended without usable measurements.\n");
+        return false;
+    }
+    result.completed = true;
 	PrintFeTeReport(result);
 	return true;
 }
@@ -162,6 +165,7 @@ bool OpticalDrive::RunFeTeScan(const DiscInfo& disc, FeTeResult& result, int sca
 bool OpticalDrive::SaveFeTeLog(const FeTeResult& result, const std::wstring& filename) {
 	std::ofstream f(filename);
 	if (!f) return false;
+    f << "# completed=" << (result.completed ? "true" : "false") << "\n";
 	f << "lba,focus_error,tracking_error\n";
 	for (const auto& s : result.samples)
 		f << s.lba << "," << s.fe << "," << s.te << "\n";

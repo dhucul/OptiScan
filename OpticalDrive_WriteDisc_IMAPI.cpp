@@ -1,8 +1,10 @@
-﻿#define NOMINMAX
+#define NOMINMAX
 #include "OpticalDrive.h"
 #include "ConsoleColors.h"
 #include "Drive.h"
 #include "WriteDiscInternal.h"
+#include "WorkflowChecks.h"
+#include "ImapiCancelMonitor.h"
 #include <comdef.h>
 #include <imapi2.h>
 #include <imapi2error.h>
@@ -255,6 +257,7 @@ public:
 	}
 	STDMETHODIMP Read(void* data, ULONG bytes, ULONG* read) override {
 		if (read) *read = 0;
+        if (g_interrupt.IsInterrupted()) return HRESULT_FROM_WIN32(ERROR_CANCELLED);
 		if (!data && bytes != 0) return STG_E_INVALIDPOINTER;
 		if (m_position >= m_length || bytes == 0) return S_OK;
 		const DWORD request = static_cast<DWORD>((std::min)(
@@ -363,6 +366,10 @@ bool OpticalDrive::WriteDiscIMAPI(const std::wstring& binFile,
 	const std::vector<TrackWriteInfo>& tracks,
 	DWORD totalSectors, int speed) {
 
+    if (g_interrupt.IsInterrupted() || WorkflowChecks::SimulationRequested()) {
+        Console::Warning("IMAPI write not started: cancelled or simulation requested.\n");
+        return false;
+    }
 	Console::BoxHeading("IMAPI2 Fallback Write");
 	Console::Info("Using Microsoft IMAPI2 API (drive rejected raw SCSI layout)\n");
 
@@ -393,17 +400,24 @@ bool OpticalDrive::WriteDiscIMAPI(const std::wstring& binFile,
 	// Initialize COM
 	HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 	bool comOwner = SUCCEEDED(hr);
-	if (hr == RPC_E_CHANGED_MODE) {
-		hr = S_OK;
-	}
+    // Cancellation control is marshaled to an MTA helper. The GUI worker is
+    // an MTA; do not block a pre-existing STA caller during that handoff.
 	if (FAILED(hr)) {
 		Console::Error("COM initialization failed\n");
 		m_drive.Open(driveLetter);
 		return false;
 	}
 
+    struct ComApartment {
+        bool owned;
+        ~ComApartment() { if (owned) CoUninitialize(); }
+    } apartment{comOwner};
+    struct RestoreHandle {
+        ScsiDrive& drive;
+        wchar_t letter;
+        ~RestoreHandle() { if (!drive.IsOpen()) drive.Open(letter); }
+    } restoreHandle{m_drive, driveLetter};
 	auto cleanup = [&](bool reopenDrive) -> bool {
-		if (comOwner) CoUninitialize();
 		if (!reopenDrive) return true;
 		if (!m_drive.Open(driveLetter)) {
 			Console::Error("Could not reopen the selected drive after IMAPI2 released it.\n");
@@ -438,8 +452,7 @@ bool OpticalDrive::WriteDiscIMAPI(const std::wstring& binFile,
 			CLSCTX_ALL, IID_PPV_ARGS(&creator));
 
 		if (SUCCEEDED(hr) && !tracks.empty()) {
-			creator->put_DisableGaplessAudio(kGaplessAudio == VARIANT_TRUE
-				? VARIANT_TRUE : VARIANT_FALSE);
+			creator->put_DisableGaplessAudio(kGaplessAudio);
 			creator->put_StartingTrackNumber(tracks[0].trackNumber);
 
 			bool addOk = true;
@@ -504,6 +517,7 @@ bool OpticalDrive::WriteDiscIMAPI(const std::wstring& binFile,
 							std::cout << std::hex << hr << std::dec << ")\n";
 						}
 						else {
+                            ImapiMediaSession<IDiscFormat2RawCD> media(rawCD.Get());
 							Console::Info("Writing disc via IMAPI2 DAO (");
 							std::cout << tracks.size() << " tracks)...\n";
 
@@ -530,24 +544,36 @@ bool OpticalDrive::WriteDiscIMAPI(const std::wstring& binFile,
 
 							// CreateResultImage() produces an image starting at
 							// MSF 95:00:00, which is exactly what WriteMedia expects.
-							hr = rawCD->WriteMedia(image.Get());
+                            {
+                                ImapiCancelMonitor cancel(rawCD.Get(), true);
+                                if (!cancel.Ready()) Console::Error("Cannot establish IMAPI cancellation control; write not started.\n");
+                                hr = cancel.Ready() && !g_interrupt.IsInterrupted()
+                                    ? rawCD->WriteMedia(image.Get())
+                                    : HRESULT_FROM_WIN32(ERROR_CANCELLED);
+                            }
+                            if (g_interrupt.IsInterrupted()) hr = HRESULT_FROM_WIN32(ERROR_CANCELLED);
 
 							if (connPoint && adviseCookie)
 								connPoint->Unadvise(adviseCookie);
 							sink->Release();
 							std::cout << "\n";
 
-							rawCD->ReleaseMedia();
+                            const HRESULT releaseResult = media.Release();
+                            if (SUCCEEDED(hr) && FAILED(releaseResult)) hr = releaseResult;
 
 							if (SUCCEEDED(hr)) {
 								Console::Success("IMAPI2 DAO write completed\n");
-								if (kGaplessAudio == VARIANT_FALSE) {
+								if constexpr (kGaplessAudio == VARIANT_FALSE) {
 									Console::Warning("Inter-track pregaps normalized to 2 seconds (drive limitation)\n");
 								}
 								return cleanup(true);
 							}
 							Console::Warning("IMAPI2 DAO WriteMedia failed (HRESULT: ");
 							std::cout << std::hex << hr << std::dec << ")\n";
+                            // A failed write may have modified the disc; do not
+                            // start another recording strategy on that medium.
+                            cleanup(true);
+                            return false;
 						}
 					}
 				}
@@ -556,6 +582,7 @@ bool OpticalDrive::WriteDiscIMAPI(const std::wstring& binFile,
 		Console::Info("DAO image path unavailable - trying TAO...\n");
 	}
 
+    if (g_interrupt.IsInterrupted()) { cleanup(true); return false; }
 	// ── Attempt 2: TAO fallback (functional but adds 2-sec gaps) ────
 	Console::Warning("Track-At-Once mode: inter-track gaps will be 2 seconds\n");
 	Console::Warning("This will NOT produce a 1:1 copy of the original disc\n");
@@ -603,14 +630,18 @@ bool OpticalDrive::WriteDiscIMAPI(const std::wstring& binFile,
 		return false;
 	}
 
+    ImapiMediaSession<IDiscFormat2TrackAtOnce> media(tao.Get());
 	Console::Info("Writing ");
 	std::cout << tracks.size() << " tracks via IMAPI2 Track-At-Once...\n";
 
-	for (size_t i = 0; i < tracks.size(); i++) {
+    for (size_t i = 0; i < tracks.size(); i++) {
+        if (g_interrupt.IsInterrupted()) {
+            media.Release(); cleanup(true); return false;
+        }
 		const auto& t = tracks[i];
 		if (t.endLBA < t.startLBA) {
 			Console::Error("Invalid track range supplied to IMAPI2\n");
-			tao->ReleaseMedia();
+			media.Release();
 			cleanup(true);
 			return false;
 		}
@@ -619,7 +650,7 @@ bool OpticalDrive::WriteDiscIMAPI(const std::wstring& binFile,
 			static_cast<unsigned long long>(trackSectors) * AUDIO_SECTOR_SIZE;
 		if (trackByteCount > (std::numeric_limits<DWORD>::max)()) {
 			Console::Error("Track is too large for the IMAPI stream interface\n");
-			tao->ReleaseMedia();
+			media.Release();
 			cleanup(true);
 			return false;
 		}
@@ -635,17 +666,23 @@ bool OpticalDrive::WriteDiscIMAPI(const std::wstring& binFile,
 		if (FAILED(hr)) {
 			Console::Error("Cannot create stream for track ");
 			std::cout << t.trackNumber << "\n";
-			tao->ReleaseMedia();
+			media.Release();
 			cleanup(true);
 			return false;
 		}
 
-		hr = tao->AddAudioTrack(stream.Get());
+        {
+            ImapiCancelMonitor cancel(tao.Get(), false);
+            if (!cancel.Ready()) Console::Error("Cannot establish IMAPI cancellation control; track not started.\n");
+            hr = cancel.Ready() && !g_interrupt.IsInterrupted()
+                ? tao->AddAudioTrack(stream.Get()) : HRESULT_FROM_WIN32(ERROR_CANCELLED);
+        }
+        if (g_interrupt.IsInterrupted()) hr = HRESULT_FROM_WIN32(ERROR_CANCELLED);
 		if (FAILED(hr)) {
 			Console::Error("IMAPI2 AddAudioTrack failed for track ");
 			std::cout << t.trackNumber << " (HRESULT: "
 				<< std::hex << hr << std::dec << ")\n";
-			tao->ReleaseMedia();
+			media.Release();
 			cleanup(true);
 			return false;
 		}
@@ -654,11 +691,14 @@ bool OpticalDrive::WriteDiscIMAPI(const std::wstring& binFile,
 		std::cout << t.trackNumber << " written\n";
 	}
 
-	hr = tao->ReleaseMedia();
+	hr = media.Release();
 	if (FAILED(hr)) {
 		Console::Warning("IMAPI2 ReleaseMedia warning (HRESULT: ");
 		std::cout << std::hex << hr << std::dec << ")\n";
+        cleanup(true);
+        return false;
 	}
+    if (g_interrupt.IsInterrupted()) { cleanup(true); return false; }
 
 	Console::Success("IMAPI2 TAO write completed successfully\n");
 	Console::Warning("Note: inter-track gaps are 2 seconds (not original layout)\n");

@@ -57,6 +57,7 @@ namespace GuiSink {
     // happen on the UI thread during DrainOutputQueue, preserving ordering with
     // surrounding cout/Console:: output. Used for op headers / batch markers.
     void AppendDirectColored(const wchar_t* text, size_t len, COLORREF color);
+    void AppendInfo(const wchar_t* text, size_t len);
     inline void AppendDirectColored(const std::wstring& s, COLORREF color) {
         AppendDirectColored(s.data(), s.size(), color);
     }
