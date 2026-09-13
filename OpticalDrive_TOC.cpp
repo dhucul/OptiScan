@@ -31,14 +31,15 @@
 //
 //   Phase 2 (fine):  Scan every sector in a ±COARSE_STEP window around the
 //       coarse hit with 3-round majority voting, enforcing ≥3 consecutive
-//       index-0 results to confirm the boundary.
+//       index-0 results to confirm the boundary (or both adjacent
+//       boundaries for a one/two-frame gap).
 //
 //   Backward refinement:  After the fine scan, up to 8 sectors before the
 //       detected boundary are re-checked with majority voting to compensate
 //       for subchannel read displacement (drives often report the index
 //       change a few sectors late).
 //
-// Fallback:  If the coarse pass finds no index-0 hit, the fine scan covers
+// Fallback:  If no coarse hit is found or the fine pass rejects it, it covers
 // the entire search window — equivalent to the original brute-force method.
 //
 // Accuracy vs. the original sector-by-sector approach:
@@ -94,6 +95,20 @@ static bool PregapTimedOut(const std::chrono::steady_clock::time_point& start) {
 // the shutdown path join the worker quickly rather than force-exiting.
 static bool PregapShouldStop(const std::chrono::steady_clock::time_point& start) {
 	return InterruptHandler::Instance().IsInterrupted() || PregapTimedOut(start);
+}
+
+// A one/two-frame gap cannot satisfy the normal three-sector rule. Require
+// both adjacent boundaries instead, using the existing voted Q reader.
+static bool ConfirmShortPregap(ScsiDrive& drive, DWORD firstIndex0, int count,
+	DWORD index01, int track, int previousTrack,
+	const std::chrono::steady_clock::time_point& clock) {
+	if (count < 1 || count > 2 || firstIndex0 == 0 || firstIndex0 >= index01
+		|| index01 - firstIndex0 != static_cast<DWORD>(count) || PregapShouldStop(clock)) return false;
+	int qt = 0, qi = -1;
+	if (!drive.ReadSectorQ(firstIndex0 - 1, qt, qi) || qt != previousTrack || qi < 1
+		|| PregapShouldStop(clock)) return false;
+	return drive.ReadSectorQ(index01, qt, qi) && qt == track && qi == 1
+		&& !PregapShouldStop(clock);
 }
 
 // ── Audio-readability probe for abandoned pregap scans ──────────────────────
@@ -153,7 +168,7 @@ static void ReportPregapScanSkipped(int trackNumber, double audioOk) {
 }
 
 bool OpticalDrive::ReadTOC(DiscInfo& disc, bool skipPregapScan) {
-	if (!ReadFullTOC(disc)) return false;
+	if (!ReadFullTOC(disc) || g_interrupt.IsInterrupted()) return false;
 
 	if (skipPregapScan) {
 		// Assign default boundaries — pregap data not needed by caller
@@ -182,7 +197,7 @@ bool OpticalDrive::ReadTOC(DiscInfo& disc, bool skipPregapScan) {
 		DWORD track1Start = disc.tracks[0].startLBA;
 
 		if (track1Start == 0) {
-			if (disc.tocRepaired) {
+			if (disc.tocRepaired && !disc.tocLBAsRecovered) {
 				disc.tracks[0].pregapLBA = 0;
 				disc.tracks[0].index01LBA = 150;
 				std::cout << "  Track  1: 2:00 (150 frames) pregap (default)\n";
@@ -190,7 +205,7 @@ bool OpticalDrive::ReadTOC(DiscInfo& disc, bool skipPregapScan) {
 			else {
 				constexpr DWORD MAX_PREGAP_SEARCH = 225;
 				DWORD scanLimit = std::min(MAX_PREGAP_SEARCH, disc.tracks[0].endLBA);
-				DWORD index01 = 150;
+				DWORD index01 = track1Start;
 				bool foundIndex1 = false;
 				int consecutiveIndex1 = 0;
 				int consecutiveFails = 0;
@@ -202,6 +217,7 @@ bool OpticalDrive::ReadTOC(DiscInfo& disc, bool skipPregapScan) {
 					int qTrack = 0, qIndex = -1;
 					bool readOk = m_drive.ReadSectorQ(lba, qTrack, qIndex);
 					if (!readOk) {
+						foundIndex1 = false; consecutiveIndex1 = 0;
 						totalFails++;
 						if (++consecutiveFails >= MAX_CONSECUTIVE_READ_FAILS
 							|| totalFails >= MAX_TOTAL_READ_FAILS) break;
@@ -209,18 +225,20 @@ bool OpticalDrive::ReadTOC(DiscInfo& disc, bool skipPregapScan) {
 					}
 					consecutiveFails = 0;
 					if (qTrack == 1 && qIndex == 1) {
-						if (!foundIndex1) { index01 = lba; foundIndex1 = true; consecutiveIndex1 = 1; }
+						// Missing early Q sectors must not shift the trusted TOC origin.
+						if (!foundIndex1) { index01 = track1Start; foundIndex1 = true; consecutiveIndex1 = 1; }
 						else { consecutiveIndex1++; }
 						if (consecutiveIndex1 >= 3) break;
 					}
 					else {
 						if (foundIndex1 && consecutiveIndex1 < 3) {
-							foundIndex1 = false; consecutiveIndex1 = 0; index01 = 150;
+							foundIndex1 = false; consecutiveIndex1 = 0; index01 = track1Start;
 						}
 					}
 				}
 
-				if (!foundIndex1) index01 = 150;
+				// An incomplete Q scan must not replace a trusted TOC origin with 150.
+				if (consecutiveIndex1 < 3) index01 = track1Start;
 
 				disc.tracks[0].pregapLBA = 0;
 				disc.tracks[0].index01LBA = index01;
@@ -282,7 +300,7 @@ bool OpticalDrive::ReadTOC(DiscInfo& disc, bool skipPregapScan) {
 					}
 				}
 
-				if (!trackSkipped) {
+				for (int pass = 0; pass < 2 && !trackSkipped; ++pass) {
 					DWORD fineStart = coarseFound && coarseHit > COARSE_STEP ? coarseHit - COARSE_STEP : scanStart;
 					DWORD fineEnd = coarseFound ? (coarseHit + COARSE_STEP < track1Start ? coarseHit + COARSE_STEP : track1Start) : track1Start;
 
@@ -296,6 +314,7 @@ bool OpticalDrive::ReadTOC(DiscInfo& disc, bool skipPregapScan) {
 						int qTrack = 0, qIndex = -1;
 						bool readOk = m_drive.ReadSectorQ(lba, qTrack, qIndex);
 						if (!readOk) {
+							if (consecutiveIndex0 < 3) { foundIndex0 = false; consecutiveIndex0 = 0; }
 							totalFails++;
 							if (++consecutiveFails >= MAX_CONSECUTIVE_READ_FAILS
 								|| totalFails >= MAX_TOTAL_READ_FAILS) {
@@ -318,12 +337,19 @@ bool OpticalDrive::ReadTOC(DiscInfo& disc, bool skipPregapScan) {
 							}
 						}
 					}
+					if (trackSkipped || (foundIndex0 && consecutiveIndex0 >= 3) || !coarseFound) break;
+					// A rejected coarse hit must not hide a later real pregap.
+					coarseFound = false;
+					foundIndex0 = false;
+					consecutiveIndex0 = 0;
+					firstIndex0 = track1Start;
 				}
 
 				if (!trackSkipped && foundIndex0 && consecutiveIndex0 >= 3) {
 					if (firstIndex0 > scanStart) {
 						DWORD backLimit = (firstIndex0 > scanStart + 8) ? firstIndex0 - 8 : scanStart;
 						for (DWORD lba = firstIndex0 - 1; lba >= backLimit; lba--) {
+							if (PregapShouldStop(t1Clock)) { trackSkipped = true; break; }
 							int qt = 0, qi = -1;
 							if (m_drive.ReadSectorQ(lba, qt, qi) && qt == 1 && qi == 0) {
 								firstIndex0 = lba;
@@ -403,9 +429,11 @@ bool OpticalDrive::ReadTOC(DiscInfo& disc, bool skipPregapScan) {
 		DWORD trackStart = disc.tracks[i].startLBA;
 		int targetTrack = disc.tracks[i].trackNumber;
 		DWORD pregapStart = trackStart;
-		DWORD scanStart = trackStart > 450 ? trackStart - 450 : 0;
+		const DWORD scanFloor = std::min(trackStart, disc.tracks[i - 1].startLBA);
+		DWORD scanStart = std::max(scanFloor, trackStart > 450 ? trackStart - 450 : 0);
 		DWORD firstIndex0 = trackStart;
 		bool foundAny = false;
+		bool shortGapConfirmed = false;
 		int consecutiveIndex0 = 0;
 		bool trackSkipped = false;
 		int totalFails = 0;
@@ -416,13 +444,15 @@ bool OpticalDrive::ReadTOC(DiscInfo& disc, bool skipPregapScan) {
 		bool coarseFound = false;
 
 		// ── Phase 1: coarse scan ────────────────────────────────────────
-		if (USE_COARSE_PREGAP_SCAN) {
+		while (USE_COARSE_PREGAP_SCAN && !trackSkipped) {
 			int coarseFails = 0;
+			bool sawEarlierProgram = false;
 			for (DWORD lba = scanStart; lba < trackStart; lba += COARSE_STEP) {
 				if (PregapShouldStop(trackClock)) { trackSkipped = true; break; }
 				int qTrack = 0, qIndex = -1;
 				if (m_drive.ReadSectorQSingle(lba, qTrack, qIndex)) {
 					coarseFails = 0;
+					if (qTrack == disc.tracks[i - 1].trackNumber && qIndex >= 1) sawEarlierProgram = true;
 					if (qTrack == targetTrack && qIndex == 0) {
 						coarseHit = lba;
 						coarseFound = true;
@@ -441,13 +471,20 @@ bool OpticalDrive::ReadTOC(DiscInfo& disc, bool skipPregapScan) {
 					}
 				}
 			}
+			if (!trackSkipped && coarseFound && !sawEarlierProgram && scanStart > scanFloor) {
+				// The gap may begin before this window; keep the same coarse step.
+				scanStart -= std::min<DWORD>(450, scanStart - scanFloor);
+				coarseFound = false;
+				continue;
+			}
+			break;
 		}
 
 		// ── Phase 2: fine scan (skipped if coarse already failed) ───────
-		if (!trackSkipped) {
+		for (int pass = 0; pass < 2 && !trackSkipped; ++pass) {
 			DWORD fineStart, fineEnd;
 			if (coarseFound) {
-				fineStart = coarseHit > COARSE_STEP ? coarseHit - COARSE_STEP : scanStart;
+				fineStart = std::max(scanFloor, coarseHit > COARSE_STEP ? coarseHit - COARSE_STEP : scanStart);
 				fineEnd = coarseHit + COARSE_STEP < trackStart ? coarseHit + COARSE_STEP : trackStart;
 			}
 			else {
@@ -463,6 +500,7 @@ bool OpticalDrive::ReadTOC(DiscInfo& disc, bool skipPregapScan) {
 				int qTrack = 0, qIndex = -1;
 				bool readOk = m_drive.ReadSectorQ(lba, qTrack, qIndex);
 				if (!readOk) {
+					if (consecutiveIndex0 < 3) { foundAny = false; consecutiveIndex0 = 0; }
 					totalFails++;
 					if (++consecutiveFails >= MAX_CONSECUTIVE_READ_FAILS
 						|| totalFails >= MAX_TOTAL_READ_FAILS) {
@@ -487,6 +525,14 @@ bool OpticalDrive::ReadTOC(DiscInfo& disc, bool skipPregapScan) {
 					}
 				}
 			}
+			shortGapConfirmed = !trackSkipped && ConfirmShortPregap(m_drive, firstIndex0,
+				consecutiveIndex0, trackStart, targetTrack, disc.tracks[i - 1].trackNumber, trackClock);
+			if (trackSkipped || (foundAny && consecutiveIndex0 >= 3) || shortGapConfirmed || !coarseFound) break;
+			// A rejected coarse hit must not hide a later real pregap.
+			coarseFound = false;
+			foundAny = false;
+			consecutiveIndex0 = 0;
+			firstIndex0 = trackStart;
 		}
 
 		// ── Retry at minimum speed if coarse or fine phase failed ────────
@@ -518,6 +564,7 @@ bool OpticalDrive::ReadTOC(DiscInfo& disc, bool skipPregapScan) {
 			trackSkipped = false;
 			totalFails = 0;
 			foundAny = false;
+			shortGapConfirmed = false;
 			consecutiveIndex0 = 0;
 			firstIndex0 = trackStart;
 			trackClock = std::chrono::steady_clock::now();
@@ -528,6 +575,7 @@ bool OpticalDrive::ReadTOC(DiscInfo& disc, bool skipPregapScan) {
 				int qTrack = 0, qIndex = -1;
 				bool readOk = m_drive.ReadSectorQ(lba, qTrack, qIndex);
 				if (!readOk) {
+					if (consecutiveIndex0 < 3) { foundAny = false; consecutiveIndex0 = 0; }
 					totalFails++;
 					if (++retryConsecFails >= MAX_CONSECUTIVE_READ_FAILS
 						|| totalFails >= MAX_TOTAL_READ_FAILS) {
@@ -559,6 +607,8 @@ bool OpticalDrive::ReadTOC(DiscInfo& disc, bool skipPregapScan) {
 				ReportPregapScanSkipped(targetTrack, audioOk);
 				continue;
 			}
+			shortGapConfirmed = ConfirmShortPregap(m_drive, firstIndex0, consecutiveIndex0,
+				trackStart, targetTrack, disc.tracks[i - 1].trackNumber, trackClock);
 			// Stay at speed 2 for backward refinement, restore after
 		}
 
@@ -579,7 +629,7 @@ bool OpticalDrive::ReadTOC(DiscInfo& disc, bool skipPregapScan) {
 		}
 
 		// ── Result ──────────────────────────────────────────────────────
-		if (foundAny && consecutiveIndex0 >= 3) pregapStart = firstIndex0;
+		if ((foundAny && consecutiveIndex0 >= 3) || shortGapConfirmed) pregapStart = firstIndex0;
 		disc.tracks[i].pregapLBA = pregapStart;
 
 		auto& prev = disc.tracks[i - 1];
@@ -602,7 +652,7 @@ bool OpticalDrive::ReadTOC(DiscInfo& disc, bool skipPregapScan) {
 		DetectHiddenTrack(disc);
 	}
 
-	return true;
+	return !g_interrupt.IsInterrupted();
 }
 
 bool OpticalDrive::ReadFullTOC(DiscInfo& disc) {
