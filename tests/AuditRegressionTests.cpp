@@ -1,6 +1,7 @@
 #define NOMINMAX
 #include "../ArtifactTransaction.h"
 #include "../WorkflowChecks.h"
+#include "../BatchPrescan.h"
 #include "../ImageSource.h"
 #include "../TrackFileOutput.h"
 #include "../NumericInput.h"
@@ -33,6 +34,135 @@ std::string Get(const std::filesystem::path& path) {
 }
 
 int RunAuditRegressionTests() {
+    {
+        BatchPrescan batch;
+        wchar_t drive = L'D';
+        bool hasTOC = true;
+        DiscInfo disc;
+        std::optional<MediaIdentity> inserted = MediaIdentity{1,0};
+        int scans = 0;
+        auto query = [&] { return inserted; };
+        auto refresh = [&] {
+            ++scans;
+            hasTOC = ScanWithMediaIdentity(disc, query, [&] {
+                disc = DiscInfo{};
+                TrackInfo track; track.startLBA = 123; disc.tracks.push_back(track);
+                return true;
+            });
+            return hasTOC;
+        };
+        auto prepare = [&](bool fresh = false) {
+            return batch.Prepare(fresh, drive, hasTOC, disc.mediaIdentity, query, refresh);
+        };
+        Check(prepare() && scans == 1, "Batch establishes a new shared prescan");
+        Check(disc.mediaIdentity && disc.mediaIdentity->changeCount == 0,
+            "Zero media-change count is a valid identity");
+        batch.FinishStep(14, drive, hasTOC, true);
+        Check(prepare() && scans == 1, "Options 16 then 17 share one unchanged-disc prescan");
+        batch.FinishStep(15, drive, hasTOC, true);
+        Check(prepare() && scans == 1, "Further read-only steps retain the shared prescan");
+        batch.FinishStep(27, drive, hasTOC, true);
+        Check(prepare() && scans == 1, "Help does not invalidate an unchanged disc");
+
+        inserted = MediaIdentity{1,1}; // Replacement disc is already ready.
+        Check(prepare() && scans == 2, "Ready replacement disc in the same drive forces refresh");
+        Check(disc.mediaIdentity == inserted, "Replacement disc receives its own scan identity");
+        inserted = MediaIdentity{2,1}; // Same counter, newly opened drive handle.
+        Check(prepare() && scans == 3, "Reopened drive cannot reuse an old open-session identity");
+        drive = L'E';
+        Check(prepare() && scans == 4, "Different drive letter requires a fresh source scan");
+        hasTOC = false;
+        Check(prepare() && scans == 5, "Invalid TOC cannot be reused despite matching media identity");
+        for (int operation : {1,3,4,11,30,31,33}) {
+            const int before = scans;
+            batch.FinishStep(operation, drive, hasTOC, true);
+            Check(prepare() && scans == before + 1,
+                "Disc-changing operation still invalidates batch preparation");
+        }
+
+        // Exercise the actual sequence: explicit scan first, then finish its
+        // dispatcher step, then prepare a diagnostic using the recovered data.
+        Check(refresh(), "Explicit option 27 rescan completes");
+        disc.tracks[0].startLBA = 777; // Represents the recovered TOC-less layout.
+        disc.tocRepaired = true;
+        const int afterExplicitScan = scans;
+        batch.FinishStep(25, drive, hasTOC, true);
+        Check(prepare() && scans == afterExplicitScan,
+            "Option 27 then 17 does not scan twice");
+        Check(disc.tocRepaired && disc.tracks[0].startLBA == 777,
+            "Recovered TOC-less layout survives into the next batch step");
+        batch.FinishStep(25, drive, hasTOC, false);
+        Check(prepare() && scans == afterExplicitScan + 1,
+            "Failed or cancelled explicit rescan is not reusable");
+
+        inserted.reset();
+        const int beforeUnavailable = scans;
+        Check(prepare() && scans == beforeUnavailable + 1 && !disc.mediaIdentity,
+            "Missing media counter uses a fresh scan without certifying a cache");
+        Check(prepare() && scans == beforeUnavailable + 2,
+            "Repeated unavailable identity never falls back to readiness-only reuse");
+        inserted = MediaIdentity{2,2};
+        Check(prepare() && scans == beforeUnavailable + 3 && disc.mediaIdentity == inserted,
+            "Identity becoming available later requires a newly identified scan");
+
+        Check(!batch.Prepare(false, drive, hasTOC, disc.mediaIdentity,
+                [] { return std::optional<MediaIdentity>{}; }, [] { return false; }),
+            "Failed media refresh prevents the next operation");
+        const int beforeRecovery = scans;
+        Check(prepare() && scans == beforeRecovery + 1,
+            "Failed preparation invalidates the previous batch cache");
+
+        const int beforeFresh = scans;
+        BatchPrescan newlyOpened;
+        Check(newlyOpened.Prepare(true, drive, hasTOC, disc.mediaIdentity, query, refresh)
+                && scans == beforeFresh,
+            "Fresh drive-open scan is reused by the first operation");
+        inserted = MediaIdentity{2,3};
+        Check(newlyOpened.Prepare(true, drive, hasTOC, disc.mediaIdentity, query, refresh)
+                && scans == beforeFresh + 1,
+            "Disc changed after a fresh scan is detected before dispatch");
+        BatchPrescan infoFirst;
+        infoFirst.RecordFreshScan(drive);
+        infoFirst.FinishStep(18, drive, hasTOC, true);
+        Check(infoFirst.Prepare(false, drive, hasTOC, disc.mediaIdentity, query, refresh)
+                && scans == beforeFresh + 1,
+            "Initial drive-information scan is shared with later diagnostics");
+        BatchPrescan nextBatch;
+        Check(nextBatch.Prepare(false, drive, hasTOC, disc.mediaIdentity, query, refresh)
+                && scans == beforeFresh + 2,
+            "A new batch cannot reuse the previous batch's preparation");
+        hasTOC = false;
+        Check(!newlyOpened.Prepare(true, drive, hasTOC, disc.mediaIdentity, query, refresh),
+            "Fresh flag cannot certify missing disc data");
+    }
+    {
+        DiscInfo disc;
+        const std::optional<MediaIdentity> first = MediaIdentity{10,5};
+        const std::optional<MediaIdentity> changed = MediaIdentity{10,6};
+        Check(CommitScanIdentity(disc, first, first) && disc.mediaIdentity == first,
+            "Unchanged media across scan receives a reusable identity");
+        Check(!CommitScanIdentity(disc, first, changed) && !disc.mediaIdentity,
+            "Media swap during scan rejects its cached result");
+        Check(!CommitScanIdentity(disc, first, std::nullopt) && !disc.mediaIdentity,
+            "Media disappearance during scan rejects its cached result");
+        Check(CommitScanIdentity(disc, std::nullopt, first) && !disc.mediaIdentity,
+            "An after-scan counter alone cannot certify the scanned disc");
+        Check(CommitScanIdentity(disc, std::nullopt, std::nullopt) && !disc.mediaIdentity,
+            "Unsupported counter permits immediate scan use but not later reuse");
+        disc.mediaIdentity = first;
+        Check(!ScanWithMediaIdentity(disc, [&] { return first; }, [&] {
+                disc.mediaIdentity = first; disc.tocRepaired = true; return false;
+            }) && !disc.mediaIdentity && !disc.tocRepaired,
+            "Failed scan cannot retain an inherited identity or stale TOC flags");
+        int queries = 0;
+        Check(!ScanWithMediaIdentity(disc, [&] { return ++queries == 1 ? first : changed; },
+                [&] { disc.tracks.emplace_back(); return true; }) && !disc.mediaIdentity && disc.tracks.empty(),
+            "Scan wrapper rejects and clears media that changed during the scan callback");
+        Check(ScanWithMediaIdentity(disc, [&] { return first; }, [&] {
+                disc = DiscInfo{}; return true;
+            }) && disc.mediaIdentity == first,
+            "Scan wrapper binds identity after replacing the disc object");
+    }
     {
         int parsed = 99;
         Check(!ParseBoundedInteger(L"erase", 1, 3, parsed) && parsed == 99,

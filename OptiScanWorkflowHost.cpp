@@ -1,4 +1,4 @@
-﻿// OptiScanWorkflowHost.cpp - drive/session state and GUI workflow helpers.
+// OptiScanWorkflowHost.cpp - drive/session state and GUI workflow helpers.
 
 #include "framework.h"
 #include "OptiScanWorkflowHost.h"
@@ -100,7 +100,9 @@ bool EnsureDriveOpen(HWND hOwner, bool* outFreshlyScanned,
     // without spending time on a TOC + pre-gap scan of a disc about to be wiped.
     if (readToc) {
         g_disc = DiscInfo{};
-        g_hasTOC = g_copier.ReadTOC(g_disc);
+        g_hasTOC = ScanWithMediaIdentity(g_disc,
+            [] { return g_copier.GetDriveRef().ReadMediaIdentity(); },
+            [] { return g_copier.ReadTOC(g_disc); });
 
         // Query AccurateRip at disc open so the disc's recognition status is shown
         // up front, without requiring a manual "Rescan disc". Mirrors the original
@@ -188,7 +190,9 @@ bool ButtonNeedsPrescan(int btnIndex) {
 // even if the user has swapped discs since the last scan.
 void Prescan() {
     DiscInfo fresh;
-    if (g_copier.ReadTOC(fresh)) {
+    if (ScanWithMediaIdentity(fresh,
+        [] { return g_copier.GetDriveRef().ReadMediaIdentity(); },
+        [&] { return g_copier.ReadTOC(fresh); })) {
         g_disc = fresh;
         g_copier.ReadCDText(g_disc);
         g_copier.ReadISRC(g_disc);
@@ -239,7 +243,9 @@ bool RefreshDisc() {
             // cached DiscInfo describes a disc we can no longer vouch for.
             return false;
         }
-        if (g_copier.ReadTOC(fresh)) { ok = true; break; }
+        if (ScanWithMediaIdentity(fresh,
+            [] { return g_copier.GetDriveRef().ReadMediaIdentity(); },
+            [&] { return g_copier.ReadTOC(fresh); })) { ok = true; break; }
         Console::Info("Waiting for disc to become ready...\n");
         Sleep(2000);
     }

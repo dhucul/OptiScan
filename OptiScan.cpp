@@ -5,6 +5,7 @@
 #include "OptiScan.h"
 #include "OptiScanUi.h"
 #include "OptiScanWorkflowHost.h"
+#include "BatchPrescan.h"
 
 #include "AccessibleAnnounce.h"
 #include "Drive.h"
@@ -740,6 +741,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                     enum class BatchEnd { Completed, Cancelled, DiscGone, StepFailed };
                                     BatchEnd batchEnd = BatchEnd::Completed;
                                     size_t stepsRun = 0;
+                                    BatchPrescan batchPrescan;
 
                                     for (size_t i = 0; i < choices.size(); i++) {
                                         if (g_interrupt.IsInterrupted()) {
@@ -767,15 +769,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                                 break;
                                             }
                                         }
+                                        // EnsureDriveOpen can supply the shared scan even when
+                                        // the opening step is a drive-information operation.
+                                        if (freshlyScanned && ButtonNeedsAudioDisc(choice - 1) && g_hasTOC)
+                                            batchPrescan.RecordFreshScan(g_audioDrive);
                                         if (ButtonNeedsPrescan(choice - 1)) {
-                                            if (!freshlyScanned) {
-                                                if (!ReselectSourceDriveIfMultiple() || !RefreshDisc()) {
-                                                    batchEnd = g_interrupt.IsInterrupted()
-                                                        ? BatchEnd::Cancelled : BatchEnd::DiscGone;
-                                                    break;
-                                                }
-                                            }
-                                            if (g_interrupt.IsInterrupted() || !g_hasTOC) {
+                                            const bool prepared = batchPrescan.Prepare(freshlyScanned,
+                                                g_audioDrive, g_hasTOC, g_disc.mediaIdentity,
+                                                [] { return g_interrupt.IsInterrupted()
+                                                    ? std::optional<MediaIdentity>{}
+                                                    : g_copier.GetDriveRef().ReadMediaIdentity(); },
+                                                [] { return !g_interrupt.IsInterrupted() &&
+                                                    ReselectSourceDriveIfMultiple() && RefreshDisc(); });
+                                            if (!prepared || g_interrupt.IsInterrupted() || !g_hasTOC) {
                                                 batchEnd = g_interrupt.IsInterrupted()
                                                     ? BatchEnd::Cancelled : BatchEnd::DiscGone;
                                                 break;
@@ -787,6 +793,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                             DispatchMenuChoice(g_copier, g_disc, g_workDir,
                                                                g_audioDrive, g_hasTOC,
                                                                batchOpId);
+                                        batchPrescan.FinishStep(batchOpId, g_audioDrive, g_hasTOC,
+                                            stepStatus == 0 && !g_interrupt.IsInterrupted());
                                         if (batchOpId == 25) {
                                             g_driveOpen = g_copier.GetDriveRef().IsOpen();
                                             if (g_driveOpen && g_workDir.empty()) g_workDir = GetWorkingDirectory();

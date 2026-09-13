@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // MenuUI.cpp - Help-screen renderer (the only console-menu helper that
 // survived the GUI port; everything else was wired in via DispatchMenuChoice).
 // ============================================================================
@@ -432,14 +432,15 @@ void PrintHelpMenu() {
 		"   Internet access is needed for reference lookup. Missing references,\n"
 		"   read errors, cancellation, or inconclusive results do not count as verified.\n"
 		"   Cancel during checksum calculation takes effect when the verifier returns.\n"
-		"   In a batch, the source disc is refreshed before checking unless this is\n"
-		"   the first step immediately after a fresh drive open.",
+		"   In a batch, this shares the source-disc prescan with other read-only\n"
+		"   checks. The source is refreshed after a disc/drive-changing operation.",
 		"Checking an audio CD against AccurateRip without saving an image." });
 
 	PrintEntry({ "35. Batch Run (multiple ops, 1 prescan)",
 		"Runs several menu items in succession with a single shared pre-scan\n"
 		"   (TOC + CD-Text + ISRC) at the start, so the disc only spins up once\n"
-		"   for the whole batch.\n"
+		"   for consecutive checks on the same disc. A disc/drive-changing step\n"
+		"   requires a fresh prescan before the next source-disc check.\n"
 		"\n"
 		"   Prompts for a space- or comma-separated list of menu numbers in the\n"
 		"   supported operation range (example: \"7 8 9 10\"). Duplicates are ignored and the\n"

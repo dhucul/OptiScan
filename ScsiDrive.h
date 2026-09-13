@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // ScsiDrive.h - Low-level SCSI drive communication
 // ============================================================================
 #pragma once
@@ -6,6 +6,7 @@
 #include "ScsiTypes.h"
 #include "DriveTypes.h"
 #include "Constants.h"
+#include "MediaIdentity.h"
 #include <windows.h>
 #include <winioctl.h>     // DEVICE_TYPE — required by ntddstor.h
 #include <ntddcdrm.h>
@@ -17,6 +18,7 @@
 class ScsiDrive {
 private:
 	HANDLE m_handle = INVALID_HANDLE_VALUE;
+	uint64_t m_openSession = 0;
 	wchar_t m_driveLetter = 0;   // remembered on Open() so Reopen() can re-target
 	WORD m_currentSpeed = CD_SPEED_MAX;
 	C2Mode m_c2Mode = C2Mode::NotSupported;
@@ -327,6 +329,7 @@ public:
 	// ── Enhanced error handling ──────────────────────────────
 	bool GetMediaStatus(DriveHealthCheck& status);
 	bool TestUnitReady();
+	std::optional<MediaIdentity> ReadMediaIdentity() const;
 	bool WaitForDriveReady(int timeoutSeconds = 30);
 	std::string GetSenseDescription(BYTE senseKey, BYTE asc, BYTE ascq);
 

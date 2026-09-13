@@ -86,6 +86,8 @@
     <ClInclude Include="TrackFileOutput.h" />
     <ClInclude Include="NumericInput.h" />
     <ClInclude Include="WorkflowChecks.h" />
+    <ClInclude Include="BatchPrescan.h" />
+    <ClInclude Include="MediaIdentity.h" />
     <ClInclude Include="ImageSource.h" />
     <ClInclude Include="WriteFeatureGuard.h" />
     <ClInclude Include="ImapiCancelMonitor.h" />

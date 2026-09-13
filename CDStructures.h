@@ -1,9 +1,10 @@
-﻿// ============================================================================
+// ============================================================================
 // CDStructures.h - Core CD disc and track structures
 // ============================================================================
 #pragma once
 
 #include "Constants.h"
+#include "MediaIdentity.h"
 #include <windows.h>
 #include <cstdint>
 #include <vector>
@@ -102,6 +103,7 @@ struct DiscInfo {
 	bool tocLBAsRecovered = false;                      // Clamped LBAs were recovered from Full TOC data
 	std::vector<RawTocEntry> rawTocEntries;             // Original LBAs before clamping/recovery
 	DWORD rawLeadOutLBA = 0;                            // Original lead-out LBA before clamping
+	std::optional<MediaIdentity> mediaIdentity; // Media generation observed across the prescan
 };
 
 // ── TrackInfo ───────────────────────────────────────────────────────────

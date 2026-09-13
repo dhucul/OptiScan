@@ -5,6 +5,7 @@
 #include "DriveCapabilityParsing.h"
 #include "WorkflowChecks.h"
 #include <chrono>
+#include <atomic>
 #include <thread>
 #include <vector>
 #include <algorithm>
@@ -115,6 +116,8 @@ bool ScsiDrive::Open(wchar_t driveLetter) {
 		if (m_handle != INVALID_HANDLE_VALUE)
 			CloseHandle(m_handle);
 		m_handle = newHandle;
+		static std::atomic<uint64_t> nextOpenSession{0};
+		m_openSession = nextOpenSession.fetch_add(1) + 1;
 		m_driveLetter = driveLetter;   // remember so Reopen() can re-target
 		m_doorLockCount = 0;
 		// Reset cached probe results — new handle may be a different drive
@@ -591,6 +594,18 @@ ReadErrorRecoveryGuard::~ReadErrorRecoveryGuard() {
 	if (m_applied && m_savedBytes > 0) {
 		m_drive.WriteErrorRecoveryPage(m_savedPage, m_savedBytes);  // restore original page
 	}
+}
+
+// The storage driver supplies a media-change count even when the replacement
+// disc is already ready. Zero is a valid count; a missing/short response is not.
+std::optional<MediaIdentity> ScsiDrive::ReadMediaIdentity() const {
+	if (!IsOpen()) return std::nullopt;
+	ULONG count = 0;
+	DWORD returned = 0;
+	if (!DeviceIoControl(m_handle, IOCTL_STORAGE_CHECK_VERIFY,
+		nullptr, 0, &count, sizeof(count), &returned, nullptr)
+		|| returned != sizeof(count)) return std::nullopt;
+	return MediaIdentity{m_openSession, static_cast<uint32_t>(count)};
 }
 
 bool ScsiDrive::TestUnitReady() {

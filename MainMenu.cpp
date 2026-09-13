@@ -1006,6 +1006,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			PrintDriveIdentity(audioDrive,
 				driveChanged ? "Switched to drive" : "Using drive");
 			Console::Info("Rescanning disc...\n");
+			const auto mediaBeforeScan = copier.GetDriveRef().ReadMediaIdentity();
 			disc = DiscInfo{};
 			hasTOC = copier.ReadTOC(disc);
 			bool didTOCScan = false;
@@ -1037,6 +1038,13 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			}
 
 			if (hasTOC) {
+				if (!CommitScanIdentity(disc, mediaBeforeScan, copier.GetDriveRef().ReadMediaIdentity())) {
+					disc = DiscInfo{};
+					hasTOC = false;
+					dispatchStatus = 1;
+					Console::Error("The media changed or became unavailable during the scan.\n");
+					break;
+				}
 				copier.ReadCDText(disc);
 				copier.ReadISRC(disc);
 				copier.ReadMCN(disc);
