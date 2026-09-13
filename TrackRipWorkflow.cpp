@@ -14,12 +14,10 @@
 #include "GuiInput.h"
 #include "InterruptHandler.h"
 #include "MenuHelpers.h"
-#include "PregapDetection.h"
 #include "PioneerVendor.h"
 #include "Preservation.h"
 #include "Progress.h"
 #include "TrackFileOutput.h"
-#include "TrackReadContext.h"
 #include <algorithm>
 #include <fstream>
 #include <iomanip>
@@ -413,10 +411,6 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 		}
 	}
 
-    if (!Pregaps::AllVerified(disc)) {
-        Console::Error("Track splitting requires determined pregaps. Use an Include-mode image to preserve all audio while gaps are unknown.\n");
-        return false;
-    }
 	// ── 1. Track selection ──────────────────────────────────────────────
 	std::vector<int> selectedTracks = SelectTracks(disc);
 	if (selectedTracks.empty()) return false;
@@ -609,8 +603,6 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 		}
 	}
 	ripDisc.selectedSession = 0;   // not needed — we already picked the tracks
-    const auto outputBodies = ripDisc.tracks;
-    AddTrackOffsetContext(ripDisc, disc, static_cast<size_t>(firstIdx), static_cast<size_t>(lastIdx));
 
 	PioneerPureReadSession pureReadSession(copier.GetDriveRef());
 	const bool pureReadMonitoring = pureReadSession.Begin();
@@ -705,13 +697,21 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 
 	// ── 11. Build per-track sector map ──────────────────────────────────
 	// ripDisc.tracks may include gap-fill tracks; slices covers all of them.
-    using TrackSlice = TrackOutputSlice;
-    std::vector<TrackSlice> slices;
-    if (!BuildTrackOutputSlices(ripDisc, outputBodies, slices)) {
-        Console::Error("Invalid track read/output mapping.\n");
-        finishPureReadMonitoring("Invalid track output mapping");
-        return false;
-    }
+	struct TrackSlice { size_t start; size_t count; };
+	std::vector<TrackSlice> slices(ripDisc.tracks.size());
+	size_t cumIdx = 0;
+	for (size_t i = 0; i < ripDisc.tracks.size(); i++) {
+		DWORD readStart = (ripDisc.pregapMode == PregapMode::Skip)
+			? ripDisc.tracks[i].startLBA : ripDisc.tracks[i].pregapLBA;
+		if (ripDisc.tracks[i].endLBA < readStart) {
+			Console::Error("Invalid repaired TOC range while mapping track output.\n");
+			finishPureReadMonitoring("Invalid repaired TOC range");
+			return false;
+		}
+		DWORD cnt = ripDisc.tracks[i].endLBA - readStart + 1;
+		slices[i] = { cumIdx, cnt };
+		cumIdx += cnt;
+	}
 
 	// ── 12. Save each selected track ────────────────────────────────────
 	Console::Info("\nSaving tracks...\n");
@@ -1037,10 +1037,6 @@ bool RunTrackRipWorkflow(OpticalDrive& copier, DiscInfo& disc, const std::wstrin
 				: "Read and physical verification completed")
 			: "Read completed; physical verification failed"));
 
-    if (!RemoveTrackOffsetContext(ripDisc, outputBodies)) {
-        Console::Error("Could not restore track boundaries after offset-context reading.\n");
-        return false;
-    }
 	PreservationOffsetResult preservationOffset =
 		AnalyzePreservationWriteOffset(ripDisc);
 	std::wstring pureReadPath = outputDir + L"PioneerPureRead.log";

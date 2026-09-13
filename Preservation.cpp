@@ -639,7 +639,6 @@ bool WritePreservationManifest(const DiscInfo& disc,
 			<< ", \"start_lba\": " << track.startLBA
 			<< ", \"end_lba\": " << track.endLBA
 			<< ", \"pregap_lba\": " << track.pregapLBA
-            << ", \"pregap_verified\": " << (track.pregapVerified ? "true" : "false")
 			<< ", \"session\": " << track.session
 			<< ", \"type\": \"" << (track.isAudio ? "audio" :
 				(track.mode == 2 ? "mode2" : "mode1")) << "\"}";

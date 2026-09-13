@@ -7,11 +7,9 @@
 #include "GuiInput.h"
 #include "Progress.h"
 #include "MenuHelpers.h"
-#include "PregapDetection.h"
 #include "PioneerVendor.h"
 #include "Preservation.h"
 #include "ImageSource.h"
-#include "ImagePregapPreparation.h"
 #include "WorkflowChecks.h"
 #include "WriteFeatureGuard.h"
 #include <windows.h>
@@ -142,10 +140,6 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc,
 	int pregapMode = copier.SelectPregapMode();
 	if (pregapMode == -1) return false;
 	disc.pregapMode = static_cast<PregapMode>(pregapMode);
-    if (disc.pregapMode != PregapMode::Include && !Pregaps::AllVerified(disc)) {
-        Console::Error("Some pregaps are unknown. Use Include mode to retain all audio, or rescan with another drive.\n");
-        return false;
-    }
 
 	int errorMode = copier.SelectErrorHandling();
 	if (errorMode == -1) return false;
@@ -703,25 +697,24 @@ bool RunCopyWorkflow(OpticalDrive& copier, DiscInfo& disc,
 void RunWriteDiscWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 	wchar_t& audioDrive, bool* outCompleted) {
 	if (outCompleted) *outCompleted = false;
-    const auto selectedCue = GuiInput::PromptForFile(
+    const std::wstring cueFile = GuiInput::PromptForFile(
         L"Choose the image CUE sheet to write", L"CUE sheets", L"*.cue", workDir);
-    if (selectedCue.empty()) return;
-    PreparedImageSource prepared;
+    if (cueFile.empty()) return;
+    std::wstring binFile, subFile;
     std::string sourceError;
-    if (!PrepareImagePregaps(selectedCue, prepared, sourceError)) {
-        Console::Error(sourceError.c_str()); std::cout << "\n";
+    if (!ResolveCueImage(cueFile, binFile, sourceError)) {
+        Console::Error(sourceError.c_str());
         return;
     }
-    const auto& binFile = prepared.binFile;
-    const auto& cueFile = prepared.cueFile;
-    const auto& subFile = prepared.subFile;
-    if (prepared.normalized) Console::Info("Pregap audio and timing have been restored in the write image.\n");
+    auto companion = std::filesystem::path(binFile).replace_extension(L".sub");
+    std::error_code companionError;
+    if (std::filesystem::is_regular_file(companion, companionError)) subFile = companion.wstring();
     std::vector<OpticalDrive::TrackWriteInfo> validatedTracks;
     DWORD validatedSectors = 0;
     std::string title, performer, mcn;
     if (!copier.LoadWriteSource(binFile, cueFile, subFile, validatedTracks,
         validatedSectors, title, performer, mcn)) return;
-    std::wcout << L"Source image: " << prepared.sourceBin << L"\n";
+    std::wcout << L"Source image: " << binFile << L"\n";
     Console::Info("SAO preserves the cue layout; the drive generates subchannel.\n");
 
 	// ── Burner drive selection ──────────────────────────────────────

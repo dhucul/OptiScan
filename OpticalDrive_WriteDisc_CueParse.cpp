@@ -1,4 +1,4 @@
-#define NOMINMAX
+﻿#define NOMINMAX
 #include "OpticalDrive.h"
 #include "ConsoleColors.h"
 #include "WriteDiscInternal.h"
@@ -90,7 +90,6 @@ bool OpticalDrive::ParseCueSheet(const std::wstring& cueFile,
 	TrackWriteInfo currentTrack = {};
 	currentTrack.hasPregap = false;
 	bool inTrack = false;
-    bool sawIndex01 = false, sawIndex00 = false;
 	int fileCount = 0;
 
 	auto extractQuoted = [](const std::wstring& ln, const std::wstring& keyword) -> std::string {
@@ -114,12 +113,6 @@ bool OpticalDrive::ParseCueSheet(const std::wstring& cueFile,
 		TrimTrailing(line);
 		if (line.empty()) continue;
 
-        if (line.find(L"REM OPTISCAN_PREGAP_UNKNOWN") == 0 ||
-            line.find(L"REM OPTISCAN_GAPS_DISCARDED") == 0 ||
-            line.find(L"REM OPTISCAN_PREGAP_FILE") == 0) {
-            Console::Error("Pregap layout requires source preparation or contains unknown/discarded data.\n");
-            tracks.clear(); return false;
-        }
 		if (line.find(L"FILE") == 0) {
 			fileCount++;
 			if (fileCount > 1) {
@@ -137,12 +130,10 @@ bool OpticalDrive::ParseCueSheet(const std::wstring& cueFile,
 		}
 		else if (line.find(L"TRACK") == 0) {
 			if (inTrack && currentTrack.trackNumber > 0) {
-                if (!sawIndex01) { Console::Error("CUE track has no INDEX 01.\n"); tracks.clear(); return false; }
 				tracks.push_back(currentTrack);
 			}
 			inTrack = true;
 			currentTrack = {};
-            sawIndex01 = false; sawIndex00 = false;
 			currentTrack.hasPregap = false;
 			currentTrack.dataMode = 0;
 
@@ -199,27 +190,17 @@ bool OpticalDrive::ParseCueSheet(const std::wstring& cueFile,
 			if (!currentTrack.isAudio && indexNum == 0) continue;
 
 			int mm = 0, ss = 0, ff = 0;
-            wchar_t firstSeparator = 0, secondSeparator = 0;
+			wchar_t sep;
 			std::wistringstream tss(timeStr);
-            if (!(tss >> mm >> firstSeparator >> ss >> secondSeparator >> ff) ||
-                firstSeparator != L':' || secondSeparator != L':' ||
-                mm < 0 || mm > 99 || ss < 0 || ss >= 60 || ff < 0 || ff >= 75 ||
-                (tss >> std::ws).peek() != std::char_traits<wchar_t>::eof()) {
-                Console::Error("Invalid CUE INDEX time; expected MM:SS:FF.\n");
-                tracks.clear(); return false;
-            }
+			tss >> mm >> sep >> ss >> sep >> ff;
 
 			DWORD lba = mm * 60 * 75 + ss * 75 + ff;
 
 			if (indexNum == 0) {
-                if (sawIndex00) { Console::Error("Duplicate CUE INDEX 00.\n"); tracks.clear(); return false; }
-                sawIndex00 = true;
 				currentTrack.pregapLBA = lba;
 				currentTrack.hasPregap = true;
 			}
 			else if (indexNum == 1) {
-                if (sawIndex01) { Console::Error("Duplicate CUE INDEX 01.\n"); tracks.clear(); return false; }
-                sawIndex01 = true;
 				currentTrack.startLBA = lba;
 			}
 		}
@@ -229,10 +210,17 @@ bool OpticalDrive::ParseCueSheet(const std::wstring& cueFile,
 			iss >> cmd >> isrc;
 			currentTrack.isrcCode = WideToUTF8(isrc);
 		}
-        else if (line.find(L"PREGAP") == 0 || line.find(L"POSTGAP") == 0) {
-            Console::Error("Generated gaps must be materialized before writing; layout was not accepted.\n");
-            tracks.clear(); return false;
-        }
+		else if (line.find(L"PREGAP") == 0 && inTrack) {
+			// PREGAP generates silence not present in the BIN file.
+			// This is different from INDEX 00, which marks an existing region.
+			Console::Warning("PREGAP command detected but not supported (track ");
+			std::cout << currentTrack.trackNumber
+				<< ") -- only INDEX 00 pregaps are handled\n";
+		}
+		else if (line.find(L"POSTGAP") == 0 && inTrack) {
+			Console::Warning("POSTGAP command detected but not supported (track ");
+			std::cout << currentTrack.trackNumber << ")\n";
+		}
 		else if (line.find(L"FLAGS") == 0 && inTrack) {
 			Console::Warning("FLAGS command detected but not written (track ");
 			std::cout << currentTrack.trackNumber << ")\n";
@@ -240,7 +228,6 @@ bool OpticalDrive::ParseCueSheet(const std::wstring& cueFile,
 	}
 
 	if (inTrack && currentTrack.trackNumber > 0) {
-        if (!sawIndex01) { Console::Error("CUE track has no INDEX 01.\n"); tracks.clear(); return false; }
 		tracks.push_back(currentTrack);
 	}
 
@@ -266,10 +253,14 @@ bool OpticalDrive::ParseCueSheet(const std::wstring& cueFile,
 			tracks.clear();
 			return false;
 		}
-        if (tracks[i].hasPregap && tracks[i].pregapLBA > tracks[i].startLBA) {
-            Console::Error("CUE INDEX 00 occurs after INDEX 01; pregap layout is invalid.\n");
-            tracks.clear(); return false;
-        }
+		if (tracks[i].hasPregap && tracks[i].pregapLBA > tracks[i].startLBA) {
+			Console::Warning("Track ");
+			std::cout << tracks[i].trackNumber
+				<< " has pregap LBA (" << tracks[i].pregapLBA
+				<< ") after start LBA (" << tracks[i].startLBA
+				<< ") -- ignoring pregap\n";
+			tracks[i].hasPregap = false;
+		}
 	}
 
 	// Compute endLBA for all tracks except the last.

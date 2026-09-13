@@ -79,7 +79,6 @@ struct CueImportSheet {
     std::string title, performer, catalog;   // UTF-8
     CueSourceEncoding encoding = CueSourceEncoding::Utf8;
     bool singleFileLayout = false;
-    bool imageGapFiles = false;       // Private Separate-mode BIN sidecars require image preparation
 };
 
 // One contiguous run of the output image.

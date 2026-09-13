@@ -60,14 +60,10 @@
     <ClCompile Include="CueSheetImportTests.cpp" />
     <ClCompile Include="AuditRegressionTests.cpp" />
     <ClCompile Include="WriteRetryTests.cpp" />
-    <ClCompile Include="PregapTests.cpp" />
-    <ClCompile Include="..\OpticalDrive_WriteDisc_CueParse.cpp" />
     <ClCompile Include="..\OpticalDrive_WriteAudioSectors.cpp" />
     <ClCompile Include="..\GuiWorker.cpp" />
     <ClCompile Include="..\OpticalDrive_FileOutput.cpp" />
-    <ClCompile Include="..\OpticalDrive_Utilities.cpp" />
     <ClCompile Include="..\CueSheetImport.cpp" />
-    <ClCompile Include="..\ImagePregapPreparation.cpp" />
     <ClCompile Include="..\AccurateRip.cpp" />
     <ClCompile Include="..\Preservation.cpp" />
     <ClCompile Include="..\RecoveryCheckpoint.cpp" />

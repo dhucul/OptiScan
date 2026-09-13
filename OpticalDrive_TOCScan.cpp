@@ -1,4 +1,4 @@
-// ============================================================================
+﻿// ============================================================================
 // OpticalDrive_TOCScan.cpp - TOC-less disc scanning via raw Q subchannel
 //
 // When the Table of Contents is damaged, illegal, or missing entirely, this
@@ -16,7 +16,6 @@
 //   Phase 4 — Build DiscInfo with validated fields.
 // ============================================================================
 #include "OpticalDrive.h"
-#include "PregapDetection.h"
 #include "ConsoleColors.h"
 #include "InterruptHandler.h"
 #include "Progress.h"
@@ -194,30 +193,78 @@ static bool TryMMCStructureScan(ScsiDrive& drive, DiscInfo& disc,
 //   2. If startLBA is already INDEX 01, scans backward to find the EARLIEST
 //      INDEX 00 sector (the true pregap start).
 // ═════════════════════════════════════════════════════════════════════════════
-static bool ProbePregap(ScsiDrive& drive, TrackInfo& ti, DWORD lower, int previousTrack)
+static bool ProbePregap(ScsiDrive& drive, TrackInfo& ti)
 {
-    ti.pregapVerified = false;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-    auto stop = [&] { return g_interrupt.IsInterrupted() || std::chrono::steady_clock::now() >= deadline; };
-    auto read = [&](DWORD lba, int& qt, int& qi) { return drive.ReadSectorQ(lba, qt, qi); };
-    if (ti.trackNumber == 1) ti.pregapLBA = 0;
-    if (stop()) return !g_interrupt.IsInterrupted();
-    int qt = 0, qi = -1;
-    if (!read(ti.startLBA, qt, qi) || qt != ti.trackNumber) return true;
-    if (qi == 0) {
-        const auto found = Pregaps::FindIndex01(ti.startLBA, ti.endLBA, ti.trackNumber, read, stop);
-        if (!found.verified) return !g_interrupt.IsInterrupted();
-        ti.startLBA = found.start;
-        ti.index01LBA = found.start;
-    } else if (qi != 1) return true;
-    if (ti.trackNumber == 1) {
-        ti.pregapLBA = 0;
-        ti.pregapVerified = true;
-    } else {
-        const auto result = Pregaps::FindBoundary(ti.startLBA, lower, ti.trackNumber, previousTrack, read, stop);
-        if (result.verified) { ti.pregapLBA = result.start; ti.pregapVerified = true; }
-    }
-    return !g_interrupt.IsInterrupted();
+	if (ti.startLBA == 0) return true;
+	if (g_interrupt.IsInterrupted()) return false;
+
+	int qt = 0, qi = 0;
+
+	// ── Step 1: Check if startLBA is in the pregap (INDEX 00) ───────────
+	// This single classification picks the branch direction for the entire
+	// function (scan forward for INDEX 01 vs scan backward for INDEX 00), so
+	// use the voted read first to suppress drive flakiness, then fall through
+	// to the cheaper single-reads if voted-read isn't applicable.
+	if (drive.ReadSectorQ(ti.startLBA, qt, qi)
+		|| drive.ReadSectorQAnyType(ti.startLBA, qt, qi)
+		|| drive.ReadSectorQSingle(ti.startLBA, qt, qi))
+	{
+		if (qt == ti.trackNumber && qi == 0) {
+			// startLBA IS in the pregap — scan forward to find INDEX 01.
+			// pregapLBA stays at the refineBoundary result, which is the
+			// first sector of this track number (= pregap start).
+			ti.pregapLBA = ti.startLBA;
+
+			for (DWORD probe = ti.startLBA + 1;
+				probe < ti.startLBA + 600; probe++)
+			{
+				if (g_interrupt.IsInterrupted()) return false;
+				int ft = 0, fi = 0;
+				if (drive.ReadSectorQAnyType(probe, ft, fi)
+					|| drive.ReadSectorQSingle(probe, ft, fi))
+				{
+					if (ft == ti.trackNumber && fi >= 1) {
+						ti.index01LBA = probe;
+						ti.startLBA = probe;
+						return true;
+					}
+					// Different track before INDEX 01 — shouldn't happen,
+					// but stop to avoid scanning into the next track.
+					if (ft != ti.trackNumber) return true;
+				}
+			}
+			return true;
+		}
+	}
+
+	// ── Step 2: startLBA is INDEX 01 — scan backward for INDEX 00 ───────
+	// Keep scanning to find the EARLIEST INDEX 00 (the true pregap start),
+	// not just the first one nearest to startLBA.
+	DWORD probeLimit = (ti.startLBA > 225) ? (ti.startLBA - 225) : 0;
+
+	for (DWORD probe = ti.startLBA - 1; probe >= probeLimit; probe--) {
+		if (g_interrupt.IsInterrupted()) return false;
+		qt = 0; qi = 0;
+		if (drive.ReadSectorQAnyType(probe, qt, qi)
+			|| drive.ReadSectorQSingle(probe, qt, qi))
+		{
+			if (qt == ti.trackNumber && qi == 0) {
+				// Keep going — update pregapLBA to track the earliest INDEX 00
+				ti.pregapLBA = probe;
+			}
+			else {
+				// Hit a different track or INDEX 01 of same track — stop.
+				// pregapLBA is already set to the earliest INDEX 00 found.
+				return true;
+			}
+		}
+		// Read failed — if we've already found INDEX 00, keep scanning
+		// through the failure to find the true start. If not, keep going.
+
+		// DWORD wraparound guard: probe-- would underflow if probe == 0
+		if (probe == 0) break;
+	}
+	return true;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -363,16 +410,12 @@ bool OpticalDrive::ScanDiscWithoutTOC(DiscInfo& disc, int scanSpeed)
 		pregapProgress.Start();
 
 		int current = 0;
-        for (size_t i = 0; i < disc.tracks.size(); ++i) {
-            auto& t = disc.tracks[i];
+		for (auto& t : disc.tracks) {
 			if (!t.isAudio) continue;
-			if (!ProbePregap(m_drive, t, i ? disc.tracks[i-1].startLBA : 0,
-                i ? disc.tracks[i-1].trackNumber : 0)) {
+			if (!ProbePregap(m_drive, t)) {
 				pregapProgress.Finish(false);
 				return false;
 			}
-            if (i && t.pregapVerified && t.pregapLBA > 0)
-                disc.tracks[i-1].endLBA = std::min(disc.tracks[i-1].endLBA, t.pregapLBA-1);
 			current++;
 			pregapProgress.Update(current, audioCount > 0 ? audioCount : 1);
 		}
@@ -756,8 +799,7 @@ bool OpticalDrive::ScanDiscWithoutTOC(DiscInfo& disc, int scanSpeed)
 		ti.index01LBA = ti.startLBA;
 
 		if (!isData && !gapBefore)
-			if (!ProbePregap(m_drive, ti, disc.tracks.empty() ? 0 : disc.tracks.back().startLBA,
-                disc.tracks.empty() ? 0 : disc.tracks.back().trackNumber)) {
+			if (!ProbePregap(m_drive, ti)) {
 				refineProgress.Finish(false);
 				return false;
 			}
@@ -765,8 +807,6 @@ bool OpticalDrive::ScanDiscWithoutTOC(DiscInfo& disc, int scanSpeed)
 		refineCurrent++;
 		refineProgress.Update(refineCurrent, refineTotal);
 
-        if (!disc.tracks.empty() && ti.pregapVerified && ti.pregapLBA > 0)
-            disc.tracks.back().endLBA = std::min(disc.tracks.back().endLBA, ti.pregapLBA-1);
 		disc.tracks.push_back(ti);
 
 		DWORD sectorCount = ti.endLBA - ti.startLBA + 1;

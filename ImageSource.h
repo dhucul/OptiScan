@@ -20,7 +20,7 @@ inline bool ResolveCueImage(const std::wstring& cue, std::wstring& image, std::s
         std::string command, name, kind;
         row >> command;
         if (command != "FILE") continue;
-        if (++files != 1 || !(row >> std::quoted(name, '"', '\0') >> kind) || kind != "BINARY" || name.empty()) {
+        if (++files != 1 || !(row >> std::quoted(name) >> kind) || kind != "BINARY" || name.empty()) {
             error = "Select a single-image BINARY CUE; use Write from CUE for audio-file layouts.";
             return false;
         }
