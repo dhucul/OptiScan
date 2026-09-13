@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // ScsiDrive.h - Low-level SCSI drive communication
 // ============================================================================
 #pragma once
@@ -396,7 +396,7 @@ private:
 		bool* outValid = nullptr);
 
 	bool ReadSectorQRaw(DWORD lba, int& qTrack, int& qIndex);
-	bool ParseRawSubchannel(const BYTE* sub, int& qTrack, int& qIndex);
+	bool ParseRawSubchannel(const BYTE* sub, DWORD lba, int& qTrack, int& qIndex);
 	bool ProbeC1BlockErrors();
 	bool ProbeC2Liveness();
 };

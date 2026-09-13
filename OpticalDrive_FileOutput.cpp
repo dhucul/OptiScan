@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <filesystem>
 #include "ArtifactTransaction.h"
+#include "PregapDetection.h"
 // ... other includes as needed
 
 namespace {
@@ -29,6 +30,10 @@ bool WideToUtf8(const std::wstring& input, std::string& output) {
 // ============================================================================
 
 bool OpticalDrive::SaveToFile(const DiscInfo& disc, const std::wstring& base) {
+    if (disc.pregapMode != PregapMode::Include && !Pregaps::AllVerified(disc)) {
+        Console::Error("Pregaps are not all determined. Include mode is required to preserve all audio.\n");
+        return false;
+    }
 	ArtifactTransaction transaction{std::filesystem::path(base)};
 	// Calculate and display original disc IDs for verification
 	uint32_t originalDiscID1 = AccurateRip::CalculateDiscID1(disc);
@@ -164,6 +169,19 @@ bool OpticalDrive::SaveToFile(const DiscInfo& disc, const std::wstring& base) {
 	if (disc.mcn.length() == 13) {
 		cue << "CATALOG " << disc.mcn << "\n";
 	}
+
+    for (const auto& track : disc.tracks) {
+        if (disc.selectedSession > 0 && track.session != disc.selectedSession) continue;
+        if (track.isAudio && !track.pregapVerified)
+            cue << "REM OPTISCAN_PREGAP_UNKNOWN " << track.trackNumber << "\n";
+        if (track.pregapLBA < track.startLBA) {
+            if (disc.pregapMode == PregapMode::Skip)
+                cue << "REM OPTISCAN_GAPS_DISCARDED " << track.trackNumber << "\n";
+            if (disc.pregapMode == PregapMode::Separate)
+                cue << "REM OPTISCAN_PREGAP_FILE " << track.trackNumber << " \""
+                    << fn << "_track" << track.trackNumber << "_pregap.bin\"\n";
+        }
+    }
 
 	cue << "FILE \"" << fn << ".bin\" BINARY\n";
 

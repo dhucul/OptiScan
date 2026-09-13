@@ -2,6 +2,7 @@
 // ScsiDrive.Read.cpp - SCSI sector reading and C2 handling
 // ============================================================================
 #include "ScsiDrive.h"
+#include "QPosition.h"
 #include <climits>
 #include <cstring>
 #include <cstdio>
@@ -28,7 +29,7 @@ bool IsAllZeroAudio(const BYTE* buffer, DWORD bufferSize) {
 // Q channel, validates CRC-16-CCITT, and extracts BCD-encoded track
 // number and index from ADR=1 (position) frames.
 
-bool ScsiDrive::ParseRawSubchannel(const BYTE* sub, int& qTrack, int& qIndex) {
+bool ScsiDrive::ParseRawSubchannel(const BYTE* sub, DWORD lba, int& qTrack, int& qIndex) {
 	BYTE qchannel[12] = {};
 	for (int i = 0; i < 96; i++) {
 		int byteIdx = i / 8;
@@ -38,24 +39,7 @@ bool ScsiDrive::ParseRawSubchannel(const BYTE* sub, int& qTrack, int& qIndex) {
 		}
 	}
 
-	// Validate CRC-16 (bytes 0-9 checked against bytes 10-11)
-	uint16_t calcCrc = SubchannelCRC16(qchannel, 10);
-	uint16_t storedCrc = (static_cast<uint16_t>(qchannel[10]) << 8) | qchannel[11];
-	if (calcCrc != storedCrc &&
-		static_cast<uint16_t>(calcCrc ^ 0xFFFF) != storedCrc) {
-		return false;  // CRC mismatch — data is unreliable
-	}
-
-	// Only ADR=1 frames carry track/index position data
-	BYTE adr = qchannel[0] & 0x0F;
-	if (adr != 1) {
-		return false;  // Not a position frame (MCN or ISRC)
-	}
-
-	// Q subchannel stores track/index in BCD
-	qTrack = BcdToBin(qchannel[1]);
-	qIndex = BcdToBin(qchannel[2]);
-	return true;
+	return DecodePositionQ(qchannel, lba, qTrack, qIndex);
 }
 
 // ── ReadCdAudio ───────────────────────────────────────────────────────────
@@ -732,7 +716,7 @@ bool ScsiDrive::ReadSectorQRaw(DWORD lba, int& qTrack, int& qIndex) {
 	for (int attempt = 0; attempt < 2; attempt++) {
 		// In ReadSectorQRaw — subchannel reads should complete in <5 seconds
 		if (!SendSCSI(cdb, 12, buffer, RAW_SECTOR_SIZE, true, 5)) return false;
-		if (ParseRawSubchannel(buffer + AUDIO_SECTOR_SIZE, qTrack, qIndex)) return true;
+		if (ParseRawSubchannel(buffer + AUDIO_SECTOR_SIZE, lba, qTrack, qIndex)) return true;
 	}
 	return false;
 }
@@ -829,59 +813,17 @@ bool ScsiDrive::ReadSectorQSingle(DWORD lba, int& qTrack, int& qIndex) {
 
 	const BYTE* qData = buffer + AUDIO_SECTOR_SIZE;
 
-	// Validate ADR mode — only mode 1 carries position data
-	BYTE adr = qData[0] & 0x0F;
-	if (adr != 1) return false;
-
-	// Validate BCD ranges before conversion
-	if ((qData[1] & 0xF0) > 0x90 || (qData[1] & 0x0F) > 0x09) return false;
-	if ((qData[2] & 0xF0) > 0x90 || (qData[2] & 0x0F) > 0x09) return false;
-
-	qTrack = BcdToBin(qData[1]);
-	qIndex = BcdToBin(qData[2]);
-	return true;
+	return DecodeFormattedPositionQ(qData, 16, lba, qTrack, qIndex);
 }
 
 // Majority-voting Q subchannel read — performs 3 single reads and returns
 // the (track, index) pair that at least 2 of 3 reads agree on.  This defeats
 // stale subchannel data that many drives return at index transition boundaries.
 bool ScsiDrive::ReadSectorQ(DWORD lba, int& qTrack, int& qIndex) {
-	constexpr int ROUNDS = 3;
-	constexpr int MAJORITY = 2;
-
-	struct QResult { int track; int index; };
-	QResult results[ROUNDS];
-	int validCount = 0;
-
-	for (int round = 0; round < ROUNDS; round++) {
-		int t = 0, idx = -1;
-		if (ReadSectorQSingle(lba, t, idx)) {
-			results[validCount++] = { t, idx };
-		}
-	}
-
-	if (validCount == 0) return false;
-
-	// Find a (track, index) pair that appears >= MAJORITY times
-	for (int i = 0; i < validCount; i++) {
-		int count = 0;
-		for (int j = 0; j < validCount; j++) {
-			if (results[j].track == results[i].track &&
-				results[j].index == results[i].index) {
-				count++;
-			}
-		}
-		if (count >= MAJORITY) {
-			qTrack = results[i].track;
-			qIndex = results[i].index;
-			return true;
-		}
-	}
-
-	// No majority — return first valid result as best-effort
-	qTrack = results[0].track;
-	qIndex = results[0].index;
-	return true;
+    return ReadPositionMajority(lba, qTrack, qIndex,
+        [&](DWORD at, int& track, int& index) {
+            return ReadSectorQSingle(at, track, index) || ReadSectorQAnyType(at, track, index);
+        });
 }
 
 // Adaptive Q subchannel read — uses a single read for sectors deep within a
@@ -964,17 +906,9 @@ bool ScsiDrive::ReadSectorQAnyType(DWORD lba, int& qTrack, int& qIndex) {
 	cdb[9] = 0x00;                  // No user data, no header, no EDC
 	cdb[10] = 0x02;                 // Formatted Q subchannel only
 
-	if (!SendSCSI(cdb, 12, buffer, 16)) return false;
+	if (!SendSCSI(cdb, 12, buffer, 16, true, 5)) return false;
 
-	BYTE adr = buffer[0] & 0x0F;
-	if (adr != 1) return false;
-
-	if ((buffer[1] & 0xF0) > 0x90 || (buffer[1] & 0x0F) > 0x09) return false;
-	if ((buffer[2] & 0xF0) > 0x90 || (buffer[2] & 0x0F) > 0x09) return false;
-
-	qTrack = BcdToBin(buffer[1]);
-	qIndex = BcdToBin(buffer[2]);
-	return true;
+	return DecodeFormattedPositionQ(buffer, sizeof(buffer), lba, qTrack, qIndex);
 }
 
 // ── MMC structure commands ──────────────────────────────────────────────────

@@ -8,16 +8,15 @@
 //      filename. FLAC inputs are decoded to a temp WAV via flac.exe.
 //   3. Validate format (16-bit / 44100 Hz / stereo) and warn on length mismatch
 //      vs the source TOC.
-//   4. Build a temporary .bin (track audio + silence pregaps) and .cue with
+//   4. Build a temporary .bin (track audio + captured source pregaps) and .cue with
 //      matching INDEX 00 / 01 entries.
 //   5. Eject the source disc, wait for a blank, reopen the drive.
 //   6. Reuse the existing WriteDisc() pipeline (blanking, OPC, CUE sheet,
 //      CD-Text, IMAPI fallback).
 //   7. Clean up temp files.
 //
-// Pregaps in the produced disc are silence — the rip workflow drops pregap
-// audio (PregapMode::Skip), so the original gap audio is not recoverable from
-// the track files. Gap *durations* are preserved exactly.
+// Pregap audio is captured from the source disc, including Track 1 HTOA.
+// Missing or undetermined gaps stop the exact-write workflow before erasure.
 // ============================================================================
 #define NOMINMAX
 #include "WriteTracksWorkflow.h"
@@ -30,6 +29,7 @@
 #include "GuiInput.h"
 #include "InterruptHandler.h"
 #include "MenuHelpers.h"
+#include "PregapDetection.h"
 #include "PioneerVendor.h"
 #include <algorithm>
 #include <cctype>
@@ -244,6 +244,10 @@ bool WriteSourcesToBin(const std::wstring& binPath, std::vector<TrackSource>& so
 
         const bool hasPregapAudio =
             source.pregapAudio.size() == source.pregapSectors;
+        if (source.pregapSectors > 0 && !hasPregapAudio) {
+            Console::Error("Captured pregap audio is incomplete; refusing silence substitution.\n");
+            return false;
+        }
         for (DWORD i = 0; i < source.pregapSectors; ++i) {
             if ((i & 63u) == 0 &&
                 (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey())) return false;
@@ -503,6 +507,10 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
         }
     }
 
+    if (!Pregaps::AllVerified(disc)) {
+        Console::Error("Source pregaps are unknown. Exact track-based writing was not started.\n");
+        return;
+    }
     // ── 3. Show pregap layout from source TOC ──────────────────────────
     Console::BoxHeading("Source disc pregap layout");
     int totalPregapFrames = 0;
@@ -510,7 +518,7 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
     for (size_t i = 0; i < audioTrackIdx.size(); i++) {
         const auto& tr = disc.tracks[audioTrackIdx[i]];
         DWORD pregap = 0;
-        if (i > 0 && tr.pregapLBA > 0 && tr.pregapLBA < tr.startLBA) {
+        if (tr.pregapLBA < tr.startLBA) {
             pregap = tr.startLBA - tr.pregapLBA;
         }
         DWORD sectors = (tr.endLBA >= tr.startLBA) ? (tr.endLBA - tr.startLBA + 1) : 0;
@@ -529,7 +537,7 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
     Console::Info("Total: ");
     std::cout << audioTrackIdx.size() << " audio track(s), "
         << tracksWithPregap << " with internal pregap ("
-        << totalPregapFrames << " frames silence to insert)\n";
+        << totalPregapFrames << " frames of source audio to preserve)\n";
 
     // ── 4. Prompt for input folder via native folder picker ────────────
     Console::Info("\nChoose the folder containing the ripped track files (.wav / .flac)...\n");
@@ -670,21 +678,19 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
     }
 
     int pregapTracks = 0;
-    for (size_t i = 1; i < sources.size(); i++) {
+    for (size_t i = 0; i < sources.size(); i++) {
         const auto& tr = disc.tracks[audioTrackIdx[i]];
-        if (tr.pregapLBA > 0 && tr.pregapLBA < tr.startLBA) pregapTracks++;
+        if (tr.pregapLBA < tr.startLBA) pregapTracks++;
     }
 
     DWORD marginSectors = ComputeMarginSectors(sourceReadOffset);
-    int boundaryReadFallbacks = 0;
-    int boundaryReadFailures = 0;
     if (pregapTracks > 0) {
         Console::Info("Reading pregap audio from source disc (");
         std::cout << pregapTracks << " track(s) with pregap)...\n";
         int processed = 0;
-        for (size_t i = 1; i < sources.size(); i++) {
+        for (size_t i = 0; i < sources.size(); i++) {
             const auto& tr = disc.tracks[audioTrackIdx[i]];
-            if (!(tr.pregapLBA > 0 && tr.pregapLBA < tr.startLBA)) continue;
+            if (!(tr.pregapLBA < tr.startLBA)) continue;
             processed++;
 
             std::cout << "  [" << processed << "/" << pregapTracks << "] track "
@@ -704,40 +710,12 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
                     CleanupSources(sources);
                     return;
                 }
-                // Pregap audio itself unreadable (some drives refuse INDEX 00
-                // sectors) — fall back to silence pregap, but still try to grab
-                // just the boundary-overlap sectors so we can repair the
-                // previous track's gap-corrupted last WAV sector.
-                sources[i].pregapAudio.clear();
-                if (ReadBoundaryOverlap(copier, tr.pregapLBA, sourceReadOffset,
-                    marginSectors, sources[i].headOverlap)) {
-                    Console::Warning("pregap read failed - silence pregap, "
-                        "boundary repair OK\n");
-                    boundaryReadFallbacks++;
-                }
-                else {
-                    if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
-                        Console::Warning("\n*** Cancelled by user ***\n");
-                        CleanupSources(sources);
-                        return;
-                    }
-                    Console::Error("pregap + boundary read failed\n");
-                    boundaryReadFailures++;
-                }
+                Console::Error("Pregap audio could not be read completely. Exact writing was cancelled; no silence was substituted.\n");
+                CleanupSources(sources);
+                return;
             }
         }
-        if (boundaryReadFallbacks > 0) {
-            Console::Info("");
-            std::cout << boundaryReadFallbacks
-                << " track(s) used silence-pregap + boundary repair (drive "
-                "refused INDEX 00 sectors).\n";
-        }
-        if (boundaryReadFailures > 0) {
-            Console::Warning("");
-            std::cout << boundaryReadFailures
-                << " track(s) had unreadable boundary sectors - burned disc "
-                "may have CRC mismatches at those track boundaries.\n";
-        }
+
     }
 
     // ── 7. Write-offset compensation ───────────────────────────────────
@@ -781,9 +759,9 @@ void RunWriteTracksWorkflow(OpticalDrive& copier, DiscInfo& disc,
     for (size_t i = 0; i < sources.size(); i++) {
         const auto& tr = disc.tracks[audioTrackIdx[i]];
         DWORD pregap = 0;
-        // Track 1 has no internal pregap in the BIN — the standard 150-frame
-        // pregap is added by WriteAudioSectors.
-        if (i > 0 && tr.pregapLBA > 0 && tr.pregapLBA < tr.startLBA) {
+        // Keep Track 1's program-area pregap/HTOA too. The writer's
+        // separate -150..-1 pause remains unchanged.
+        if (tr.pregapLBA < tr.startLBA) {
             pregap = tr.startLBA - tr.pregapLBA;
         }
         sources[i].pregapSectors = pregap;

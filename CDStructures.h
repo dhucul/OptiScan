@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // CDStructures.h - Core CD disc and track structures
 // ============================================================================
 #pragma once
@@ -47,6 +47,7 @@ struct TrackInfo {
 	int session = 1;                 // Session number (multi-session discs)
 	std::string isrc;                // International Standard Recording Code (per-track)
 	bool hasPreemphasis = false;     // CD pre-emphasis flag (bit 0 of TOC control byte)
+    bool pregapVerified = false;    // False means unknown, not a confirmed zero gap
 };
 
 // ── CD-TEXT metadata ────────────────────────────────────────────────────────
@@ -102,6 +103,7 @@ struct DiscInfo {
 	bool tocLBAsRecovered = false;                      // Clamped LBAs were recovered from Full TOC data
 	std::vector<RawTocEntry> rawTocEntries;             // Original LBAs before clamping/recovery
 	DWORD rawLeadOutLBA = 0;                            // Original lead-out LBA before clamping
+    bool hiddenTrackChecked = false; // Presence found or full leading region checked
 };
 
 // ── TrackInfo ───────────────────────────────────────────────────────────

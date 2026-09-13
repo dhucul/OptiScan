@@ -4,6 +4,7 @@
 #include "GuiInput.h"
 #include "Progress.h"
 #include "MenuHelpers.h"
+#include "PregapDetection.h"
 #include "Preservation.h"
 #include "RecoveryCheckpoint.h"
 #include <windows.h>
@@ -50,6 +51,10 @@ bool RunRecoveryRipWorkflow(OpticalDrive& copier, DiscInfo& disc,
 	int pregapMode = copier.SelectPregapMode();
 	if (pregapMode == -1) return false;
 	disc.pregapMode = static_cast<PregapMode>(pregapMode);
+    if (disc.pregapMode != PregapMode::Include && !Pregaps::AllVerified(disc)) {
+        Console::Error("Some pregaps are unknown. Use Include mode to retain all audio, or rescan with another drive.\n");
+        return false;
+    }
 
 	bool offsetOk = false;
 	int offset = copier.SelectOffset(&offsetOk);

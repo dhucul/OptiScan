@@ -7,6 +7,7 @@
 #include "WriteDiscInternal.h"
 #include "WorkflowChecks.h"
 #include "ImageSource.h"
+#include "ImagePregapPreparation.h"
 #include "PioneerVendor.h"
 #include <algorithm>
 #include <iostream>
@@ -137,13 +138,26 @@ bool OpticalDrive::LoadWriteSource(const std::wstring& binFile,
     return true;
 }
 
-bool OpticalDrive::WriteDisc(const std::wstring& binFile,
-	const std::wstring& cueFile, const std::wstring& subFile,
+bool OpticalDrive::WriteDisc(const std::wstring& inputBinFile,
+	const std::wstring& inputCueFile, const std::wstring& inputSubFile,
 	int speed, bool usePowerCalibration, bool discAlreadyBlanked,
 	bool /*attemptSubchannel_deprecated*/, bool simulate) {
 
 	if (g_interrupt.IsInterrupted()) return false;
 	Console::BoxHeading("Write Disc from Files");
+    PreparedImageSource prepared;
+    std::string preparationError;
+    std::error_code sourceError;
+    if (!PrepareImagePregaps(inputCueFile, prepared, preparationError) ||
+        !std::filesystem::equivalent(inputBinFile, prepared.sourceBin, sourceError) || sourceError) {
+        Console::Error("Image/CUE preparation failed.\n");
+        if (!preparationError.empty()) std::cout << preparationError << "\n";
+        return false;
+    }
+    const auto& binFile = prepared.binFile;
+    const auto& cueFile = prepared.cueFile;
+    const std::wstring subFile = prepared.normalized ? L"" : inputSubFile;
+
 
     simulate = simulate || WorkflowChecks::SimulationRequested();
     std::vector<TrackWriteInfo> tracks;

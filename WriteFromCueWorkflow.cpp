@@ -266,6 +266,11 @@ void RunWriteFromCueWorkflow(OpticalDrive& copier, const std::wstring& workDir,
 		return;
 	}
 
+    if (sheet.imageGapFiles) {
+        Console::Error("This CUE links separate binary pregap files. Use Write Disc to restore them exactly.\n");
+        return;
+    }
+
 	if (sheet.encoding == CueSourceEncoding::AnsiFallback) {
 		Console::Warning("The CUE sheet is not UTF-8; it was decoded as the system "
 			"ANSI code page. Check any accented CD-Text below.\n");

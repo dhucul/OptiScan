@@ -85,6 +85,11 @@
     <ClInclude Include="ArtifactTransaction.h" />
     <ClInclude Include="TrackFileOutput.h" />
     <ClInclude Include="NumericInput.h" />
+    <ClInclude Include="PregapDetection.h" />
+    <ClInclude Include="TrackReadContext.h" />
+    <ClInclude Include="QPosition.h" />
+    <ClInclude Include="ImagePregapPreparation.h" />
+
     <ClInclude Include="WorkflowChecks.h" />
     <ClInclude Include="ImageSource.h" />
     <ClInclude Include="WriteFeatureGuard.h" />
@@ -206,6 +211,7 @@
     <ClCompile Include="OptiScanWorkflowHost.cpp" />
     <ClCompile Include="CopyWorkflow.cpp" />
     <ClCompile Include="CueSheetImport.cpp" />
+    <ClCompile Include="ImagePregapPreparation.cpp" />
     <ClCompile Include="Drive.cpp" />
     <ClCompile Include="DriveCharacterization.cpp" />
     <ClCompile Include="DriveOffsetDatabase.cpp" />

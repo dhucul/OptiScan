@@ -109,7 +109,10 @@ inline void PrintDiscInfo(const DiscInfo& disc) {
             << "  LBA " << std::setw(6) << t.startLBA
             << " - " << std::setw(6) << t.endLBA;
 
-        if (pregapFrames > 0) {
+        if (t.isAudio && !t.pregapVerified) {
+            std::cout << "  Pregap UNKNOWN";
+        }
+        else if (pregapFrames > 0) {
             int pgSec = pregapFrames / 75;
             int pgFrm = pregapFrames % 75;
             std::cout << "  Pregap "
