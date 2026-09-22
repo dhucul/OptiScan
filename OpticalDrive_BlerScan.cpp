@@ -77,10 +77,10 @@ bool OpticalDrive::RunBlerScan(const DiscInfo& disc, BlerResult& result, int sca
 	result.measurementMethod = "READ CD C2 error pointers";
 	result.totalSectors = totalSectors;
 	result.totalSeconds = (totalSectors + 74) / 75;
-	result.perSecondC2.resize(result.totalSeconds + 1, { 0, 0 });
+	result.perSecondC2.resize(result.totalSeconds, { 0, 0 });
 	result.hasC1Data = hasC1Support;
 	if (hasC1Support) {
-		result.perSecondC1.resize(result.totalSeconds + 1, { 0, 0 });
+		result.perSecondC1.resize(result.totalSeconds, { 0, 0 });
 	}
 
 	std::cout << "Scanning " << totalSectors << " sectors...\n";

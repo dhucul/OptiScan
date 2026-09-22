@@ -36,7 +36,6 @@ void OpticalDrive::PrintBlerReport(const DiscInfo& disc, const BlerResult& resul
 	if (hasC1Support) {
 		std::cout << "\n--- C1 Error Statistics ---\n";
 
-		bool c1BlerPass = result.avgC1PerSecond < 220.0;
 		std::cout << "  Total C1 errors:      " << result.totalC1Errors << "\n";
 		std::cout << "  Sectors with C1:      " << result.totalC1Sectors;
 		if (result.totalSectors > 0)
@@ -44,7 +43,7 @@ void OpticalDrive::PrintBlerReport(const DiscInfo& disc, const BlerResult& resul
 			<< (result.totalC1Sectors * 100.0 / result.totalSectors) << "%)";
 		std::cout << "\n";
 		std::cout << "  Avg C1/sec:           " << std::fixed << std::setprecision(2) << result.avgC1PerSecond;
-		std::cout << (c1BlerPass ? "  [PASS]" : "  [FAIL]") << "  (Red Book limit: 220/sec)\n";
+		std::cout << "\n";
 		std::cout << "  Max C1/sec:           " << result.maxC1PerSecond;
 		if (result.maxC1PerSecond > 0) {
 			int worstMin = (result.worstC1SecondLBA / 75) / 60;
@@ -53,13 +52,13 @@ void OpticalDrive::PrintBlerReport(const DiscInfo& disc, const BlerResult& resul
 		}
 		std::cout << "\n";
 		std::cout << "  Sustained C1/sec:     " << result.peaks.sustainedC1PerSecond
-			<< "  (95th pct " << result.peaks.p95C1PerSecond << ") - ratings use this\n";
+			<< "  (95th pct " << result.peaks.p95C1PerSecond << ") - three-sample diagnostic\n";
 		std::cout << "  Max C1 in one sector: " << result.maxC1InSingleSector;
 		if (result.maxC1InSingleSector > 0) std::cout << "  (LBA " << result.worstC1SectorLBA << ")";
 		std::cout << "\n";
 
 		// Same wording as the Q-Check report: a peak that did not persist is
-		// reported as a drive transient rather than silently dropped.
+		// reported as a brief excursion of unknown cause, never silently dropped.
 		if (ScanQuality::TransientNoteWarranted(result.maxC1PerSecond,
 				result.peaks.peakC1Transient)) {
 			ScanQuality::SeriesStats shown;
@@ -70,21 +69,17 @@ void OpticalDrive::PrintBlerReport(const DiscInfo& disc, const BlerResult& resul
 				ScanQuality::TransientNote("C1", shown), "  ");
 		}
 
-		if (result.avgC1PerSecond < 5.0)
-			std::cout << "  C1 Assessment:        EXCELLENT - minimal correction needed\n";
-		else if (result.avgC1PerSecond < 50.0)
-			std::cout << "  C1 Assessment:        GOOD - normal wear\n";
-		else if (result.avgC1PerSecond < ScanQuality::kRedBookBlerLimit)
-			std::cout << "  C1 Assessment:        FAIR - elevated but within Red Book limits\n";
-		else
-			std::cout << "  C1 Assessment:        POOR - exceeds Red Book BLER limit\n";
+		std::cout << "  C1 Assessment:        " << ScanQuality::C1RatingName(
+			ScanQuality::RateC1(result.avgC1PerSecond, !result.perSecondC1.empty()))
+			<< " (average rate)\n";
+		ScanQuality::PrintC1Policy(std::cout);
 
-		if (!result.archivalC1Rating.empty()) {
-			std::cout << "  Archival C1:          " << result.archivalC1Rating
-				<< " (" << ArchivalRatingDescription(result.archivalC1Rating) << ")\n";
-			if (result.archivalC1Rating == "NOT RATED")
+		if (!result.sustainedC1Rating.empty()) {
+			std::cout << "  Sustained C1 rating:  " << result.sustainedC1Rating
+				<< " (" << SustainedC1RatingDescription(result.sustainedC1Rating) << ")\n";
+			if (result.sustainedC1Rating == "NOT RATED")
 				ScanQuality::PrintWrapped(std::cout,
-					ScanQuality::UnratedNote("Archival C1", result.peaks.scanSpeedX), "  ");
+					ScanQuality::UnratedNote("Sustained C1", result.peaks.scanSpeedX), "  ");
 		}
 		std::cout << "  Peak confidence:      "
 			<< ScanQuality::ConfidenceLabel(result.peaks.PeakConfidence()) << "\n";
@@ -282,7 +277,7 @@ void OpticalDrive::PrintBlerPerTrackSummary(const DiscInfo& disc, const BlerResu
 		DWORD tSectors = tEnd - tStart + 1;
 		DWORD tSeconds = (tSectors + 74) / 75;
 
-		int trackC1 = 0, trackC2 = 0, trackC2Seconds = 0;
+		int trackC1 = 0, trackC1Samples = 0, trackC2 = 0, trackC2Seconds = 0;
 		for (size_t i = 0; i < result.perSecondC2.size(); i++) {
 			DWORD secLBA = static_cast<DWORD>(result.perSecondC2[i].first);
 			if (secLBA >= tStart && secLBA <= tEnd) {
@@ -290,30 +285,36 @@ void OpticalDrive::PrintBlerPerTrackSummary(const DiscInfo& disc, const BlerResu
 					trackC2 += result.perSecondC2[i].second;
 					trackC2Seconds++;
 				}
-				if (hasC1Support && i < result.perSecondC1.size()
-					&& result.perSecondC1[i].second > 0) {
-					trackC1 += result.perSecondC1[i].second;
+
+			}
+		}
+
+		if (hasC1Support) {
+			for (const auto& sample : result.perSecondC1) {
+				if (sample.first >= tStart && sample.first <= tEnd) {
+					trackC1 += sample.second;
+					++trackC1Samples;
 				}
 			}
 		}
 
 		double trackAvgC2 = tSeconds > 0 ? static_cast<double>(trackC2) / tSeconds : 0;
-		double trackAvgC1 = tSeconds > 0 ? static_cast<double>(trackC1) / tSeconds : 0;
+		double trackAvgC1 = trackC1Samples > 0 ? static_cast<double>(trackC1) / trackC1Samples : 0;
 		int trackMin = tSeconds / 60;
 		int trackSec = tSeconds % 60;
 
-		const char* status = "Perfect";
+		std::string status = "EXCELLENT";
 		double errorSecPct = tSeconds > 0 ? (trackC2Seconds * 100.0 / tSeconds) : 0;
 		if (errorSecPct > 20.0)
 			status = "BAD";
 		else if (trackC2 > 100 || trackC2Seconds > 10)
-			status = "Poor";
+			status = "POOR";
 		else if (trackC2 > 20 || trackC2Seconds > 3)
-			status = "Fair";
+			status = "FAIR";
 		else if (trackC2 > 0)
-			status = "Good";
-		else if (hasC1Support && trackC1 > 1000)
-			status = "Fair";
+			status = "GOOD";
+		status = ScanQuality::CombineC1Quality(
+			ScanQuality::RateC1(trackAvgC1, hasC1Support && trackC1Samples > 0), status);
 
 		if (hasC1Support) {
 			std::cout << "  " << std::setw(3) << t.trackNumber << "    "
@@ -337,78 +338,28 @@ void OpticalDrive::PrintBlerPerTrackSummary(const DiscInfo& disc, const BlerResu
 }
 
 void OpticalDrive::PrintBlerMarginAnalysis(const BlerResult& result) {
-	std::cout << "\n--- C2 Error Proximity ---\n";
-	if (result.hasC1Data) {
-		std::cout << "  Avg C1 budget used:  " << std::fixed << std::setprecision(1)
-			<< result.avgC1PerSecond << " / 220.0 /sec  ("
-			<< result.c1UtilizationPct << "% of Red Book limit)\n";
-		// Budget is reported against the sustained level: a one-slice transient
-		// does not consume correction budget in any meaningful sense.
-		std::cout << "  Peak C1 budget used: " << result.peaks.sustainedC1PerSecond
-			<< " / 220.0 /sec  ("
-			<< std::setprecision(1) << result.peakC1UtilizationPct << "% of limit"
-			<< (result.peaks.peakC1Transient
-				? "; raw peak excluded as transient" : "") << ")\n";
-		std::cout << "  C2 margin score:     " << result.c2MarginScore
-			<< " / 100  [" << result.c2MarginLabel << "]\n";
-
-		// Headroom: fill = score/100, severity inverted (low score = red).
-		double scoreFrac = result.c2MarginScore / 100.0;
-		double severity = std::min(1.0, std::max(0.0, 1.0 - scoreFrac));
-		std::ostringstream suffix;
-		suffix << result.c2MarginScore << "%  [" << result.c2MarginLabel << "]";
-		Console::DrawScoreBar("Headroom:", scoreFrac, severity, 38, suffix.str());
-
-		if (result.c2MarginLabel == "EXHAUSTED")
-			std::cout << "  !! C2 errors already present - correction margin is exceeded.\n";
-		else if (result.c2MarginLabel == "WIDE")
-			std::cout << "  Strong correction headroom - disc is healthy.\n";
-		else if (result.c2MarginLabel == "ADEQUATE")
-			std::cout << "  Normal wear. Comfortable headroom for reliable ripping.\n";
-		else if (result.c2MarginLabel == "NARROW")
-			std::cout << "  Elevated C1 rate. Recommend ripping at 4-8x.\n";
-		else
-			std::cout << "  !! C1 near Red Book limit. C2 errors likely on re-reads or at higher speed.\n";
-	}
-	else {
-		std::cout << "  C1 data unavailable - C2 proximity/margin cannot be determined.\n";
-		std::cout << "  This drive verifies sectors are readable but cannot measure signal quality.\n";
-	}
+	std::cout << "\n--- C1 Measurement Limits ---\n";
+	if (!result.hasC1Data)
+		std::cout << "  C1 was not measured; no C1 quality rating is available.\n";
+	std::cout << "  C1 counts do not measure remaining C2 correction capacity.\n"
+		<< "  Copy integrity requires independent read/verification evidence.\n";
 }
 
 void OpticalDrive::PrintBlerQualitySummary(const BlerResult& result) {
 	std::cout << "\n" << std::string(60, '-') << "\n";
 	std::cout << "  QUALITY: " << result.qualityRating << "\n";
 
-	if (result.qualityRating == "EXCELLENT") {
-		if (result.hasC1Data)
-			std::cout << "  No C2 errors. C1 rate low - disc has strong error margin.\n";
-		else
-			std::cout << "  No C2 (uncorrectable) errors detected.\n";
-	}
-	else if (result.qualityRating == "GOOD") {
-		if (result.totalC2Sectors == 0)
-			std::cout << "  No C2 errors, but C1 rate is elevated. Margin is narrowing.\n";
-		else
-			std::cout << "  Minor errors within acceptable limits. Disc is safe to rip.\n";
-	}
-	else if (result.qualityRating == "ACCEPTABLE") {
-		if (result.totalC2Sectors == 0)
-			std::cout << "  No C2 errors yet, but C1 rate is high. Rip soon at low speed.\n";
-		else
-			std::cout << "  Moderate error rate. Recommend secure rip mode.\n";
-	}
-	else if (result.qualityRating == "FAIR") {
-		if (result.totalC2Sectors == 0)
-			std::cout << "  C1 rate exceeds Red Book limit. C2 errors may appear under stress.\n";
-		else
-			std::cout << "  Elevated error rate. Use secure or paranoid rip mode.\n";
-	}
-	else if (result.qualityRating == "POOR") {
-		std::cout << "  High C2 error rate. Use Paranoid rip mode. Consider cleaning disc.\n";
-	}
-	else {
-		std::cout << "  Read failures detected. Some data may be unrecoverable.\n";
-	}
+	if (result.totalReadFailures > 0)
+		std::cout << "  Read failures detected; some data may be unrecoverable.\n";
+	else if (result.c2Unverified)
+		std::cout << "  C2 was not verified; a zero count does not establish copy integrity.\n";
+	else if (result.totalC2Sectors > 0)
+		std::cout << "  C2 activity detected. Use secure extraction and verify the result.\n";
+	else
+		std::cout << "  No C2 activity observed in this pass.\n";
+	if (result.hasC1Data)
+		std::cout << "  C1 labels describe observed rates using OptiScan's shared bands.\n";
+	else
+		std::cout << "  C1 quality was not measured.\n";
 	std::cout << std::string(60, '=') << "\n";
 }

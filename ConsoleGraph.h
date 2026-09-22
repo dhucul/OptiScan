@@ -28,6 +28,7 @@
 #include "ConsoleColor.h"
 #include "ConsoleSymbols.h"
 #include <algorithm>
+#include "ScanQualityRating.h"
 #include <cstdio>
 #include <cstring>
 #include <iomanip>
@@ -57,6 +58,17 @@ struct GraphOptions {
 	std::string severityModerateLabel = "moderate";
 	std::string severityHighLabel = "high";
 };
+
+inline void ConfigureC1Graph(GraphOptions& opts) {
+	opts.refLine = ScanQuality::kC1GraphHighThreshold;
+	opts.refLabel = ScanQuality::kC1ReferenceLabel;
+	opts.unitSuffix = "/sec";
+	opts.severityLowThreshold = ScanQuality::kC1GraphLowThreshold;
+	opts.severityHighThreshold = ScanQuality::kC1GraphHighThreshold;
+	opts.severityLowLabel = ScanQuality::kC1GraphLowLabel;
+	opts.severityModerateLabel = ScanQuality::kC1GraphModerateLabel;
+	opts.severityHighLabel = ScanQuality::kC1GraphHighLabel;
+}
 
 // One row in a severity heatmap.  Each per-column value is bucketed into one
 // of four tiers (none / low / moderate / high) by the two thresholds below

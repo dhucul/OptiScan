@@ -18,6 +18,7 @@
 int RunCueSheetImportTests();
 int RunAuditRegressionTests();
 int RunWriteRetryTests();
+int RunScanQualityTests();
 
 namespace {
 
@@ -909,6 +910,7 @@ int main() {
 	failures += RunCueSheetImportTests();
     failures += RunAuditRegressionTests();
     failures += RunWriteRetryTests();
+    failures += RunScanQualityTests();
 
 	manifestInput.close();
 	std::error_code cleanupError;

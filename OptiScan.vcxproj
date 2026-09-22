@@ -145,6 +145,8 @@
     <ClInclude Include="RecoveryTypes.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="ScanQualityRating.h" />
+    <ClInclude Include="CdScanInterval.h" />
+    <ClInclude Include="ComprehensiveQuality.h" />
     <ClInclude Include="ScanResults.h" />
     <ClInclude Include="ScsiDrive.h" />
     <ClInclude Include="ScsiTypes.h" />
@@ -256,6 +258,9 @@
     <Image Include="assets\top.png" />
     <Image Include="assets\output.png" />
     <Image Include="small.ico" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="docs\c1-rating-policy.md" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

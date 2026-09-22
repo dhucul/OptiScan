@@ -291,31 +291,12 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 				c1Result.samples.clear();
 			}
 
-			bool spikesTrimmed = false;
-			if (c1Result.samples.size() > 50) {
-				std::vector<int> allErrs;
-				allErrs.reserve(c1Result.samples.size());
-				for (const auto& s : c1Result.samples)
-					allErrs.push_back(s.c1 + s.c2 + s.cu + s.pioneerE22);
-				std::sort(allErrs.begin(), allErrs.end());
-				int median = allErrs[allErrs.size() / 2];
-
-				size_t checkEnd = std::min<size_t>(30, c1Result.samples.size() / 2);
-				for (int i = static_cast<int>(checkEnd) - 1; i >= 0; i--) {
-					int err = c1Result.samples[i].c1 + c1Result.samples[i].c2
-						+ c1Result.samples[i].cu + c1Result.samples[i].pioneerE22;
-					if ((median == 0 && err > 10) || (median > 0 && err > median * 10)) {
-						c1Result.samples.erase(c1Result.samples.begin() + i);
-						spikesTrimmed = true;
-					}
-				}
-			}
-
 			RecalculateQCheckTotals(c1Result);
-			if (spikesTrimmed)
-				std::cout << "  Startup spike(s) trimmed from quality scan.\n";
 
-			hasC1 = !c1Result.samples.empty();
+			hasC1 = !c1Result.samples.empty() && (c1Result.totalC1 > 0 ||
+				c1Result.totalC2 > 0 || c1Result.totalCU > 0 || c1Result.totalPioneerE22 > 0);
+			if (!hasC1 && !c1Result.samples.empty())
+				std::cout << "  C1 NOT RATED: all counters are zero; measurement unverified.\n";
 
 			// Same sustained-level statistics the quality scan computes, from
 			// the same helper, so both scans rate this disc identically. Only
@@ -605,8 +586,7 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 		c1Opts.subtitle = "C1 = corrected errors - early warning for degradation";
 		c1Opts.width = 60;
 		c1Opts.height = 10;
-		c1Opts.refLine = 220;
-		c1Opts.refLabel = "Red Book limit (220/sec)";
+		Console::ConfigureC1Graph(c1Opts);
 		c1Opts.colorize = true;
 
 		auto buckets = Console::BucketData(c1Values, c1Opts.width);
@@ -1131,44 +1111,33 @@ void OpticalDrive::AnalyzeC1RotPatterns(const QCheckResult& c1Result,
 	std::cout << "  Middle avg C1/sec: " << avgMiddle << "\n";
 	std::cout << "  Outer  avg C1/sec: " << avgOuter << "\n";
 
-	// C1-based rot indicators (these fire BEFORE C2 errors appear).
-	//
-	// All four are built from *averages and zone ratios*, never from a single
-	// slice, so they stay admissible at any scan speed — that is the rule
-	// ScanQualityRating.h states, and it is the reason the sustained/peak
-	// machinery deliberately does not gate this block. A high scan speed
-	// inflates every zone alike, so the ratios survive; and a disc averaging
-	// hundreds of C1 per second is stressed whatever speed revealed it.
-	//
-	// What high speed does change is the *margin*: at 48x the fixed 220/sec
-	// spec number is a lower bar than the Red Book measurement intends, so the
-	// absolute tests run hot. The report says so rather than silently
-	// suppressing them, because suppressing them would hide real rot.
+	// Application early-warning indicators based on the measured distribution.
+	// Speed, scratches, drive behaviour and chemical degradation can all affect
+	// these rates; zone ratios do not uniquely identify the cause.
 	const bool zonesComparable = innerN > 0 && middleN > 0 && outerN > 0;
 	const auto conf = c1Result.peaks.PeakConfidence();
 
 	bool c1EdgeElevated = zonesComparable && (avgOuter > avgInner * 3.0) && (avgOuter > 10.0);
 	bool c1Progressive = zonesComparable && (avgInner < avgMiddle) &&
 		(avgMiddle < avgOuter) && (avgOuter > 10.0);
-	bool c1OverallHigh = (c1Result.avgC1PerSecond > 50.0);
-	bool c1RedBookFail = (c1Result.avgC1PerSecond >= ScanQuality::kRedBookBlerLimit);
+	const auto c1Band = ScanQuality::RateC1(c1Result.avgC1PerSecond);
+	bool c1OverallHigh = c1Band == ScanQuality::C1Rating::Fair ||
+		c1Band == ScanQuality::C1Rating::Poor;
+	bool c1RateHigh = c1Band == ScanQuality::C1Rating::Poor;
+	std::cout << "  C1 average rating: " << ScanQuality::C1RatingName(c1Band) << "\n";
+	std::cout << "  C1 sustained rating: " << RateSustainedC1(c1Result.peaks) << "\n";
+	ScanQuality::PrintC1Policy(std::cout);
 
 	if (c1EdgeElevated)
 		std::cout << "  ** C1 elevated at outer edge - early disc rot signal **\n";
 	if (c1Progressive)
 		std::cout << "  ** C1 rising inner->outer - progressive degradation pattern **\n";
-	if (c1RedBookFail)
-		std::cout << "  ** C1 exceeds Red Book limit - disc is stressed **\n";
-	// One caveat line, not a suppression: the reader needs to know the absolute
-	// thresholds were applied to a fast scan before acting on the risk level.
-	if ((c1OverallHigh || c1RedBookFail) &&
-		!ScanQuality::PeakEvidenceAdmissible(conf)) {
-		ScanQuality::PrintWrapped(std::cout,
-			"These absolute C1 thresholds were applied to a scan run above 16x, "
-			"where rates read higher than at Red Book measurement speed. The "
-			"finding still counts toward rot risk, but confirm it on a drive "
-			"that honours 4x-8x before concluding the disc is degrading.", "  ");
-	}
+	if (c1RateHigh)
+		std::cout << "  ** C1 average is in the high observed-rate band (>=220/sec) **\n";
+	if (c1OverallHigh && !ScanQuality::PeakEvidenceAdmissible(conf))
+		ScanQuality::PrintConfidenceCaveat(std::cout, conf);
+	std::cout << "  C1 patterns contribute to a heuristic risk score; they do not "
+		"diagnose chemical disc rot or predict remaining life.\n";
 
 	// Boost the rot risk score based on C1 findings
 	// These are early warnings that wouldn't show up in C2 alone
@@ -1176,7 +1145,7 @@ void OpticalDrive::AnalyzeC1RotPatterns(const QCheckResult& c1Result,
 	if (c1EdgeElevated) c1Score += 15;
 	if (c1Progressive) c1Score += 20;
 	if (c1OverallHigh) c1Score += 10;
-	if (c1RedBookFail) c1Score += 15;
+	if (c1RateHigh) c1Score += 15;
 
 	if (c1Score > 0) {
 		// Re-assess with C1 data factored in

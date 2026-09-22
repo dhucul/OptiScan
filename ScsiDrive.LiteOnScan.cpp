@@ -30,6 +30,7 @@
 // Both methods read at the current drive speed (not locked to 1x).
 // At 8x a 72-min disc takes ~9 minutes — same as BLER scan.
 #include "ScsiDrive.h"
+#include "CdScanInterval.h"
 #include <algorithm>
 #include <iostream>
 #include <iomanip>
@@ -347,7 +348,8 @@ bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
 		return true;
 	}
 	else {
-		if (s_liteonLBA > s_liteonEndLBA) {
+		const auto interval = CdScanInterval::At(s_liteonLBA, s_liteonEndLBA);
+		if (interval.sectors == 0) {
 			currentLBA = s_liteonEndLBA;
 			scanDone = true;
 			return true;
@@ -357,9 +359,7 @@ bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
 		// Without the read the MediaTek counters never advance (verified on the
 		// PX-891SAF PLUS). One interval is at most one CD second (75 sectors),
 		// with a shorter final interval so the read never crosses lead-out.
-		const DWORD remaining = s_liteonEndLBA - s_liteonLBA + 1;
-		const DWORD intervalSectors = std::min<DWORD>(75, remaining);
-		LiteOnScanDriveHead(s_liteonLBA, intervalSectors);
+		LiteOnScanDriveHead(interval.startLba, interval.sectors);
 
 		std::vector<BYTE> buf(256, 0);
 		BYTE cdb[12] = {};
@@ -387,15 +387,12 @@ bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0x97;
 		SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq);
 
-		if (intervalSectors == remaining) {
-			currentLBA = s_liteonEndLBA;
-			scanDone = true;
-		}
-		else {
-			s_liteonLBA += intervalSectors;
-			currentLBA = s_liteonLBA;
-			scanDone = false;
-		}
+		// All samples use interval starts. Mixing exclusive endpoints with an
+		// inclusive final end created a false gap in sustained-C1 analysis.
+		currentLBA = interval.startLba;
+		scanDone = interval.final;
+		if (!scanDone)
+			s_liteonLBA += interval.sectors;
 		return true;
 	}
 }

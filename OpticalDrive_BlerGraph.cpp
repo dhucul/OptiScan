@@ -44,42 +44,15 @@ void OpticalDrive::PrintBlerGraph(const BlerResult& result, int width, int heigh
 			opts.subtitle = "Peak C1 errors per second across the disc";
 			opts.width = width;
 			opts.height = height;
-			opts.refLine = 220;
-			opts.refLabel = "Red Book limit (220/sec)";
-			opts.unitSuffix = "";
+			Console::ConfigureC1Graph(opts);
 
 			auto buckets = ToBuckets(result.perSecondC1, width);
 			Console::DrawBarGraph(buckets, graphMax, opts, result.totalSeconds);
 
-			// Only warn on an excursion that actually persisted. A single bar
-			// over the reference line is the drive re-acquiring track, and
-			// calling that a Red Book failure is what made every disc look bad.
-			const int redBookLimit = static_cast<int>(ScanQuality::kRedBookBlerLimit);
-			if (peakC1 > redBookLimit) {
-				// How many consecutive slices actually stayed above the line.
-				// SeriesStats::peakRunLength answers a different question (peak
-				// width at half its own height) and must not stand in for this.
-				std::vector<int> series;
-				series.reserve(result.perSecondC1.size());
-				for (const auto& p : result.perSecondC1) series.push_back(p.second);
-				const int aboveRun =
-					ScanQuality::LongestRunAtOrAbove(series, redBookLimit);
+			if (peakC1 >= ScanQuality::kC1GraphHighThreshold)
+				std::cout << "  Raw C1 crosses the 220/sec reference. A raw peak alone "
+					"does not establish a 10-second BLER failure.\n";
 
-				Console::SetColorRGB(Console::Theme::YellowR,
-					Console::Theme::YellowG, Console::Theme::YellowB);
-				if (aboveRun >= ScanQuality::kDefaultMinRunSamples) {
-					std::cout << "  C1 stays above the Red Book BLER limit (220/sec) for "
-						<< aboveRun << " consecutive slices - sustained "
-						<< result.peaks.sustainedC1PerSecond << "/sec.\n";
-				}
-				else {
-					std::cout << "  Tallest bar (" << peakC1 << "/sec) crosses the limit for "
-						<< aboveRun << " slice(s) - a drive transient, not a Red Book"
-						<< " failure; sustained C1 is "
-						<< result.peaks.sustainedC1PerSecond << "/sec.\n";
-				}
-				Console::Reset();
-			}
 		}
 	}
 

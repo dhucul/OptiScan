@@ -358,7 +358,6 @@ private:
 	int CalculateClusterTolerance(int scanSpeed);
 	void DetectErrorClusters(const std::vector<DWORD>& errorLBAs, std::vector<ErrorCluster>& clusters, int scanSpeed = 8);
 	std::string AssessRotRisk(const DiscRotAnalysis& result);
-	int CalculateOverallScore(const ComprehensiveScanResult& result);
 
 	// Audio analysis helpers
 	bool IsSectorSilent(const BYTE* data);

@@ -1,15 +1,9 @@
 #define NOMINMAX
 #include "OpticalDrive.h"
+#include "ComprehensiveQuality.h"
 #include <iostream>
 #include <fstream>
 #include <algorithm>
-
-namespace {
-bool HasConfirmedPioneerLoss(const ComprehensiveScanResult& result) {
-	return (result.bler.pioneerCdCheckRun && result.bler.pioneerCdCheckC2Bytes > 0)
-		|| (result.rot.pioneerCdCheckRun && result.rot.pioneerCdCheckC2Bytes > 0);
-}
-}
 
 // ============================================================================
 // Comprehensive Disc Quality Scan - Orchestrates All Quality Tests
@@ -57,81 +51,10 @@ bool OpticalDrive::RunComprehensiveScan(DiscInfo& disc, ComprehensiveScanResult&
 		return false;
 	}
 
-	// Calculate overall score
-	result.overallScore = CalculateOverallScore(result);
-
-	const bool confirmedLoss = HasConfirmedPioneerLoss(result);
-	if (result.bler.c2Unverified && !confirmedLoss)
-		result.overallRating = "INCOMPLETE";
-	else if (result.overallScore >= 90) result.overallRating = "A";
-	else if (result.overallScore >= 80) result.overallRating = "B";
-	else if (result.overallScore >= 70) result.overallRating = "C";
-	else if (result.overallScore >= 60) result.overallRating = "D";
-	else result.overallRating = "F";
-
-	result.summary = "Comprehensive scan complete. Overall score: " + std::to_string(result.overallScore) + "/100";
-	if (result.bler.c2Unverified && !confirmedLoss)
-		result.summary += " (incomplete: C2 was not verified)";
+	ComprehensiveQuality::Finalize(result);
 
 	PrintComprehensiveReport(result);
 	return true;
-}
-
-int OpticalDrive::CalculateOverallScore(const ComprehensiveScanResult& result) {
-	int score = 100;
-
-	// BLER/C2 errors (up to -40 points)
-	if (result.bler.totalReadFailures > 0) {
-		score -= std::min(40, result.bler.totalReadFailures * 10);
-	}
-	else if (result.bler.totalC2Errors > 0) {
-		score -= std::min(30, result.bler.totalC2Errors / 100);
-	}
-
-	// Disc rot indicators (up to -45 points)
-	if (result.rot.edgeConcentration) score -= 10;
-	if (result.rot.progressivePattern) score -= 15;
-	if (result.rot.readInstability) score -= 20;
-
-	score -= static_cast<int>(result.rot.inconsistencyRate * 2);
-
-	// Risk-level and Pioneer CD Check outcomes are final-state evidence, not
-	// cosmetic report strings. Apply caps so confirmed data loss or a high rot
-	// verdict cannot coexist with a high overall score.
-	if (result.rot.rotRiskLevel == "CRITICAL") score = std::min(score, 20);
-	else if (result.rot.rotRiskLevel == "HIGH") score = std::min(score, 40);
-	else if (result.rot.rotRiskLevel == "MODERATE") score = std::min(score, 65);
-
-	if (HasConfirmedPioneerLoss(result))
-		score = std::min(score, 35);
-
-	// Speed stability (up to -10 points)
-	int speedInconsistent = 0;
-	for (const auto& r : result.speedComparison) {
-		if (r.inconsistent) speedInconsistent++;
-	}
-	if (!result.speedComparison.empty()) {
-		double inconsistencyRate = (speedInconsistent * 100.0) / result.speedComparison.size();
-		score -= static_cast<int>(inconsistencyRate / 10);
-	}
-
-	// Multi-pass consistency (up to -5 points)
-	int multiPassFailed = 0;
-	for (const auto& r : result.multiPass) {
-		if (!r.allMatch) multiPassFailed++;
-	}
-	if (!result.multiPass.empty()) {
-		double failRate = (multiPassFailed * 100.0) / result.multiPass.size();
-		score -= static_cast<int>(failRate / 20);
-	}
-
-	// An unverified C2 channel is an incomplete assessment. Keep the numeric
-	// score for relative context, but prevent it from reaching A/B territory;
-	// RunComprehensiveScan labels the grade INCOMPLETE rather than implying C.
-	if (result.bler.c2Unverified && !HasConfirmedPioneerLoss(result))
-		score = std::min(score, 79);
-
-	return std::max(0, std::min(100, score));
 }
 
 void OpticalDrive::PrintComprehensiveReport(const ComprehensiveScanResult& result) {
@@ -146,6 +69,9 @@ void OpticalDrive::PrintComprehensiveReport(const ComprehensiveScanResult& resul
 	// BLER Summary
 	std::cout << "\n--- BLER Quality ---\n";
 	std::cout << "  Rating:           " << result.bler.qualityRating << "\n";
+	std::cout << "  C1 average band:  " << ScanQuality::C1RatingName(
+		ComprehensiveQuality::C1Assessment(result)) << "\n";
+	std::cout << "  C1 grade caps: Excellent=A, Good=B, Fair=C, Poor=F (OptiScan policy).\n";
 	if (result.bler.c2Unverified) {
 		std::cout << "  C2 measurement:   NOT VERIFIED / NOT MEASURED\n";
 		std::cout << "  Total C2 errors:  N/A\n";
@@ -234,33 +160,37 @@ void OpticalDrive::PrintComprehensiveReport(const ComprehensiveScanResult& resul
 
 	// Final Recommendation
 	std::cout << "\n--- Recommendation ---\n";
-	if (HasConfirmedPioneerLoss(result)) {
+	if (ComprehensiveQuality::HasConfirmedPioneerLoss(result)) {
 		std::cout << "  Pioneer CD Check confirmed uncorrectable data loss.\n";
 		std::cout << "  Use Paranoid rip mode and verify the rip independently.\n";
 	}
-	else if (result.bler.c2Unverified) {
-		std::cout << "  Assessment is INCOMPLETE because verified C2 data was unavailable.\n";
-		std::cout << "  Do not interpret the zero C2 fields as a clean disc; verify the rip independently.\n";
+	else if (ComprehensiveQuality::HasConfirmedFailure(result)) {
+		std::cout << "  Read failures were confirmed. Use secure extraction and verify independently.\n";
+	}
+	else if (ComprehensiveQuality::IsIncomplete(result)) {
+		std::cout << "  Assessment is INCOMPLETE: "
+			<< ComprehensiveQuality::MissingMeasurements(result) << ".\n";
+		std::cout << "  Missing measurements do not establish a clean disc; verify the rip independently.\n";
 	}
 	else if (result.overallScore >= 90) {
-		std::cout << "  Disc is in EXCELLENT condition.\n";
-		std::cout << "  Any rip mode will produce perfect results.\n";
+		std::cout << "  The measured results fall in the EXCELLENT band.\n";
+		std::cout << "  Verify extracted audio independently; a scan does not guarantee a perfect rip.\n";
 	}
 	else if (result.overallScore >= 80) {
-		std::cout << "  Disc is in GOOD condition.\n";
+		std::cout << "  The measured results fall in the GOOD band.\n";
 		std::cout << "  Standard or Secure rip mode recommended.\n";
 	}
 	else if (result.overallScore >= 70) {
-		std::cout << "  Disc shows MODERATE wear.\n";
+		std::cout << "  The measured results fall in the MODERATE band.\n";
 		std::cout << "  Use Secure rip mode for best results.\n";
 	}
 	else if (result.overallScore >= 60) {
-		std::cout << "  Disc shows SIGNIFICANT degradation.\n";
+		std::cout << "  Significant error or instability indicators were observed.\n";
 		std::cout << "  Use Paranoid rip mode. Consider disc cleaning.\n";
 	}
 	else {
-		std::cout << "  Disc is in POOR condition.\n";
-		std::cout << "  Use Paranoid rip mode. Data loss possible.\n";
+		std::cout << "  The measured results fall in the POOR band.\n";
+		std::cout << "  Use secure extraction and verify independently; the score alone does not establish data loss.\n";
 		std::cout << "  Back up immediately if this disc is irreplaceable.\n";
 	}
 
@@ -286,6 +216,9 @@ bool OpticalDrive::SaveComprehensiveReport(const ComprehensiveScanResult& result
 	file << "BLER Quality\n";
 	file << "------------\n";
 	file << "Rating:          " << result.bler.qualityRating << "\n";
+	file << "C1 average band: " << ScanQuality::C1RatingName(
+		ComprehensiveQuality::C1Assessment(result)) << "\n";
+	file << "C1 grade caps: Excellent=A, Good=B, Fair=C, Poor=F (OptiScan policy).\n";
 	file << "C2 measurement:  " << (result.bler.c2Unverified ? "NOT VERIFIED / NOT MEASURED" : "MEASURED") << "\n";
 	file << "Total C2 errors: ";
 	if (result.bler.c2Unverified) file << "N/A\n";
@@ -336,10 +269,13 @@ bool OpticalDrive::SaveComprehensiveReport(const ComprehensiveScanResult& result
 
 	file << "Recommendation\n";
 	file << "--------------\n";
-	if (HasConfirmedPioneerLoss(result))
+	if (ComprehensiveQuality::HasConfirmedPioneerLoss(result))
 		file << "Pioneer CD Check confirmed uncorrectable data loss. Use Paranoid rip mode and verify independently.\n";
-	else if (result.bler.c2Unverified)
-		file << "Assessment is INCOMPLETE: verified C2 data was unavailable. Zero C2 fields are not a clean result.\n";
+	else if (ComprehensiveQuality::HasConfirmedFailure(result))
+		file << "Read failures were confirmed. Use secure extraction and verify independently.\n";
+	else if (ComprehensiveQuality::IsIncomplete(result))
+		file << "Assessment is INCOMPLETE: " << ComprehensiveQuality::MissingMeasurements(result)
+			<< ". Missing measurements are not a clean result.\n";
 	if (!result.rot.recommendation.empty()) {
 		file << result.rot.recommendation << "\n";
 	}

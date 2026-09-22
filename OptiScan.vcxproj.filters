@@ -69,6 +69,12 @@
     <ClInclude Include="RecoveryRipWorkflow.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="RecoveryTypes.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Resource.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="CdScanInterval.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ComprehensiveQuality.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="ScanQualityRating.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="ScanResults.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="ScsiDrive.h"><Filter>Header Files</Filter></ClInclude>

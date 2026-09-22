@@ -451,7 +451,7 @@ OpticalDrive::PioneerQualityFallbackResult OpticalDrive::RunPioneerVendorQuality
 	result.measurementMethod = qc.scanMethod;
 	result.totalSectors = qc.totalSectors;
 	result.totalSeconds = static_cast<int>(qc.totalSeconds);
-	result.hasC1Data = true;
+	result.hasC1Data = !qc.c1Unverified && !qc.samples.empty();
 	result.totalC1Errors = qc.totalC1;
 	result.avgC1PerSecond = qc.avgC1PerSecond;
 	result.maxC1PerSecond = qc.maxC1PerSecond;
@@ -469,7 +469,7 @@ OpticalDrive::PioneerQualityFallbackResult OpticalDrive::RunPioneerVendorQuality
 	// the BLER-shaped report reaches the same verdict as the Q-Check report it
 	// was derived from instead of re-deriving tiers from the raw peaks.
 	result.peaks = qc.peaks;
-	result.archivalC1Rating = qc.archivalC1Rating;
+	result.sustainedC1Rating = qc.sustainedC1Rating;
 	result.pioneerCdCheckRun = qc.pioneerCdCheckRun;
 	result.pioneerCdCheckC1Frames = qc.pioneerCdCheckC1Frames;
 	result.pioneerCdCheckC2Bytes = qc.pioneerCdCheckC2Bytes;

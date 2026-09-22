@@ -188,7 +188,7 @@ void PrintHelpMenu() {
 		"   drives in ErrorPointers mode) will show full C1+C2 statistics.\n"
 		"   Other drives report C2 errors only.\n"
 		"\n"
-		"   Red Book standard: average BLER should be < 220 errors/second.",
+		"   C1 rates use shared OptiScan bands; Red Book compliance is not evaluated.",
 		"Professional-grade disc quality analysis with C1/C2 breakdown." });
 
 	PrintEntry({ "10. Disc Rot Detection",

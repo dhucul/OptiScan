@@ -35,40 +35,21 @@ void OpticalDrive::AnalyzeBlerResults(BlerResult& result, const std::vector<DWOR
 		}
 
 		// Sustained-level statistics, from the same helper the quality scan,
-		// disc rot and balance paths use. Every peak-driven figure below is
-		// judged against these rather than against the raw maximum.
+		// disc rot and hardware paths use. Keep the sustained diagnostic
+		// separate from the observed average and raw maximum.
 		{
 			std::vector<int> c1Series, e22Series;
+			std::vector<DWORD> sampleLbas;
 			c1Series.reserve(result.perSecondC1.size());
-			for (const auto& p : result.perSecondC1) c1Series.push_back(p.second);
+			for (const auto& p : result.perSecondC1) {
+				c1Series.push_back(p.second); sampleLbas.push_back(p.first);
+			}
 			for (const auto& p : result.perSecondPioneerE22) e22Series.push_back(p.second);
-			ComputeScanPeakContext(c1Series, e22Series, scanSpeed, result.peaks);
+			ComputeScanPeakContext(c1Series, e22Series, scanSpeed, result.peaks, sampleLbas);
 		}
 
-		// Archival tier: identical thresholds, identical transient handling and
-		// identical speed gating to the Q-Check report.
-		result.archivalC1Rating = RateArchivalC1(result.peaks);
-
-		// C2 proximity: express C1 rate as a fraction of the Red Book 220/sec
-		// limit. Peak utilisation uses the sustained level, so a single servo
-		// transient can no longer report the correction budget as exhausted.
-		result.c1UtilizationPct = std::min(100.0,
-			result.avgC1PerSecond / ScanQuality::kRedBookBlerLimit * 100.0);
-		result.peakC1UtilizationPct = std::min(100.0,
-			result.peaks.sustainedC1PerSecond / ScanQuality::kRedBookBlerLimit * 100.0);
-		double util = result.avgC1PerSecond / ScanQuality::kRedBookBlerLimit;
-		result.c2MarginScore = static_cast<int>(
-			std::lround(std::max(0.0, (1.0 - util) * 100.0)));
-
-		// Override: if C2 errors already exist, the margin is exhausted
-		if (result.totalC2Sectors > 0) {
-			result.c2MarginScore = 0;
-			result.c2MarginLabel = "EXHAUSTED";
-		}
-		else if (result.avgC1PerSecond < 50.0)  result.c2MarginLabel = "WIDE";
-		else if (result.avgC1PerSecond < 150.0) result.c2MarginLabel = "ADEQUATE";
-		else if (result.avgC1PerSecond < 220.0) result.c2MarginLabel = "NARROW";
-		else                                     result.c2MarginLabel = "CRITICAL";
+		// The same observed-rate bands and persistence rule as Q-Check.
+		result.sustainedC1Rating = RateSustainedC1(result.peaks);
 	}
 
 	// Build error clusters using adaptive tolerance
@@ -104,14 +85,7 @@ void OpticalDrive::AnalyzeBlerResults(BlerResult& result, const std::vector<DWOR
 		result.qualityRating = "BAD";
 	}
 	else if (result.totalC2Sectors == 0) {
-		if (!result.hasC1Data || result.avgC1PerSecond < 50.0)
-			result.qualityRating = "EXCELLENT";
-		else if (result.avgC1PerSecond < 150.0)
-			result.qualityRating = "GOOD";
-		else if (result.avgC1PerSecond < 220.0)
-			result.qualityRating = "ACCEPTABLE";
-		else
-			result.qualityRating = "FAIR";
+		result.qualityRating = "EXCELLENT"; // read evidence only; apply C1 below
 	}
 	else {
 		if (result.avgC2PerSecond < 1.0 && result.consecutiveErrorSectors < 3
@@ -121,4 +95,8 @@ void OpticalDrive::AnalyzeBlerResults(BlerResult& result, const std::vector<DWOR
 		else if (result.avgC2PerSecond < 50.0) result.qualityRating = "FAIR";
 		else result.qualityRating = "POOR";
 	}
+	result.qualityRating = ScanQuality::CombineC1Quality(
+		ScanQuality::RateC1(result.avgC1PerSecond,
+			result.hasC1Data && !result.perSecondC1.empty()), result.qualityRating);
+
 }

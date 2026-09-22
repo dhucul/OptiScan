@@ -14,12 +14,12 @@
 // ── Shared peak / confidence block ──────────────────────────────────────────
 // Every scan mode that rates a disc from a per-time-slice error series carries
 // this block, so the rules stay identical between them. Raw peaks are still
-// kept for the graphs; the *ratings* are driven by the sustained figures below,
-// and scanSpeedX records how far any peak can be trusted at all.
+// kept for graphs; sustained and average rates use the same descriptive bands.
+// scanSpeedX supplies measurement context, not proof of a peak's cause.
 struct ScanPeakContext {
 	int scanSpeedX = 0;                     // Speed the scan actually ran at
 
-	// False when the scan produced fewer slices than kDefaultMinRunSamples, so
+	// False when no contiguous group of kDefaultMinRunSamples was recorded, so
 	// "held for N consecutive slices" cannot be evaluated at all. Both series
 	// come from the same samples, so one flag covers C1 and E22. Every tier
 	// judged from a sustained level must come back Unrated when this is false.
@@ -139,11 +139,11 @@ struct QCheckResult {
 	std::string qualityRating;                 // EXCELLENT / GOOD / FAIR / POOR / BAD
 
 	// Total C1 quality interpretation
-	std::string totalC1Quality;                // Exceptional / Very good / Normal / Marginal / Poor
+	std::string totalC1Quality;                // EXCELLENT / GOOD / FAIR / POOR / NOT RATED
 
-	// Archival audio peak C1 assessment. Driven by peaks.sustainedC1PerSecond,
-	// not maxC1PerSecond — see ScanQualityRating.h for why.
-	std::string archivalC1Rating;              // Ideal / Good / Acceptable / Poor / NOT RATED
+	// Sustained C1 observed-rate assessment. Driven by peaks.sustainedC1PerSecond,
+	// separate from maxC1PerSecond and the whole-scan average.
+	std::string sustainedC1Rating;              // EXCELLENT / GOOD / FAIR / POOR / NOT RATED
 
 	// Pioneer E22 diagnostic rating (diagnostic only — not a copy trigger)
 	std::string pioneerE22Rating;              // Ideal / Good / Acceptable / Concerning / NOT RATED
@@ -187,10 +187,11 @@ inline QCheckC2Stability ClassifyQCheckC2Stability(const QCheckResult& result) {
 // Single implementation shared by the quality scan, BLER/C2 scan, Disc Rot and
 // Disc Balance so no scan mode can drift into its own peak handling.
 inline void ComputeScanPeakContext(const std::vector<int>& c1Series,
-	const std::vector<int>& e22Series, int scanSpeedX, ScanPeakContext& out) {
+	const std::vector<int>& e22Series, int scanSpeedX, ScanPeakContext& out,
+	const std::vector<DWORD>& sampleLbas = {}) {
 	out.scanSpeedX = scanSpeedX;
 
-	const ScanQuality::SeriesStats c1 = ScanQuality::Analyze(c1Series);
+	const ScanQuality::SeriesStats c1 = ScanQuality::Analyze(c1Series, ScanQuality::kDefaultMinRunSamples, sampleLbas);
 	out.sustainedMeasurable = c1.persistenceMeasurable;
 	out.sustainedC1PerSecond = c1.sustainedPeak;
 	out.p95C1PerSecond = c1.p95;
@@ -206,7 +207,7 @@ inline void ComputeScanPeakContext(const std::vector<int>& c1Series,
 		out.pioneerE22PeakTracksC1 = false;
 	}
 	else {
-		const ScanQuality::SeriesStats e22 = ScanQuality::Analyze(e22Series);
+		const ScanQuality::SeriesStats e22 = ScanQuality::Analyze(e22Series, ScanQuality::kDefaultMinRunSamples, sampleLbas);
 		out.sustainedPioneerE22PerSecond = e22.sustainedPeak;
 		out.peakPioneerE22RunLength = e22.peakRunLength;
 		out.peakPioneerE22Transient = e22.peakIsTransient;
@@ -217,30 +218,31 @@ inline void ComputeScanPeakContext(const std::vector<int>& c1Series,
 inline void ComputeScanPeakContext(const std::vector<QCheckSample>& samples,
 	int scanSpeedX, ScanPeakContext& out) {
 	std::vector<int> c1, e22;
+	std::vector<DWORD> sampleLbas;
 	c1.reserve(samples.size());
 	e22.reserve(samples.size());
 	bool anyE22 = false;
 	for (const auto& s : samples) {
 		c1.push_back(s.c1);
+		sampleLbas.push_back(s.lba);
 		e22.push_back(s.pioneerE22);
 		if (s.pioneerE22 != 0) anyE22 = true;
 	}
 	if (!anyE22) e22.clear();
-	ComputeScanPeakContext(c1, e22, scanSpeedX, out);
+	ComputeScanPeakContext(c1, e22, scanSpeedX, out, sampleLbas);
 }
 
 // ── Shared rating entry points ──────────────────────────────────────────────
 // Both the quality scan and the disc-rot scan previously kept private copies of
 // these thresholds, which drifted. They now share one implementation, and both
 // judge the *sustained* level rather than the raw peak.
-inline std::string RateArchivalC1(const ScanPeakContext& peaks) {
+inline std::string RateSustainedC1(const ScanPeakContext& peaks) {
 	// Only sustainedPeak and persistenceMeasurable feed the tier; the transient
 	// test already happened when the context was computed.
 	ScanQuality::SeriesStats c1;
 	c1.sustainedPeak = peaks.sustainedC1PerSecond;
 	c1.persistenceMeasurable = peaks.sustainedMeasurable;
-	return ScanQuality::TierName(
-		ScanQuality::RateArchivalC1(c1, peaks.PeakConfidence()));
+	return ScanQuality::C1RatingName(ScanQuality::RateSustainedC1(c1));
 }
 
 inline std::string RatePioneerE22(long long total, double avgPerSecond,
@@ -257,12 +259,12 @@ inline std::string RatePioneerE22(long long total, double avgPerSecond,
 			peaks.PeakConfidence(), peaks.pioneerE22PeakTracksC1));
 }
 
-inline const char* ArchivalRatingDescription(const std::string& rating) {
-	if (rating == "Ideal")      return "sustained peak under 50/sec";
-	if (rating == "Good")       return "sustained peak 50-99/sec";
-	if (rating == "Acceptable") return "sustained peak 100-220/sec, not ideal for archival";
-	if (rating == "Poor")       return "sustained peak exceeds the Red Book limit";
-	return "not measurable at the speed this drive honours";
+inline const char* SustainedC1RatingDescription(const std::string& rating) {
+	if (rating == "EXCELLENT") return "sustained C1 below 5/sec";
+	if (rating == "GOOD") return "sustained C1 5-<50/sec";
+	if (rating == "FAIR") return "sustained C1 50-<220/sec";
+	if (rating == "POOR") return "sustained C1 at least 220/sec";
+	return "unavailable, unverified or too few consecutive samples";
 }
 
 inline const char* PioneerE22RatingDescription(const std::string& rating) {
@@ -327,7 +329,7 @@ struct FeTeResult {
 
 // ── BLER (Block Error Rate) scan result ─────────────────────────────────────
 // Captures the output of a detailed error-rate scan.  BLER measures raw error
-// frequency before ECC correction.  Red Book spec: < 220 errors/second avg.
+// frequency before ECC correction.  Whole-scan averages are not a Red Book compliance test.
 struct BlerResult {
 	DWORD totalSectors = 0;
 	int totalSeconds = 0;
@@ -355,12 +357,6 @@ struct BlerResult {
 	int maxC1PerSecond = 0;
 	DWORD worstC1SecondLBA = 0;
 
-	// C1 utilization / C2 margin analysis
-	double c1UtilizationPct = 0.0;         // Avg C1 rate as % of Red Book 220/sec limit
-	double peakC1UtilizationPct = 0.0;     // Peak C1 rate as % of 220/sec limit
-	int c2MarginScore = 100;               // 0-100: how close C1 is to exhausting C2 margin
-	std::string c2MarginLabel;             // WIDE / ADEQUATE / NARROW / CRITICAL / EXHAUSTED
-
 	// Cluster and pattern analysis
 	int largestClusterSize = 0;
 	bool hasEdgeConcentration = false;
@@ -373,8 +369,8 @@ struct BlerResult {
 	// Q-Check, Disc Rot and Balance paths.
 	ScanPeakContext peaks;
 
-	// Archival peak-C1 tier, computed the same way as QCheckResult's.
-	std::string archivalC1Rating;
+	// Sustained C1 tier, computed the same way as QCheckResult's.
+	std::string sustainedC1Rating;
 
 	// Pioneer 0x3B/0x3C vendor-quality provenance. E22 is a diagnostic
 	// second-stage counter, not a verified READ CD C2 pointer or E32/CU count.
@@ -400,6 +396,13 @@ struct BlerResult {
 	// Error clusters and zone distribution
 	std::vector<ErrorCluster> errorClusters;
 	DiscZoneStats zoneStats;
+
+	// Confirmed failure takes precedence over missing C1/C2 channels in every
+	// downstream summary, including independent Pioneer CD Check evidence.
+	bool HasConfirmedFailure() const {
+		return totalReadFailures > 0 || qualityRating == "BAD" ||
+			(pioneerCdCheckRun && pioneerCdCheckC2Bytes > 0);
+	}
 
 	// Top worst sectors by C2 error count: (LBA, C2 count)
 	std::vector<std::pair<DWORD, int>> topWorstC2Sectors;
@@ -460,7 +463,7 @@ struct ComprehensiveScanResult {
 	std::vector<SeekTimeResult> seekTimes;             // Drive seek latency data
 
 	int overallScore = 0;           // Composite quality score (0–100)
-	std::string overallRating;      // Letter grade: A, B, C, D, or F
+	std::string overallRating;      // Letter grade: A, B, C, D, F, or INCOMPLETE
 	std::string summary;            // Human-readable summary paragraph
 };
 

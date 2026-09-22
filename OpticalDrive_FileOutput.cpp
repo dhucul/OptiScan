@@ -252,8 +252,10 @@ bool OpticalDrive::SaveBlerLog(const BlerResult& result, const std::wstring& fil
 	log << "# ==============================\n";
 	log << "#\n";
 	log << "# Quality Rating:        ";
-	if (result.c2Unverified && !result.hasC1Data)
-		log << "INCOMPLETE (no trustworthy C2 measurement)";
+	if (result.HasConfirmedFailure())
+		log << "BAD";
+	else if (result.c2Unverified && !result.hasC1Data)
+		log << "INCOMPLETE (no trustworthy C1/C2 measurement)";
 	else {
 		log << result.qualityRating;
 		if (result.c2Unverified)
@@ -276,6 +278,10 @@ bool OpticalDrive::SaveBlerLog(const BlerResult& result, const std::wstring& fil
 		log << "# Avg C1/sec:            " << std::fixed << std::setprecision(2)
 			<< result.avgC1PerSecond << "\n";
 		log << "# Max C1/sec:            " << result.maxC1PerSecond << "\n";
+		log << "# C1 Average Rating:     " << ScanQuality::C1RatingName(
+			ScanQuality::RateC1(result.avgC1PerSecond, !result.perSecondC1.empty())) << "\n";
+		log << "# C1 Sustained Rating:   " << result.sustainedC1Rating << "\n";
+		ScanQuality::PrintC1Policy(log, "# ");
 	}
 	if (result.c2Unverified) {
 		log << "# Total C2 Errors:       N/A (not measured)\n";
@@ -319,12 +325,12 @@ bool OpticalDrive::SaveBlerLog(const BlerResult& result, const std::wstring& fil
 		}
 	}
 	log << "#\n";
-	log << "# --- Red Book Compliance ---\n";
+	log << "# --- Observed Read Result (not Red Book compliance) ---\n";
 	if (result.c2Unverified)
 		log << "# C2 Result:             N/A - no verified C2 measurement\n";
 	else
 		log << "# C2 Result:             "
-			<< ((result.totalC2Errors == 0 && result.totalReadFailures == 0) ? "PASS" : "FAIL") << "\n";
+			<< ((result.totalC2Errors == 0 && result.totalReadFailures == 0) ? "NO C2 ACTIVITY OBSERVED" : "C2 ACTIVITY OR READ FAILURE") << "\n";
 	log << "#\n";
 
 	// --- Zone stats ---

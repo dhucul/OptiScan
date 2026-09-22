@@ -63,7 +63,7 @@ The original command-line workflow has been ported to a native Win32 GUI: every 
 - **Check CD against AccurateRip** — standalone full-track verification without saving rip files; uses the lowest drive-supported read speed and temporarily disables Pioneer PureRead and Real-Time PureRead
 - **Hardware quality scan** — Plextor Q-Check, Pioneer, or LiteOn/MediaTek scanning with backend-accurate graphs (Pioneer reports C1/BLER plus diagnostic E22, not verified C2/CU)
 - **C2 error scan** — quick pass/fail quality check
-- **BLER scan** — detailed per-second error rate with Red Book compliance check
+- **BLER scan** — detailed observed error rates with shared C1 rating bands
 - **Disc rot detection** — two-phase spatial degradation pattern analysis
 - **Surface map** — per-sector C2 error CSV for external visualization
 - **Multi-pass verification** — reads sectors N times to detect read inconsistency
@@ -308,7 +308,7 @@ Optionally performs **dual-speed validation** — re-reads error sectors at a di
 
 ### BLER Scan (Detailed)
 
-**Question answered:** *"What is the error rate over time, and does it meet Red Book standards?"*
+**Question answered:** *"What error rates did this drive observe across the disc?"*
 
 **BLER** (Block Error Rate) is an IEC 60908 (Red Book) concept. The standard defines maximum acceptable error rates measured per second of audio playback. OptiScan reads every audio sector, counts C2 errors, and aggregates them into one-second time buckets (75 sectors = 1 second at 1× CD speed). The result is a complete time-series error profile of the disc.
 
@@ -333,35 +333,44 @@ Some drives expose per-sector C1 block error counts in bytes 294–295 of the C2
 | **Max C1/sec** | Peak one-second C1 count |
 | **Avg C2/sec** | Mean C2 errors per second across the entire disc |
 | **Max C2/sec** | Peak one-second error count (with timestamp) |
-| **C1 utilization** | Average C1 rate as a percentage of the Red Book 220/sec limit |
-| **C2 margin** | How close C1 is to exhausting C2 correction capacity (WIDE / ADEQUATE / NARROW / CRITICAL / EXHAUSTED) |
-| **Red Book threshold** | Avg BLER < 220/sec = PASS (IEC 60908 compliance) |
-| **Quality threshold** | Avg C2/sec < 1.0 = GOOD for archival ripping |
+| **Sustained C1** | Highest level held across three consecutive samples; same bands as the average |
+| **220/sec reference** | Context only; no Red Book compliance PASS/FAIL is claimed |
+| **Measurement limits** | C1 does not determine remaining C2 correction capacity or archival life |
 | **Per-track breakdown** | C1 count, C2 count, affected sectors, avg/sec, and status per track |
 | **ASCII error graph** | Visual distribution of C2 errors across the disc timeline |
 
-#### C1 Assessment Scale
+#### Shared C1 Assessment Scale
 
-| C1 Avg/sec | Assessment |
+| C1 errors/sec (average or sustained) | Assessment |
 |---|---|
-| < 5 | **EXCELLENT** — minimal correction needed |
-| 5–50 | **GOOD** — normal wear |
-| 50–220 | **FAIR** — elevated but within Red Book limits |
-| > 220 | **POOR** — exceeds Red Book BLER limit |
+| Below 5 | **EXCELLENT** |
+| 5 to below 50 | **GOOD** |
+| 50 to below 220 | **FAIR** |
+| 220 or above | **POOR** |
+| Unavailable or unverified | **NOT RATED** |
+
+These are OptiScan observed-rate bands, not archival certification. Raw peaks
+remain visible; brief spikes have an unknown cause. Graph colours use fixed
+50/220 boundaries regardless of vertical scale. Whole-scan averages and the
+three-sample sustained diagnostic do not implement the ten-second BLER test.
+See [C1 rating policy and sources](docs/c1-rating-policy.md) for measurement
+limits and consistent use by Q-Check, BLER, Disc Rot and Disc Balance.
 
 #### Overall Quality Rating
 
 | Rating | Criteria |
 |---|---|
-| **EXCELLENT** | Zero C2 errors |
+| **EXCELLENT** | Zero C2 errors and measured C1 average below 5/sec |
 | **GOOD** | Avg < 1.0/sec, longest error run < 3 sectors |
 | **ACCEPTABLE** | Avg < 10.0/sec, longest error run < 10 sectors |
 | **POOR** | Above acceptable thresholds |
 | **BAD** | Read failures occurred (sectors could not be read at all) |
 
+The combined rating also includes the shared C1 band and cannot be better than it. Missing C1 data is not an excellent result.
+
 **Output:** Full report printed to console, plus a CSV log (`bler_scan.csv`) with per-second LBA and error count for graphing in external tools.
 
-**When to use:** Detailed quality assessment — see exactly where errors are, whether the disc meets Red Book limits, and whether it is safe to archive. The C1 data (when available) reveals early degradation that C2-only scans miss entirely.
+**When to use:** Compare measured rates and locate error regions. C1 data can reveal correction activity that a C2-only scan misses; it does not by itself establish archival suitability or the cause of damage.
 
 ---
 
@@ -432,7 +441,7 @@ A weighted scoring system produces the final risk level:
 | **Pattern analysis** | None | Per-second bucketing, per-track totals, error clustering | Edge concentration, progressive gradient, pinhole clusters |
 | **Typical cause detected** | Scratches, fingerprints, poor burns | Same as C2 but with temporal context + early wear via C1 | Chemical oxidation, delamination, bronzing |
 | **Output format** | Console report + CSV | Console report + CSV + ASCII graph | Console report + text log |
-| **Actionable result** | "Use secure rip" or "clean the disc" | "Meets/fails Red Book" or "use Paranoid mode" | "Back up NOW — data loss imminent" |
+| **Actionable result** | "Use secure rip" or "clean the disc" | "Observed C1/C2 rates" or "use secure extraction" | "Back up NOW — data loss imminent" |
 | **Speed** | Fast (minutes) | Moderate (full disc read) | Slow (full disc read + re-read sampling) |
 
 **Key insight:** A disc can pass a C2 scan with zero errors yet still be in early-stage rot — Phase 2's read consistency check catches degradation that a single read pass cannot. The BLER scan's C1 data (when available) fills the gap between "zero C2" and "actual disc health" — elevated C1 rates reveal wear that hasn't yet progressed to uncorrectable errors. Conversely, a disc with high BLER from a surface scratch will show **no rot indicators** because the damage is mechanical, not chemical.

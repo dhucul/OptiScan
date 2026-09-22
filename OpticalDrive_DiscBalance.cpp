@@ -1141,6 +1141,9 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 				<< "/sec   " << hwSecondStageLabel << " "
 				<< std::setprecision(1) << std::setw(6) << hwSecondStagePerSpeed[s]
 				<< "/sec";
+			std::cout << "  C1 " << ScanQuality::C1RatingName(ScanQuality::RateC1(
+				hwC1PerSpeed[s], hwSamplesPerSpeed[s] > 0 &&
+					(hwC1PerSpeed[s] > 0 || hwSecondStagePerSpeed[s] > 0)));
 			if (hwSamplesPerSpeed[s] == 0)
 				std::cout << "  (no samples)";
 			if (speedFellBack[s] || eccFellBack[s])
@@ -1156,18 +1159,11 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 				<< "        or CU. It is reported here but does not affect the Balance Score\n"
 				<< "        or Suggested Max Rip Speed and is not a copy-integrity trigger.\n";
 		}
-		// Consistency with the quality / BLER / rot reports: absolute C1 and E22
-		// rates are only archivally meaningful at or below the archival speed
-		// ceiling. Above it the figures still compare against each other across
-		// the sweep — which is exactly what this check needs, and is valid at
-		// any speed — but they are not a disc-quality verdict.
+		ScanQuality::PrintC1Policy(std::cout);
 		ScanQuality::PrintWrapped(std::cout,
-			std::string("Rates above ") +
-			std::to_string(ScanQuality::kArchivalScanSpeedMax) +
-			"x are comparative only. This check reads them as a trend across the "
-			"sweep, which stays valid at any speed; the same figures are not a "
-			"quality verdict about the disc. The CD quality scan gives that.",
-			"  ");
+			"C1 bands describe only the sampled region at each speed. Balance "
+			"scores compare speed-dependent trends, timing and read stability; "
+			"they are not whole-disc C1 ratings or proof of physical imbalance.", "  ");
 		if (hwSweepFailed) {
 			std::cout << "  ** NOTE: The hardware ECC sweep failed; partial hardware data\n"
 				<< "     was discarded from scoring. Using the READ CD/read-stability\n"

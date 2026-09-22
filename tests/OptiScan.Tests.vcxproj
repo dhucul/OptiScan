@@ -60,6 +60,9 @@
     <ClCompile Include="CueSheetImportTests.cpp" />
     <ClCompile Include="AuditRegressionTests.cpp" />
     <ClCompile Include="WriteRetryTests.cpp" />
+    <ClCompile Include="ScanQualityTests.cpp" />
+    <ClCompile Include="..\ScanQualityRating.cpp" />
+    <ClCompile Include="..\OpticalDrive_BlerAnalysis.cpp" />
     <ClCompile Include="..\OpticalDrive_WriteAudioSectors.cpp" />
     <ClCompile Include="..\GuiWorker.cpp" />
     <ClCompile Include="..\OpticalDrive_FileOutput.cpp" />

@@ -1,26 +1,6 @@
-// ============================================================================
-// ScanQualityRating.h - Shared error-series statistics and rating vocabulary
-// ----------------------------------------------------------------------------
-// Every scan mode that judges a disc from a per-time-slice error series (CD
-// quality scan / Q-Check, BLER scan, C2 scan, Disc Rot, Disc Balance) used to
-// carry its own peak handling and its own tier thresholds. That produced two
-// systematic false positives:
-//
-//   1. Single-slice peaks. A drive re-locking its servo for one time slice
-//      produces one inflated sample. Rating "peak C1" off the raw maximum
-//      turns that mechanical event into an archival verdict about the medium.
-//      A genuine defect persists across several consecutive slices.
-//
-//   2. Peaks read at high scan speed. C1/BLER is only archivally meaningful at
-//      the low speeds the Red Book measurement assumes. Drives that clamp their
-//      floor high (e.g. Pioneer BDR-S13U at 48x) produce error series dominated
-//      by tracking behaviour, not by the disc. The failure is asymmetric: a
-//      clean reading at high speed is still strong evidence of a good disc,
-//      while a bad reading at high speed is not evidence of a bad one.
-//
-// This header centralises both rules so all scan paths reach the same verdict
-// from the same data.
-// ============================================================================
+// Shared error statistics and observed-rate ratings for every scan mode.
+// C1 bands are OptiScan heuristics, not archival or Red Book certification.
+// See docs/c1-rating-policy.md for thresholds, sources and measurement limits.
 #pragma once
 
 #include <cstddef>
@@ -30,24 +10,21 @@
 
 namespace ScanQuality {
 
-// Consecutive time slices a raised error rate must persist before it counts as
-// a property of the disc rather than a drive/servo transient.
+// Consecutive samples used by the sustained-level diagnostic. A short spike
+// remains evidence; its duration alone cannot identify its physical cause.
 inline constexpr int kDefaultMinRunSamples = 3;
 
-// Red Book block-error-rate ceiling, C1 errors per second.
+// BLER reference: 220 blocks/sec over a 10-second measuring period.
+// Comparing a whole-scan mean or a three-sample minimum is not a compliance test.
 inline constexpr double kRedBookBlerLimit = 220.0;
 
-// Scan speed at or below which peak-based archival judgements are meaningful.
-inline constexpr int kArchivalScanSpeedMax = 8;
+// Application speed caution bands, not calibrated measurement guarantees.
+inline constexpr int kLowScanSpeedMax = 8;
 
-// Scan speed above which the series is dominated by servo behaviour rather
-// than by the medium.
+// Higher speeds warrant additional caution when interpreting peak evidence.
 inline constexpr int kIndicativeScanSpeedMax = 16;
 
-// Smallest raw peak worth explaining to the reader. Below this the peak could
-// not have changed any tier (it sits inside the best archival band), so
-// printing "this peak was a transient" only teaches the reader to skip the
-// line that matters when the peak really is 252/sec.
+// Explain brief C1 excursions once they reach the elevated-rate band.
 inline constexpr int kMinPeakWorthExplaining = 50;
 
 // Same idea for the Pioneer E22 diagnostic, whose first tier boundary is 25.
@@ -55,9 +32,9 @@ inline constexpr int kMinE22PeakWorthExplaining = 25;
 
 // ── Confidence in an error series, derived from the speed it was read at ────
 enum class Confidence {
-	Archival,     // <= 8x   peaks reflect the medium
-	Indicative,   // <= 16x  trend usable, peaks inflated
-	Unreliable    // > 16x   servo noise dominates; peaks are not disc evidence
+	LowSpeed,    // <= 8x   low-speed comparison
+	Indicative,   // <= 16x  speed-dependent measurements
+	Unreliable    // > 16x or unknown: conservative diagnostic gate
 };
 
 // scanSpeedX of 0 means "maximum speed" throughout this codebase (SET CD SPEED
@@ -68,9 +45,8 @@ const char* ConfidenceLabel(Confidence c);
 // One-line caveat for the report, or nullptr when no caveat is warranted.
 const char* ConfidenceCaveat(Confidence c);
 
-// Whether a peak-derived finding may escalate a verdict at this confidence.
-// Averages and zone ratios stay admissible at any speed; absolute peak
-// thresholds do not.
+// Conservative gate for separate E22 diagnostics; C1 observed-rate labels
+// retain the measured value at every speed and show a speed caution.
 bool PeakEvidenceAdmissible(Confidence c);
 
 // ── Summary of one per-time-slice error series ──────────────────────────────
@@ -87,16 +63,16 @@ struct SeriesStats {
 	int  peakRunLength = 0;    // consecutive slices around the peak at >= half peak
 
 	// Highest level held for at least minRunSamples consecutive slices. This
-	// is the figure every rating tier is judged against.
+	// is a persistence diagnostic, separate from the average and raw peak.
 	int  sustainedPeak = 0;
 	int  sustainedPeakIndex = -1;
 
 	int  minRunSamples = kDefaultMinRunSamples;
 
-	// True when the raw peak did not persist long enough to count as a defect.
+	// True when the half-height peak excursion lasted fewer than minRunSamples.
 	bool peakIsTransient = false;
 
-	// False when the series is shorter than minRunSamples, i.e. too short for
+	// False when there is no contiguous window of minRunSamples, so
 	// "held for N consecutive slices" to mean anything. sustainedPeak stays 0
 	// in that case and every tier judged from it comes back Unrated - a
 	// two-sample capture can neither convict nor clear a disc.
@@ -109,7 +85,8 @@ struct SeriesStats {
 };
 
 SeriesStats Analyze(const std::vector<int>& values,
-	int minRunSamples = kDefaultMinRunSamples);
+	int minRunSamples = kDefaultMinRunSamples,
+	const std::vector<unsigned long>& sampleLbas = {});
 
 // True when two series spike at (nearly) the same slice. A correlated second
 // series is the same physical event counted twice, not independent evidence.
@@ -126,17 +103,30 @@ bool PeaksCorrelated(const SeriesStats& a, const SeriesStats& b,
 int LongestRunAtOrAbove(const std::vector<int>& values, int threshold);
 
 // ── Shared rating vocabulary ────────────────────────────────────────────────
-// Unrated is not a hedge: it means the measurement that would justify a worse
-// tier was not trustworthy at the speed used. Reporting it as a tier would
-// present servo behaviour as a disc verdict.
+// Separate Pioneer E22 diagnostic vocabulary; not an archival certification.
 enum class Tier { Ideal, Good, Acceptable, Poor, Unrated };
 
 const char* TierName(Tier t);            // Ideal / Good / Acceptable / Poor
 const char* TierNameDiagnostic(Tier t);  // ... / Concerning  (E22 wording)
 
-// Archival peak-C1 tier, judged on the sustained level rather than the raw
-// peak, and withheld when a bad reading came from an untrustworthy speed.
-Tier RateArchivalC1(const SeriesStats& c1, Confidence conf);
+// One observed C1 scale for means and sustained levels. Excellent/Good/Fair
+// are application bands; they do not establish a disc's lifetime or copyability.
+inline constexpr double kC1ExcellentLimit = 5.0;
+inline constexpr double kC1ElevatedLimit = 50.0;
+inline constexpr int kC1GraphLowThreshold = static_cast<int>(kC1ElevatedLimit);
+inline constexpr int kC1GraphHighThreshold = static_cast<int>(kRedBookBlerLimit);
+inline constexpr const char* kC1GraphLowLabel = "<50/sec low";
+inline constexpr const char* kC1GraphModerateLabel = "50-219/sec elevated";
+inline constexpr const char* kC1GraphHighLabel = "220+/sec high";
+inline constexpr const char* kC1ReferenceLabel = "220/sec reference (not a compliance test)";
+
+enum class C1Rating { Excellent, Good, Fair, Poor, Unrated };
+C1Rating RateC1(double rate, bool measured = true);
+C1Rating RateSustainedC1(const SeriesStats& c1);
+const char* C1RatingName(C1Rating rating);
+// Keep the more adverse measured C1/read result. Unknown C1 is never a clean pass.
+std::string CombineC1Quality(C1Rating c1, const std::string& readRating);
+void PrintC1Policy(std::ostream& os, const char* indent = "  ");
 
 // Pioneer E22 diagnostic tier. `correlatedWithC1` suppresses escalation when
 // the E22 peak coincides with the C1 peak.
