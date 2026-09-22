@@ -52,16 +52,14 @@ static DWORD s_liteonEndLBA = 0;
 // head; the returned data is discarded (only the drive's internal tally,
 // fetched via DF/82/05 etc., matters).
 
-void ScsiDrive::LiteOnScanDriveHead(DWORD lba, DWORD sectors) {
+bool ScsiDrive::LiteOnScanDriveHead(DWORD lba, DWORD sectors) {
 	// Chunk <= 16 sectors per read (16 audio sectors = 0x9300 B) to stay under
-	// the 16-bit ATAPI transfer ceiling (0xFFFE). Errors are ignored — a
-	// defective sector is itself a scan result the drive counts.
-	constexpr DWORD CHUNK = 16;
-	std::vector<BYTE> buf(CHUNK * AUDIO_SECTOR_SIZE);
-	for (DWORD off = 0; off < sectors; off += CHUNK) {
-		DWORD n = (sectors - off < CHUNK) ? (sectors - off) : CHUNK;
-		ReadCdAudio(lba + off, n, 0x00, buf.data(), n * AUDIO_SECTOR_SIZE);
-	}
+	// the 16-bit ATAPI transfer ceiling (0xFFFE). Keep scanning after a
+	// failed read, but do not claim that all requested sectors were measured.
+	std::vector<BYTE> buf(kCdScanReadChunkSectors * AUDIO_SECTOR_SIZE);
+	return ReadCdScanChunks(lba, sectors, [&](std::uint32_t start, std::uint32_t count) {
+		return ReadCdAudio(start, count, 0x00, buf.data(), count * AUDIO_SECTOR_SIZE);
+	});
 }
 
 bool ScsiDrive::SupportsLiteOnScan() {
@@ -289,7 +287,8 @@ bool ScsiDrive::LiteOnScanStart(DWORD startLBA, DWORD endLBA) {
 }
 
 bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
-	DWORD& currentLBA, bool& scanDone) {
+	DWORD& currentLBA, bool& scanDone, DWORD* measuredSectors) {
+	if (measuredSectors) *measuredSectors = 0;
 	BYTE sk = 0, asc = 0, ascq = 0;
 	constexpr int kCommandAttempts = 5;
 	auto sendPollCommand = [&](BYTE* cdb, BYTE cdbLength, BYTE* data,
@@ -359,7 +358,7 @@ bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
 		// Without the read the MediaTek counters never advance (verified on the
 		// PX-891SAF PLUS). One interval is at most one CD second (75 sectors),
 		// with a shorter final interval so the read never crosses lead-out.
-		LiteOnScanDriveHead(interval.startLba, interval.sectors);
+		const bool coverageKnown = LiteOnScanDriveHead(interval.startLba, interval.sectors);
 
 		std::vector<BYTE> buf(256, 0);
 		BYTE cdb[12] = {};
@@ -385,10 +384,14 @@ bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
 
 		// 3. Reset interval: 0xDF/0x97
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0x97;
-		SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq);
+		if (!sendPollCommand(cdb, 12, buf.data(), 256, "0xDF/0x97 reset")) {
+			scanDone = true;
+			return false; // subsequent counts could include earlier intervals
+		}
 
 		// All samples use interval starts. Mixing exclusive endpoints with an
 		// inclusive final end created a false gap in sustained-C1 analysis.
+		if (measuredSectors && coverageKnown) *measuredSectors = interval.sectors;
 		currentLBA = interval.startLba;
 		scanDone = interval.final;
 		if (!scanDone)

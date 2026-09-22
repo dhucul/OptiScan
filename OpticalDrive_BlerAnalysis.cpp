@@ -12,44 +12,19 @@ void OpticalDrive::AnalyzeBlerResults(BlerResult& result, const std::vector<DWOR
 	result.avgC2PerSecond = result.totalSeconds > 0
 		? static_cast<double>(result.totalC2Errors) / result.totalSeconds : 0;
 
-	if (result.hasC1Data) {
-		result.avgC1PerSecond = result.totalSeconds > 0
-			? static_cast<double>(result.totalC1Errors) / result.totalSeconds : 0;
-	}
-
-	// Find max C2 per second
-	for (size_t i = 0; i < result.perSecondC2.size(); i++) {
-		if (result.perSecondC2[i].second > result.maxC2PerSecond) {
-			result.maxC2PerSecond = result.perSecondC2[i].second;
-			result.worstSecondLBA = result.perSecondC2[i].first;
+	result.c1 = ScanQuality::SummarizeC1(result.c1Samples, result.hasC1Data);
+	result.avgC1PerSecond = result.c1.average;
+	result.peaks.scanSpeedX = scanSpeed;
+	result.peaks.sustainedMeasurable = result.c1.fullSeconds.persistenceMeasurable;
+	result.peaks.sustainedC1PerSecond = result.c1.fullSeconds.sustainedPeak;
+	result.peaks.p95C1PerSecond = result.c1.fullSeconds.p95;
+	result.sustainedC1Rating = RateSustainedC1(result.peaks);
+	// C2 observations keep their separate decoder/sector interpretation.
+	for (const auto& sample : result.perSecondC2) {
+		if (sample.second > result.maxC2PerSecond) {
+			result.maxC2PerSecond = sample.second;
+			result.worstSecondLBA = sample.first;
 		}
-	}
-
-	// Find max C1 per second
-	if (result.hasC1Data) {
-		for (size_t i = 0; i < result.perSecondC1.size(); i++) {
-			if (result.perSecondC1[i].second > result.maxC1PerSecond) {
-				result.maxC1PerSecond = result.perSecondC1[i].second;
-				result.worstC1SecondLBA = static_cast<DWORD>(result.perSecondC1[i].first);
-			}
-		}
-
-		// Sustained-level statistics, from the same helper the quality scan,
-		// disc rot and hardware paths use. Keep the sustained diagnostic
-		// separate from the observed average and raw maximum.
-		{
-			std::vector<int> c1Series, e22Series;
-			std::vector<DWORD> sampleLbas;
-			c1Series.reserve(result.perSecondC1.size());
-			for (const auto& p : result.perSecondC1) {
-				c1Series.push_back(p.second); sampleLbas.push_back(p.first);
-			}
-			for (const auto& p : result.perSecondPioneerE22) e22Series.push_back(p.second);
-			ComputeScanPeakContext(c1Series, e22Series, scanSpeed, result.peaks, sampleLbas);
-		}
-
-		// The same observed-rate bands and persistence rule as Q-Check.
-		result.sustainedC1Rating = RateSustainedC1(result.peaks);
 	}
 
 	// Build error clusters using adaptive tolerance
@@ -96,7 +71,6 @@ void OpticalDrive::AnalyzeBlerResults(BlerResult& result, const std::vector<DWOR
 		else result.qualityRating = "POOR";
 	}
 	result.qualityRating = ScanQuality::CombineC1Quality(
-		ScanQuality::RateC1(result.avgC1PerSecond,
-			result.hasC1Data && !result.perSecondC1.empty()), result.qualityRating);
+		result.c1.Rating(), result.qualityRating);
 
 }

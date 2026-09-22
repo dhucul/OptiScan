@@ -15,3 +15,20 @@ struct CdScanInterval {
 			remaining <= 75};
 	}
 };
+
+inline constexpr std::uint32_t kCdScanReadChunkSectors = 16;
+
+// Continue across defective chunks so the decoder can collect error evidence,
+// while keeping complete coverage separate from merely attempting a range.
+template<class Reader>
+bool ReadCdScanChunks(std::uint32_t lba, std::uint32_t sectors, Reader&& read) {
+	if (sectors == 0 || std::uint64_t{lba} + sectors > 0x100000000ULL) return false;
+	bool complete = true;
+	for (std::uint32_t offset = 0; offset < sectors;) {
+		const auto remaining = sectors - offset;
+		const auto count = remaining < kCdScanReadChunkSectors ? remaining : kCdScanReadChunkSectors;
+		if (!read(lba + offset, count)) complete = false;
+		offset += count;
+	}
+	return complete;
+}

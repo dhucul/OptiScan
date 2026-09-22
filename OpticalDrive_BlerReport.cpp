@@ -21,7 +21,7 @@ void OpticalDrive::PrintBlerReport(const DiscInfo& disc, const BlerResult& resul
 	std::cout << std::string(60, '=') << "\n";
 
 	std::cout << "\n--- Scan Configuration ---\n";
-	std::cout << "  Sectors scanned: " << result.totalSectors << "\n";
+	std::cout << "  Requested sectors: " << result.totalSectors << "\n";
 	std::cout << "  Disc length:     "
 		<< (result.totalSeconds / 60) << ":" << std::setfill('0') << std::setw(2) << (result.totalSeconds % 60)
 		<< std::setfill(' ') << " (mm:ss)\n";
@@ -32,59 +32,10 @@ void OpticalDrive::PrintBlerReport(const DiscInfo& disc, const BlerResult& resul
 	if (!result.measurementMethod.empty())
 		std::cout << "  Method:          " << result.measurementMethod << "\n";
 
-	// C1 Error Report
-	if (hasC1Support) {
-		std::cout << "\n--- C1 Error Statistics ---\n";
-
-		std::cout << "  Total C1 errors:      " << result.totalC1Errors << "\n";
-		std::cout << "  Sectors with C1:      " << result.totalC1Sectors;
-		if (result.totalSectors > 0)
-			std::cout << " (" << std::fixed << std::setprecision(3)
-			<< (result.totalC1Sectors * 100.0 / result.totalSectors) << "%)";
-		std::cout << "\n";
-		std::cout << "  Avg C1/sec:           " << std::fixed << std::setprecision(2) << result.avgC1PerSecond;
-		std::cout << "\n";
-		std::cout << "  Max C1/sec:           " << result.maxC1PerSecond;
-		if (result.maxC1PerSecond > 0) {
-			int worstMin = (result.worstC1SecondLBA / 75) / 60;
-			int worstSec = (result.worstC1SecondLBA / 75) % 60;
-			std::cout << "  at " << worstMin << ":" << std::setfill('0') << std::setw(2) << worstSec << std::setfill(' ');
-		}
-		std::cout << "\n";
-		std::cout << "  Sustained C1/sec:     " << result.peaks.sustainedC1PerSecond
-			<< "  (95th pct " << result.peaks.p95C1PerSecond << ") - three-sample diagnostic\n";
-		std::cout << "  Max C1 in one sector: " << result.maxC1InSingleSector;
-		if (result.maxC1InSingleSector > 0) std::cout << "  (LBA " << result.worstC1SectorLBA << ")";
-		std::cout << "\n";
-
-		// Same wording as the Q-Check report: a peak that did not persist is
-		// reported as a brief excursion of unknown cause, never silently dropped.
-		if (ScanQuality::TransientNoteWarranted(result.maxC1PerSecond,
-				result.peaks.peakC1Transient)) {
-			ScanQuality::SeriesStats shown;
-			shown.peak = result.maxC1PerSecond;
-			shown.peakRunLength = result.peaks.peakC1RunLength;
-			shown.sustainedPeak = result.peaks.sustainedC1PerSecond;
-			ScanQuality::PrintWrapped(std::cout,
-				ScanQuality::TransientNote("C1", shown), "  ");
-		}
-
-		std::cout << "  C1 Assessment:        " << ScanQuality::C1RatingName(
-			ScanQuality::RateC1(result.avgC1PerSecond, !result.perSecondC1.empty()))
-			<< " (average rate)\n";
-		ScanQuality::PrintC1Policy(std::cout);
-
-		if (!result.sustainedC1Rating.empty()) {
-			std::cout << "  Sustained C1 rating:  " << result.sustainedC1Rating
-				<< " (" << SustainedC1RatingDescription(result.sustainedC1Rating) << ")\n";
-			if (result.sustainedC1Rating == "NOT RATED")
-				ScanQuality::PrintWrapped(std::cout,
-					ScanQuality::UnratedNote("Sustained C1", result.peaks.scanSpeedX), "  ");
-		}
-		std::cout << "  Peak confidence:      "
-			<< ScanQuality::ConfidenceLabel(result.peaks.PeakConfidence()) << "\n";
-		ScanQuality::PrintConfidenceCaveat(std::cout, result.peaks.PeakConfidence(), "    ");
-	}
+	std::cout << "\n--- C1 Observations ---\n";
+	ScanQuality::PrintC1Summary(std::cout, result.c1, result.totalSectors);
+	if (hasC1Support) ScanQuality::PrintC1Policy(std::cout);
+	ScanQuality::PrintConfidenceCaveat(std::cout, result.peaks.PeakConfidence());
 
 	if (result.c2Unverified) {
 		std::cout << "\n--- C2 Measurement ---\n";
@@ -277,7 +228,8 @@ void OpticalDrive::PrintBlerPerTrackSummary(const DiscInfo& disc, const BlerResu
 		DWORD tSectors = tEnd - tStart + 1;
 		DWORD tSeconds = (tSectors + 74) / 75;
 
-		int trackC1 = 0, trackC1Samples = 0, trackC2 = 0, trackC2Seconds = 0;
+		int trackC2 = 0, trackC2Seconds = 0;
+		std::vector<ScanQuality::C1Interval> trackC1Samples;
 		for (size_t i = 0; i < result.perSecondC2.size(); i++) {
 			DWORD secLBA = static_cast<DWORD>(result.perSecondC2[i].first);
 			if (secLBA >= tStart && secLBA <= tEnd) {
@@ -289,17 +241,17 @@ void OpticalDrive::PrintBlerPerTrackSummary(const DiscInfo& disc, const BlerResu
 			}
 		}
 
-		if (hasC1Support) {
-			for (const auto& sample : result.perSecondC1) {
-				if (sample.first >= tStart && sample.first <= tEnd) {
-					trackC1 += sample.second;
-					++trackC1Samples;
-				}
-			}
+		for (const auto& sample : result.c1Samples) {
+			// An aggregate interval straddling a track boundary cannot be split
+			// into invented counts. Attribute only wholly contained intervals.
+			if (sample.lba >= tStart && sample.lba <= tEnd &&
+				(sample.sectors == 0 || std::uint64_t{sample.lba} + sample.sectors <= std::uint64_t{tEnd} + 1))
+				trackC1Samples.push_back(sample);
 		}
+		const auto trackC1 = ScanQuality::SummarizeC1(trackC1Samples, result.c1.verified);
 
 		double trackAvgC2 = tSeconds > 0 ? static_cast<double>(trackC2) / tSeconds : 0;
-		double trackAvgC1 = trackC1Samples > 0 ? static_cast<double>(trackC1) / trackC1Samples : 0;
+		double trackAvgC1 = trackC1.average;
 		int trackMin = tSeconds / 60;
 		int trackSec = tSeconds % 60;
 
@@ -314,17 +266,23 @@ void OpticalDrive::PrintBlerPerTrackSummary(const DiscInfo& disc, const BlerResu
 		else if (trackC2 > 0)
 			status = "GOOD";
 		status = ScanQuality::CombineC1Quality(
-			ScanQuality::RateC1(trackAvgC1, hasC1Support && trackC1Samples > 0), status);
+			trackC1.Rating(), status);
 
 		if (hasC1Support) {
 			std::cout << "  " << std::setw(3) << t.trackNumber << "    "
 				<< trackMin << ":" << std::setfill('0') << std::setw(2) << trackSec << std::setfill(' ') << "   "
-				<< std::setw(7) << trackC1 << "     "
+				<< std::setw(7) << trackC1.total << "     "
 				<< std::setw(7) << trackC2 << "     "
 				<< std::setw(4) << trackC2Seconds << "     "
-				<< std::fixed << std::setprecision(1) << std::setw(6) << trackAvgC1 << "    "
+				<< std::setw(6) << (trackC1.RateAvailable() ? std::to_string(trackAvgC1) : "N/A") << "    "
 				<< std::fixed << std::setprecision(1) << std::setw(6) << trackAvgC2 << "  "
 				<< status << "\n";
+			if (hasC1Support) {
+				if (trackC1.timingKnown)
+					std::cout << "         C1 measured audio: " << trackC1.MeasuredSeconds() << " sec; coverage "
+						<< (tSectors > 0 ? trackC1.measuredSectors * 100.0 / tSectors : 0.0) << "%\n";
+				else std::cout << "         C1 measured audio / coverage: unavailable\n";
+			}
 		}
 		else {
 			std::cout << "  " << std::setw(3) << t.trackNumber << "    "

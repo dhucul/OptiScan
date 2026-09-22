@@ -42,8 +42,8 @@ void RecalculateQCheckTotals(QCheckResult& result) {
 	result.totalC2 = 0;
 	result.totalCU = 0;
 	result.totalPioneerE22 = 0;
-	result.maxC1PerSecond = 0;
-	result.maxC1SecondIndex = -1;
+	result.maxC1PerSample = 0;
+	result.maxC1SampleIndex = -1;
 	result.maxC2PerSecond = 0;
 	result.maxC2SecondIndex = -1;
 	result.maxCUPerSecond = 0;
@@ -56,9 +56,9 @@ void RecalculateQCheckTotals(QCheckResult& result) {
 		result.totalC2 += s.c2;
 		result.totalCU += s.cu;
 		result.totalPioneerE22 += s.pioneerE22;
-		if (s.c1 > result.maxC1PerSecond) {
-			result.maxC1PerSecond = s.c1;
-			result.maxC1SecondIndex = i;
+		if (s.c1 > result.maxC1PerSample) {
+			result.maxC1PerSample = s.c1;
+			result.maxC1SampleIndex = i;
 		}
 		if (s.c2 > result.maxC2PerSecond) {
 			result.maxC2PerSecond = s.c2;
@@ -73,8 +73,7 @@ void RecalculateQCheckTotals(QCheckResult& result) {
 	}
 
 	DWORD sampleCount = static_cast<DWORD>(result.samples.size());
-	result.avgC1PerSecond = sampleCount > 0
-		? static_cast<double>(result.totalC1) / sampleCount : 0.0;
+	ComputeTimedC1(result);
 	result.avgC2PerSecond = sampleCount > 0
 		? static_cast<double>(result.totalC2) / sampleCount : 0.0;
 	result.avgPioneerE22PerSecond = sampleCount > 0
@@ -234,6 +233,8 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 	// Pre-calculate disc statistics for progress display and ETA.
 	// 75 sectors = 1 second of CD audio (44100 Hz × 2 ch × 16-bit / 2352 bytes).
 	result.totalSectors = lastLBA - firstLBA + 1;
+	result.graphStartLba = firstLBA;
+	result.graphSectors = std::uint64_t{lastLBA} - firstLBA + 1;
 	result.totalSeconds = (result.totalSectors + 74) / 75;
 
 	std::cout << "Scan range: LBA " << firstLBA << " - " << lastLBA
@@ -321,6 +322,7 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 
 		int c1 = 0, c2 = 0, cu = 0;
 		DWORD currentLBA = 0;
+		DWORD measuredSectors = 0;
 		bool pioneerSampleValid = true;
 
 		// Poll the drive for the next time-slice of error statistics.
@@ -329,8 +331,8 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		bool pollOk = usePlextor
 			? m_drive.PlextorQCheckPoll(c1, c2, cu, currentLBA, scanDone)
 			: (usePioneer ? m_drive.PioneerScanPoll(c1, c2, cu, currentLBA, scanDone,
-				&pioneerSampleValid)
-				: m_drive.LiteOnScanPoll(c1, c2, cu, currentLBA, scanDone));
+				&pioneerSampleValid, &measuredSectors)
+				: m_drive.LiteOnScanPoll(c1, c2, cu, currentLBA, scanDone, &measuredSectors));
 
 		if (!pollOk) {
 			// One retry for asynchronous scans (Plextor / Pioneer) —
@@ -341,7 +343,7 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 				pollOk = usePlextor
 					? m_drive.PlextorQCheckPoll(c1, c2, cu, currentLBA, scanDone)
 					: m_drive.PioneerScanPoll(c1, c2, cu, currentLBA, scanDone,
-						&pioneerSampleValid);
+						&pioneerSampleValid, &measuredSectors);
 			}
 			if (!pollOk) {
 				// Communication lost.  Stop the scan if possible.
@@ -421,6 +423,7 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		// ── Record the sample ────────────────────────────────
 		QCheckSample sample;
 		sample.lba = currentLBA;
+		sample.measuredSectors = measuredSectors;
 		sample.c1 = c1;    // C1 corrections this time slice (first-level Reed-Solomon)
 		// Pioneer's response field is E22: correctable second-decoder activity,
 		// not verified E32/CU or a READ CD C2-pointer result. Keep it separate so
@@ -441,9 +444,9 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		// Track peak values and their positions for the report.
 		int idx = static_cast<int>(result.samples.size()) - 1;
 
-		if (c1 > result.maxC1PerSecond) {
-			result.maxC1PerSecond = c1;
-			result.maxC1SecondIndex = idx;    // Sample index where peak C1 occurred
+		if (c1 > result.maxC1PerSample) {
+			result.maxC1PerSample = c1;
+			result.maxC1SampleIndex = idx;    // Sample index where peak C1 occurred
 		}
 		if (sample.c2 > result.maxC2PerSecond) {
 			result.maxC2PerSecond = sample.c2;
@@ -622,10 +625,11 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 
 				int rc1 = 0, rc2 = 0, rcu = 0;
 				DWORD rLBA = 0;
+				DWORD recheckSectors = 0;
 
 				bool rpoll = usePlextor
 					? m_drive.PlextorQCheckPoll(rc1, rc2, rcu, rLBA, recheckDone)
-					: m_drive.LiteOnScanPoll(rc1, rc2, rcu, rLBA, recheckDone);
+					: m_drive.LiteOnScanPoll(rc1, rc2, rcu, rLBA, recheckDone, &recheckSectors);
 
 				if (!rpoll) {
 					// Same retry logic as the primary scan — async scans
@@ -686,6 +690,7 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 
 				QCheckSample recheckSample;
 				recheckSample.lba = rLBA;
+				recheckSample.measuredSectors = recheckSectors;
 				recheckSample.c1 = rc1;
 				recheckSample.c2 = rc2;
 				recheckSample.cu = rcu;
@@ -792,7 +797,6 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 	// Average errors per second (per sample) for the report and rating.
 	DWORD sampleCount = static_cast<DWORD>(result.samples.size());
 	if (sampleCount > 0) {
-		result.avgC1PerSecond = static_cast<double>(result.totalC1) / sampleCount;
 		result.avgC2PerSecond = static_cast<double>(result.totalC2) / sampleCount;
 		result.avgPioneerE22PerSecond = static_cast<double>(result.totalPioneerE22) / sampleCount;
 	}
@@ -805,17 +809,18 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 	// ── Sustained-level statistics ───────────────────────────
 	// Compute the shared three-sample persistence diagnostic before rating.
 	ComputeScanPeakContext(result.samples, scanSpeed, result.peaks);
+	ComputeTimedC1(result);
 
 	// All C1 labels use the shared observed-rate policy. C2/CU evidence may
 	// worsen the overall result but can never hide a worse C1 measurement.
-	const auto c1Rating = ScanQuality::RateC1(result.avgC1PerSecond, !result.samples.empty());
+	const auto c1Rating = result.c1.Rating();
 	const bool anyC2 = result.totalC2 > 0 || result.c2RecheckTotal > 0;
 	const double worstC2Average = std::max(result.avgC2PerSecond,
 		result.c2RecheckAvgC2PerSecond);
 	const std::string readRating = (result.totalCU > 0 || result.c2RecheckTotalCU > 0)
 		? "BAD" : (anyC2 ? (worstC2Average > 10.0 ? "POOR" : "FAIR") : "EXCELLENT");
 	result.qualityRating = ScanQuality::CombineC1Quality(c1Rating, readRating);
-	result.totalC1Quality = ScanQuality::C1RatingName(c1Rating);
+	result.averageC1Rating = ScanQuality::C1RatingName(c1Rating);
 	result.sustainedC1Rating = RateSustainedC1(result.peaks);
 
 	// ── Pioneer E22 diagnostic rating ────────────────────────
@@ -843,8 +848,9 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		&& !result.samples.empty() && !hadC2BeforeRecheck
 		&& result.totalPioneerE22 == 0) {
 		result.c1Unverified = true;
+		result.c1.verified = false;
 		result.qualityRating = "UNVERIFIED";
-		result.totalC1Quality = "NOT RATED";
+		result.averageC1Rating = "NOT RATED";
 		// The sustained level is 0 because nothing was measured, not because
 		// the disc is clean. "EXCELLENT" here would present a missing measurement
 		// as a good result, which is the one thing this report must not do.
@@ -1338,99 +1344,16 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 		<< (result.totalSeconds / 60) << ":"
 		<< std::setfill('0') << std::setw(2) << (result.totalSeconds % 60)
 		<< std::setfill(' ') << " (mm:ss)\n";
-	std::cout << "  Sectors covered:   " << result.totalSectors << "\n";
+	std::cout << "  Requested sectors: " << result.totalSectors << "\n";
 	if (result.peaks.scanSpeedX > 0)
 		std::cout << "  Scan speed:        " << result.peaks.scanSpeedX << "x\n";
 	std::cout << "  Peak confidence:   "
 		<< ScanQuality::ConfidenceLabel(result.peaks.PeakConfidence()) << "\n";
 	ScanQuality::PrintConfidenceCaveat(std::cout, result.peaks.PeakConfidence(), "    ");
 
-	// ── Section 2: C1 errors (Block Error Rate) ──────────────
-	// Observed first-stage decoder rates; not a standards compliance test.
-	std::cout << "\n--- C1 Errors (Block Error Rate) ---\n";
-	std::cout << "  Total C1:    " << result.totalC1 << "\n";
-	std::cout << "  Avg C1/sec:  " << std::fixed << std::setprecision(2)
-		<< result.avgC1PerSecond;
-	std::cout << "\n";
-	std::cout << "  Max C1/sec:  " << result.maxC1PerSecond;
-	if (result.maxC1SecondIndex >= 0 && result.maxC1SecondIndex < static_cast<int>(result.samples.size()))
-		std::cout << "  (at LBA " << result.samples[result.maxC1SecondIndex].lba << ")";
-
-	// Warn if recent samples (near end of disc) show a large C1 spike —
-	// this pattern is common in disc rot that starts at the outer edge.
-	if (result.samples.size() >= 10 && result.avgC1PerSecond >= ScanQuality::kC1ElevatedLimit) {
-		const int tailCount = 5;
-		const int firstTail = (std::max)(0,
-			static_cast<int>(result.samples.size()) - tailCount);
-		for (int i = static_cast<int>(result.samples.size()) - 1; i >= firstTail; i--) {
-			if (result.samples[i].c1 > result.avgC1PerSecond * 10) {
-				std::cout << "  WARNING: Recent C1 spike detected (LBA "
-					<< result.samples[i].lba << ", C1=" << result.samples[i].c1 << ")\n";
-				break;
-			}
-		}
-	}
-	std::cout << "\n";
-
-	std::cout << "  C1 Assessment: " << result.totalC1Quality << " (average rate)\n";
+	std::cout << "\n--- C1 Observations ---\n";
+	ScanQuality::PrintC1Summary(std::cout, result.c1, result.totalSectors);
 	ScanQuality::PrintC1Policy(std::cout);
-
-	// ── Section 3: C1 load quality ───────────────────────────
-	// Rate-normalized C1 quality.  Raw total is shown as context only,
-	// because longer discs naturally accumulate more C1 events.
-	std::cout << "\n--- C1 Load Quality ---\n";
-	std::cout << "  Total C1:      " << result.totalC1 << "\n";
-	std::cout << "  Avg C1/sec:    " << std::fixed << std::setprecision(2)
-		<< result.avgC1PerSecond << "\n";
-	std::cout << "  Interpretation: ";
-	if (result.totalC1Quality == "EXCELLENT" || result.totalC1Quality == "GOOD")
-		Console::SetColorRGB(Console::Theme::GreenR, Console::Theme::GreenG, Console::Theme::GreenB);
-	else if (result.totalC1Quality == "NOT RATED" || result.totalC1Quality == "FAIR")
-		Console::SetColorRGB(Console::Theme::YellowR, Console::Theme::YellowG, Console::Theme::YellowB);
-	else
-		Console::SetColorRGB(Console::Theme::RedR, Console::Theme::RedG, Console::Theme::RedB);
-	std::cout << result.totalC1Quality;
-	Console::Reset();
-	std::cout << "\n";
-
-	// Three-sample persistence diagnostic, not archival suitability.
-	std::cout << "\n--- Sustained C1 (Observed Rate) ---\n";
-	std::cout << "  Sustained C1/sec: " << result.peaks.sustainedC1PerSecond
-		<< "  (95th pct " << result.peaks.p95C1PerSecond << ")\n";
-	std::cout << "  Raw peak C1/sec:  " << result.maxC1PerSecond;
-	if (result.maxC1SecondIndex >= 0 &&
-		result.maxC1SecondIndex < static_cast<int>(result.samples.size()))
-		std::cout << "  (at LBA " << result.samples[result.maxC1SecondIndex].lba << ")";
-	std::cout << "\n";
-	std::cout << "  Rating:           ";
-	if (result.sustainedC1Rating == "EXCELLENT" || result.sustainedC1Rating == "GOOD")
-		Console::SetColorRGB(Console::Theme::GreenR, Console::Theme::GreenG, Console::Theme::GreenB);
-	else if (result.sustainedC1Rating == "FAIR")
-		Console::SetColorRGB(Console::Theme::YellowR, Console::Theme::YellowG, Console::Theme::YellowB);
-	else if (result.sustainedC1Rating == "POOR")
-		Console::SetColorRGB(Console::Theme::RedR, Console::Theme::RedG, Console::Theme::RedB);
-	else
-		Console::SetColorRGB(Console::Theme::YellowR, Console::Theme::YellowG, Console::Theme::YellowB);
-	std::cout << result.sustainedC1Rating;
-	Console::Reset();
-	std::cout << " (" << SustainedC1RatingDescription(result.sustainedC1Rating) << ")\n";
-
-	// Explain a rejected peak rather than silently dropping it — a user who saw
-	// the number in the graph needs to know why it did not become a verdict.
-	// Only worth saying for a peak big enough to have changed a tier; defending
-	// a 3/sec peak just trains the reader to skip this line.
-	if (ScanQuality::TransientNoteWarranted(result.maxC1PerSecond,
-			result.peaks.peakC1Transient)) {
-		ScanQuality::SeriesStats shown;
-		shown.peak = result.maxC1PerSecond;
-		shown.peakRunLength = result.peaks.peakC1RunLength;
-		shown.sustainedPeak = result.peaks.sustainedC1PerSecond;
-		ScanQuality::PrintWrapped(std::cout,
-			ScanQuality::TransientNote("C1", shown), "  ");
-	}
-	if (result.sustainedC1Rating == "NOT RATED")
-		ScanQuality::PrintWrapped(std::cout,
-			ScanQuality::UnratedNote("Sustained C1", result.peaks.scanSpeedX), "  ");
 
 	// ── Section 5: C2 errors ─────────────────────────────────
 	// C2 errors indicate the first-level (C1) correction failed and the
@@ -1646,28 +1569,39 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 		constexpr int GRAPH_WIDTH = 60;   // Columns in the bar graph
 		constexpr int GRAPH_HEIGHT = 12;  // Rows in the bar graph
 
-		// Extract per-metric value arrays for bucketing.
-		std::vector<int> c1Vals, c2Vals, cuVals, e22Vals;
-		for (const auto& s : result.samples) {
-			c1Vals.push_back(s.c1);
-			c2Vals.push_back(s.c2);
-			cuVals.push_back(s.cu);
-			e22Vals.push_back(s.pioneerE22);
-		}
+		// All measured metrics share one disc-position axis. Missing or partial
+		// intervals remain visible; retained sample indices are never timestamps.
+		auto counterGraph = [&](int QCheckSample::*counter) {
+			std::vector<ScanQuality::C1Interval> intervals;
+			if (!result.c1Unverified) {
+				for (const auto& s : result.samples)
+					intervals.push_back({s.lba, s.measuredSectors, s.*counter});
+			}
+			return ScanQuality::BuildTimedCounterGraph(intervals,
+				result.graphStartLba, result.graphSectors, GRAPH_WIDTH);
+		};
+		const auto c1Graph = counterGraph(&QCheckSample::c1);
+		const auto c2Graph = counterGraph(&QCheckSample::c2);
+		const auto e22Graph = counterGraph(&QCheckSample::pioneerE22);
+		const auto cuGraph = counterGraph(&QCheckSample::cu);
+		auto plottedPeak = [](const ScanQuality::TimedCounterGraph& graph) {
+			return graph.valid ? *std::max_element(graph.values.begin(), graph.values.end()) : 0;
+		};
 
 		// ── C1 distribution graph ────────────────────────────
-		int peakC1 = *std::max_element(c1Vals.begin(), c1Vals.end());
-		if (peakC1 > 0) {
+		int peakC1 = plottedPeak(c1Graph);
+		if (result.c1.RateAvailable() && peakC1 > 0) {
 			// Y-axis minimum of 250 ensures the 220/sec reference line is
 			// always visible even on pristine discs with very low C1.
 			int graphMax = std::max(peakC1, 250);
-			auto buckets = Console::BucketData(c1Vals, GRAPH_WIDTH);
+			const auto& buckets = c1Graph.values;
 			Console::GraphOptions opts;
 			opts.title = "C1 Error Distribution - Primary Pass (BLER)";
-			opts.subtitle = "Each column = a time slice; height = C1 errors/sec";
+			opts.subtitle = "Measured interval rates in whole errors/sec";
 			opts.width = GRAPH_WIDTH;
 			opts.height = GRAPH_HEIGHT;
 			Console::ConfigureC1Graph(opts);
+			Console::ConfigureTimedGraph(opts, c1Graph);
 			Console::DrawBarGraph(buckets, graphMax, opts, result.totalSeconds);
 
 			// The raw-peak graph retains brief excursions; their cause is unknown.
@@ -1679,12 +1613,13 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 
 		// ── C2 distribution graph ────────────────────────────
 		if (!pioneerScan) {
-			int peakC2 = *std::max_element(c2Vals.begin(), c2Vals.end());
+			int peakC2 = plottedPeak(c2Graph);
 			if (peakC2 > 0) {
-				auto buckets = Console::BucketData(c2Vals, GRAPH_WIDTH);
+				const auto& buckets = c2Graph.values;
 				Console::GraphOptions opts;
 				opts.title = "C2 Error Distribution - Primary Pass";
-				opts.subtitle = "Each column = a time slice; height = C2 errors/sec";
+				opts.unitSuffix = "/sec";
+				opts.subtitle = "Columns follow disc position; height = measured C2 rate";
 				opts.width = GRAPH_WIDTH;
 				opts.height = GRAPH_HEIGHT;
 				opts.severityLowThreshold = 5;
@@ -1692,9 +1627,10 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 				opts.severityLowLabel = "1-4/sec low";
 				opts.severityModerateLabel = "5-19/sec moderate";
 				opts.severityHighLabel = "20+/sec high";
+				Console::ConfigureTimedGraph(opts, c2Graph);
 				Console::DrawBarGraph(buckets, peakC2, opts, result.totalSeconds);
 			}
-			else {
+			else if (c2Graph.valid) {
 				Console::SetColorRGB(Console::Theme::GreenR, Console::Theme::GreenG, Console::Theme::GreenB);
 				std::cout << "\n  " << Console::Sym::Check << " No C2 errors on primary pass.\n";
 				Console::Reset();
@@ -1706,12 +1642,12 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 		// radial/time distribution is still useful. Keep it on a dedicated,
 		// explicitly diagnostic graph so it cannot be mistaken for C2.
 		if (pioneerScan) {
-			int peakE22 = *std::max_element(e22Vals.begin(), e22Vals.end());
+			int peakE22 = plottedPeak(e22Graph);
 			if (peakE22 > 0) {
-				auto buckets = Console::BucketData(e22Vals, GRAPH_WIDTH);
+				const auto& buckets = e22Graph.values;
 				Console::GraphOptions opts;
 				opts.title = "Pioneer E22 Distribution (Diagnostic Only)";
-				opts.subtitle = "Each column = a time slice; E22 is not verified C2/CU";
+				opts.subtitle = "Columns follow disc position; E22 is diagnostic, not C2/CU";
 				opts.width = GRAPH_WIDTH;
 				opts.height = GRAPH_HEIGHT;
 				opts.unitSuffix = "/sec";
@@ -1723,9 +1659,10 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 				// Use the E22 peak-rating ceiling as the minimum Y scale so a 33/sec
 				// peak is shown as elevated, not misleadingly rendered full-height.
 				int graphMax = std::max(peakE22, 100);
+				Console::ConfigureTimedGraph(opts, e22Graph);
 				Console::DrawBarGraph(buckets, graphMax, opts, result.totalSeconds);
 			}
-			else {
+			else if (e22Graph.valid) {
 				Console::SetColorRGB(Console::Theme::GreenR, Console::Theme::GreenG, Console::Theme::GreenB);
 				std::cout << "\n  " << Console::Sym::Check
 					<< " No Pioneer E22 diagnostic activity reported.\n";
@@ -1738,17 +1675,19 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 		// or a green "No CU events" check would both misrepresent unmeasured
 		// data as a clean result.
 		if (cuMeasured) {
-			int peakCU = *std::max_element(cuVals.begin(), cuVals.end());
+			int peakCU = plottedPeak(cuGraph);
 			if (peakCU > 0) {
-				auto buckets = Console::BucketData(cuVals, GRAPH_WIDTH);
+				const auto& buckets = cuGraph.values;
 				Console::GraphOptions opts;
 				opts.title = "CU (Uncorrectable) Distribution - Primary Pass";
-				opts.subtitle = "Each column = a time slice; height = CU events/sec";
+				opts.unitSuffix = "/sec";
+				opts.subtitle = "Columns follow disc position; height = measured CU rate";
 				opts.width = GRAPH_WIDTH;
 				opts.height = GRAPH_HEIGHT;
+				Console::ConfigureTimedGraph(opts, cuGraph);
 				Console::DrawBarGraph(buckets, peakCU, opts, result.totalSeconds);
 			}
-			else {
+			else if (cuGraph.valid) {
 				Console::SetColorRGB(Console::Theme::GreenR, Console::Theme::GreenG, Console::Theme::GreenB);
 				std::cout << "\n  " << Console::Sym::Check << " No CU events on primary pass.\n";
 				Console::Reset();
@@ -1764,10 +1703,12 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 		const bool includeC2InCombined = !pioneerScan;
 
 		std::vector<Console::HeatmapRow> heat;
-		{
+		if (result.c1.RateAvailable()) {
 			Console::HeatmapRow r;
 			r.label = "C1";
-			r.values = Console::BucketData(c1Vals, GRAPH_WIDTH);
+			r.values = c1Graph.values;
+			r.coverageAware = true;
+			r.partialCoverage = c1Graph.partialCoverage;
 			r.lowThresh = ScanQuality::kC1GraphLowThreshold;      // 1-49/sec = low
 			r.highThresh = ScanQuality::kC1GraphHighThreshold;    // >=220/sec = high observed rate
 			heat.push_back(std::move(r));
@@ -1775,7 +1716,9 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 		if (includeC2InCombined) {
 			Console::HeatmapRow r;
 			r.label = "C2";
-			r.values = Console::BucketData(c2Vals, GRAPH_WIDTH);
+			r.values = c2Graph.values;
+			r.coverageAware = true;
+			r.partialCoverage = c2Graph.partialCoverage;
 			r.lowThresh = 5;
 			r.highThresh = 20;
 			heat.push_back(std::move(r));
@@ -1783,7 +1726,9 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 		if (pioneerScan) {
 			Console::HeatmapRow r;
 			r.label = "E22*";
-			r.values = Console::BucketData(e22Vals, GRAPH_WIDTH);
+			r.values = e22Graph.values;
+			r.coverageAware = true;
+			r.partialCoverage = e22Graph.partialCoverage;
 			r.lowThresh = 25;
 			r.highThresh = 100;
 			heat.push_back(std::move(r));
@@ -1791,33 +1736,40 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 		if (cuMeasured) {
 			Console::HeatmapRow r;
 			r.label = "CU";
-			r.values = Console::BucketData(cuVals, GRAPH_WIDTH);
+			r.values = cuGraph.values;
+			r.coverageAware = true;
+			r.partialCoverage = cuGraph.partialCoverage;
 			r.lowThresh = 2;       // any CU is a concern
 			r.highThresh = 5;
 			heat.push_back(std::move(r));
 		}
 
 		const std::string subtitle = pioneerScan
-			? "Each column = a time slice; E22* is Pioneer diagnostic only, not C2/CU"
-			: "Each column = a time slice; cell colour = error severity";
+			? "Columns follow disc position; ? unmeasured, ~ partial; E22* diagnostic only"
+			: "Columns follow disc position; ? unmeasured, ~ partial; colour = observed rate";
 
 		// Build the "(C1, C2, CU)" title from the rows actually shown so it can't
 		// advertise a CU row the backend never measured.
-		std::string heatTitle = "Primary Pass Disc Health Map (C1";
-		if (includeC2InCombined) heatTitle += ", C2";
-		if (pioneerScan) heatTitle += ", E22*";
-		if (cuMeasured) heatTitle += ", CU";
+		std::string heatTitle = "Primary Pass Disc Health Map (";
+		for (size_t i = 0; i < heat.size(); ++i) {
+			if (i > 0) heatTitle += ", ";
+			heatTitle += heat[i].label;
+		}
 		heatTitle += ")";
+		Console::DrawHeatmap(heat, heatTitle, subtitle, result.totalSeconds,
+			result.graphStartLba, result.graphSectors);
 
-		Console::DrawHeatmap(heat, heatTitle, subtitle, result.totalSeconds);
-
-		// Peak-value caption beneath the heatmap.
+		// Captions use the same normalized observations as the plotted columns.
 		Console::SetColorRGB(Console::Theme::DimR, Console::Theme::DimG, Console::Theme::DimB);
-		std::cout << "  Peak: C1 " << result.maxC1PerSecond << "/sec";
-		if (includeC2InCombined) std::cout << "   C2 " << result.maxC2PerSecond << "/sec";
-		if (cuMeasured) std::cout << "   CU " << result.maxCUPerSecond << "/sec";
-		if (pioneerE22Observed)
-			std::cout << "   E22 (diagnostic) " << result.maxPioneerE22PerSecond << "/sec";
+		auto printPeak = [](const char* label, const ScanQuality::TimedCounterGraph& graph) {
+			std::cout << "  " << label << " peak: ";
+			if (graph.valid) std::cout << graph.peak << "/sec";
+			else std::cout << "unavailable";
+		};
+		printPeak("C1",c1Graph);
+		if (includeC2InCombined) printPeak("C2",c2Graph);
+		if (cuMeasured) printPeak("CU",cuGraph);
+		if (pioneerE22Observed) printPeak("E22 (diagnostic)",e22Graph);
 		std::cout << "\n";
 		Console::Reset();
 	}
@@ -1830,7 +1782,7 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 	std::string qr = result.qualityRating;
 	if (qr == "EXCELLENT" || qr == "GOOD")
 		Console::SetColorRGB(Console::Theme::GreenR, Console::Theme::GreenG, Console::Theme::GreenB);
-	else if (qr == "FAIR" || qr == "UNVERIFIED")
+	else if (qr == "FAIR" || qr == "UNVERIFIED" || qr == "NOT RATED")
 		Console::SetColorRGB(Console::Theme::YellowR, Console::Theme::YellowG, Console::Theme::YellowB);
 	else
 		Console::SetColorRGB(Console::Theme::RedR, Console::Theme::RedG, Console::Theme::RedB);
@@ -1838,32 +1790,6 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 	std::cout << (pioneerScan && !result.pioneerCdCheckRun
 		? "  C1 QUALITY:    " : "  QUALITY:       ") << qr << "\n";
 	Console::Reset();
-
-	// Repeat average and sustained C1 ratings in the summary block so the
-	// user doesn't have to scroll back to the detailed sections.
-	std::cout << "  Average C1:     ";
-	if (result.totalC1Quality == "EXCELLENT" || result.totalC1Quality == "GOOD")
-		Console::SetColorRGB(Console::Theme::GreenR, Console::Theme::GreenG, Console::Theme::GreenB);
-	else if (result.totalC1Quality == "NOT RATED" || result.totalC1Quality == "FAIR")
-		Console::SetColorRGB(Console::Theme::YellowR, Console::Theme::YellowG, Console::Theme::YellowB);
-	else
-		Console::SetColorRGB(Console::Theme::RedR, Console::Theme::RedG, Console::Theme::RedB);
-	std::cout << result.totalC1Quality;
-	Console::Reset();
-	std::cout << " (" << result.avgC1PerSecond << "/sec; " << result.totalC1 << " total)\n";
-
-	std::cout << "  Sustained C1:   ";
-	if (result.sustainedC1Rating == "EXCELLENT" || result.sustainedC1Rating == "GOOD")
-		Console::SetColorRGB(Console::Theme::GreenR, Console::Theme::GreenG, Console::Theme::GreenB);
-	else if (result.sustainedC1Rating == "POOR")
-		Console::SetColorRGB(Console::Theme::RedR, Console::Theme::RedG, Console::Theme::RedB);
-	else
-		Console::SetColorRGB(Console::Theme::YellowR, Console::Theme::YellowG, Console::Theme::YellowB);
-	std::cout << result.sustainedC1Rating;
-	Console::Reset();
-	std::cout << " (sustained " << result.peaks.sustainedC1PerSecond
-		<< "/sec, raw peak " << result.maxC1PerSecond << "/sec"
-		<< (result.peaks.peakC1Transient ? " brief excursion" : "") << ")\n";
 
 	if (!pioneerScan && result.totalC2 > 0) {
 		std::cout << "  C2 Primary:    ";
@@ -2045,24 +1971,10 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 		<< std::setfill('0') << std::setw(2) << (result.totalSeconds % 60)
 		<< std::setfill(' ') << " (mm:ss)\n";
 	log << "#\n";
-	log << "# --- C1 Statistics ---\n";
-	log << "# Total C1:              " << result.totalC1 << "\n";
-	log << "# Avg C1/sec:            " << std::fixed << std::setprecision(2)
-		<< result.avgC1PerSecond << "\n";
-	log << "# Max C1/sec:            " << result.maxC1PerSecond;
-	if (result.maxC1SecondIndex >= 0 && result.maxC1SecondIndex < static_cast<int>(result.samples.size()))
-		log << " (at LBA " << result.samples[result.maxC1SecondIndex].lba << ")";
-	log << "\n";
+	log << "# --- C1 Observations ---\n";
+	ScanQuality::PrintC1Summary(log, result.c1, result.totalSectors, "# ");
 	ScanQuality::PrintC1Policy(log, "# ");
-	log << "# Sustained C1/sec:      " << result.peaks.sustainedC1PerSecond
-		<< " (level held >= " << ScanQuality::kDefaultMinRunSamples
-		<< " consecutive slices; separate from average rate)\n";
-	log << "# 95th pct C1/sec:       " << result.peaks.p95C1PerSecond << "\n";
-	log << "# Raw peak run length:   " << result.peaks.peakC1RunLength
-		<< (result.peaks.peakC1Transient ? " (brief excursion; cause unconfirmed)" : "") << "\n";
-	log << "# Scan speed:            " << result.peaks.scanSpeedX << "x\n";
-	log << "# Peak confidence:       "
-		<< ScanQuality::ConfidenceLabel(result.peaks.PeakConfidence()) << "\n";
+	log << "# Scan speed: " << result.peaks.scanSpeedX << "x\n";
 	log << "#\n";
 	log << "# --- C2 Statistics ---\n";
 	if (pioneerScan) {
@@ -2213,12 +2125,6 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 		log << "\n";
 	}
 	log << "#\n";
-	log << "# --- C1 Load Quality ---\n";
-	log << "# Average C1 Quality:    " << result.totalC1Quality << "\n";
-	log << "#\n";
-	log << "# --- Sustained C1 Observed Rate ---\n";
-	log << "# Sustained C1 Rating:   " << result.sustainedC1Rating
-		<< " (" << SustainedC1RatingDescription(result.sustainedC1Rating) << ")\n";
 	if (result.c1Unverified) {
 		log << "#\n";
 		log << "# *** WARNING: Zero C1 errors across entire disc.        ***\n";
@@ -2231,10 +2137,10 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 	// One row per time slice.  "Time" is formatted as M:SS for human
 	// readability; "Second" is the zero-based sample index for plotting.
 	log << "# ==============================\n";
-	log << (pioneerScan ? "# Per-Second Pioneer C1/E22 Data\n" : "# Per-Second C1/C2/CU Data\n");
+	log << (pioneerScan ? "# Per-Sample Pioneer C1/E22 Counts\n" : "# Per-Sample C1/C2/CU Counts\n");
 	log << "# ==============================\n";
-	log << (pioneerScan ? "Time,Second,LBA,C1,PioneerE22\n"
-		: "Pass,Time,Second,LBA,C1,C2,CU\n");
+	log << (pioneerScan ? "Time,Second,LBA,C1,PioneerE22,C1CoveredSectors,C1PerSecond\n"
+		: "Pass,Time,Second,LBA,C1,C2,CU,C1CoveredSectors,C1PerSecond\n");
 
 	for (size_t i = 0; i < result.samples.size(); i++) {
 		const auto& s = result.samples[i];
@@ -2255,6 +2161,11 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 			log << "," << s.c2
 				<< "," << s.cu;
 		}
+		log << ",";
+		if (s.measuredSectors > 0) log << s.measuredSectors;
+		log << ",";
+		if (result.c1.RateAvailable() && s.measuredSectors > 0)
+			log << std::fixed << std::setprecision(4) << s.c1 * 75.0 / s.measuredSectors;
 		log << "\n";
 	}
 
@@ -2267,7 +2178,11 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 			log << "Verification," << minutes << ":" << std::setfill('0')
 				<< std::setw(2) << seconds << std::setfill(' ')
 				<< "," << elapsedSeconds << "," << s.lba << "," << s.c1 << ","
-				<< s.c2 << "," << s.cu << "\n";
+				<< s.c2 << "," << s.cu << ",";
+			if (s.measuredSectors > 0) log << s.measuredSectors;
+			log << ",";
+			if (s.measuredSectors > 0) log << s.c1 * 75.0 / s.measuredSectors;
+			log << "\n";
 		}
 	}
 

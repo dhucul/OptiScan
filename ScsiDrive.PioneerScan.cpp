@@ -254,7 +254,8 @@ bool ScsiDrive::PioneerScanStart(DWORD startLBA, DWORD endLBA) {
 }
 
 bool ScsiDrive::PioneerScanPoll(int& c1, int& e22, int& cu,
-	DWORD& currentLBA, bool& scanDone, bool* outValid) {
+	DWORD& currentLBA, bool& scanDone, bool* outValid, DWORD* measuredSectors) {
+	if (measuredSectors) *measuredSectors = 0;
 
 	c1 = 0;
 	e22 = 0;
@@ -288,6 +289,7 @@ bool ScsiDrive::PioneerScanPoll(int& c1, int& e22, int& cu,
 	}
 
 	if (outValid) *outValid = valid;
+	if (measuredSectors && valid) *measuredSectors = count;
 	return true;
 }
 

@@ -418,9 +418,10 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 	// ── Hardware C1 sweep (Pioneer or LiteOn/MediaTek) ──────────────────
 	// If the drive supports a hardware quality scan, collect per-speed C1
 	// error rates from the hardware ECC decoder. Pioneer supplies diagnostic
-	// E22 here; LiteOn supplies C2. Each poll returns one
-	// 75-sector time slice, so N polls ~ N seconds of measurement.
+	// E22 here; LiteOn supplies C2. Normalize counts only from interval
+	// lengths explicitly returned by the backend; poll count is not duration.
 	std::vector<double> hwC1PerSpeed(NUM_SPEEDS, 0.0);
+	std::vector<ScanQuality::C1Statistics> hwC1Stats(NUM_SPEEDS);
 	std::vector<double> hwSecondStagePerSpeed(NUM_SPEEDS, 0.0);
 	std::vector<int> hwSamplesPerSpeed(NUM_SPEEDS, 0);
 	bool hwEccFlat = false;  // True if ECC data has no per-speed discriminating power
@@ -457,6 +458,7 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 			}
 
 			int totalC1 = 0, totalSecondStage = 0, validSamples = 0;
+			std::vector<ScanQuality::C1Interval> c1Intervals;
 			bool cancelled = false;
 			bool communicationLost = false;
 			DWORD firstLBA = 0, lastLBA = 0;
@@ -473,17 +475,18 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 
 				int c1 = 0, secondStage = 0, cu = 0;
 				DWORD lba = 0;
+				DWORD measuredSectors = 0;
 				bool done = false;
 				bool pioneerSampleValid = true;
 
 				bool pollOk = hasPioneerHwC1
 					? m_drive.PioneerScanPoll(c1, secondStage, cu, lba, done,
-						&pioneerSampleValid)
-					: m_drive.LiteOnScanPoll(c1, secondStage, cu, lba, done);
+						&pioneerSampleValid, &measuredSectors)
+					: m_drive.LiteOnScanPoll(c1, secondStage, cu, lba, done, &measuredSectors);
 				if (!pollOk && hasPioneerHwC1) {
 					std::this_thread::sleep_for(std::chrono::milliseconds(200));
 					pollOk = m_drive.PioneerScanPoll(
-						c1, secondStage, cu, lba, done, &pioneerSampleValid);
+						c1, secondStage, cu, lba, done, &pioneerSampleValid, &measuredSectors);
 				}
 				if (!pollOk) {
 					communicationLost = true;
@@ -523,6 +526,7 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 					continue;
 				}
 
+				c1Intervals.push_back({lba, measuredSectors, c1});
 				totalC1 += c1;
 				totalSecondStage += secondStage;
 				validSamples++;
@@ -555,11 +559,17 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 				totalSecondStage = 0;
 			}
 
-			hwC1PerSpeed[s] = validSamples > 0
-				? static_cast<double>(totalC1) / validSamples : 0.0;
-			hwSecondStagePerSpeed[s] = validSamples > 0
-				? static_cast<double>(totalSecondStage) / validSamples : 0.0;
-			hwSamplesPerSpeed[s] = validSamples;
+			hwC1Stats[s] = ScanQuality::SummarizeCompletedC1(c1Intervals,
+				HW_SAMPLES_PER_SPEED, !communicationLost && !cancelled && validSamples >= HW_SAMPLES_PER_SPEED);
+			hwC1PerSpeed[s] = hwC1Stats[s].average;
+			hwSecondStagePerSpeed[s] = hwC1Stats[s].RateAvailable()
+				? totalSecondStage / hwC1Stats[s].MeasuredSeconds() : 0.0;
+			hwSamplesPerSpeed[s] = hwC1Stats[s].RateAvailable() ? validSamples : 0;
+			if (!hwC1Stats[s].RateAvailable()) {
+				hwSweepFailed = true;
+				std::cout << "  Hardware rate comparison unavailable at this speed: "
+					"counter validity or measured duration is unverified.\n";
+			}
 
 			if (cancelled) {
 				m_drive.SetSpeed(0);
@@ -1136,16 +1146,13 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 	if (hasHwC1) {
 		std::cout << "--- Hardware Error/Diagnostic Rates by Speed (ECC decoder) ---\n";
 		for (int s = 0; s < NUM_SPEEDS; s++) {
-			std::cout << "  " << std::setw(3) << speeds[s] << "x:  C1 "
-				<< std::fixed << std::setprecision(1) << std::setw(6) << hwC1PerSpeed[s]
-				<< "/sec   " << hwSecondStageLabel << " "
-				<< std::setprecision(1) << std::setw(6) << hwSecondStagePerSpeed[s]
-				<< "/sec";
-			std::cout << "  C1 " << ScanQuality::C1RatingName(ScanQuality::RateC1(
-				hwC1PerSpeed[s], hwSamplesPerSpeed[s] > 0 &&
-					(hwC1PerSpeed[s] > 0 || hwSecondStagePerSpeed[s] > 0)));
+			std::cout << "\n  " << speeds[s] << "x hardware observations:\n";
+			ScanQuality::PrintC1Summary(std::cout, hwC1Stats[s], 0, "    ");
+			std::cout << "    " << hwSecondStageLabel << ": ";
+			if (hwC1Stats[s].RateAvailable()) std::cout << hwSecondStagePerSpeed[s] << "/sec";
+			else std::cout << "rate unavailable";
 			if (hwSamplesPerSpeed[s] == 0)
-				std::cout << "  (no samples)";
+				std::cout << "  (no usable timed rate)";
 			if (speedFellBack[s] || eccFellBack[s])
 				std::cout << "  ** FALLBACK (drive can't sustain this speed) **";
 			else if (clampedActualX[s] > 0)

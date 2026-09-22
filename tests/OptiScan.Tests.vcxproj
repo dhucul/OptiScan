@@ -62,6 +62,7 @@
     <ClCompile Include="WriteRetryTests.cpp" />
     <ClCompile Include="ScanQualityTests.cpp" />
     <ClCompile Include="..\ScanQualityRating.cpp" />
+    <ClCompile Include="..\AccessibleAnnounce.cpp" />
     <ClCompile Include="..\OpticalDrive_BlerAnalysis.cpp" />
     <ClCompile Include="..\OpticalDrive_WriteAudioSectors.cpp" />
     <ClCompile Include="..\GuiWorker.cpp" />

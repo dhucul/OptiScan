@@ -368,3 +368,6 @@ FodyWeavers.xsd
 toc_dump.bin
 installer/Output/OptiScan-3.34-Setup.exe
 installer/Output/OptiScan-3.36-Setup.exe
+docs/fbe-berl-support.md
+installer/Output/OptiScan-3.38-Setup.exe
+installer/Output/OptiScan-3.36-Setup.exe

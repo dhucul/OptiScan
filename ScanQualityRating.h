@@ -4,6 +4,8 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <cmath>
 #include <iosfwd>
 #include <string>
 #include <vector>
@@ -127,6 +129,57 @@ const char* C1RatingName(C1Rating rating);
 // Keep the more adverse measured C1/read result. Unknown C1 is never a clean pass.
 std::string CombineC1Quality(C1Rating c1, const std::string& readRating);
 void PrintC1Policy(std::ostream& os, const char* indent = "  ");
+
+// A raw count with independently established disc coverage. Zero sectors means
+// duration is unknown; never infer it from elapsed host time or poll count.
+struct C1Interval {
+	std::uint32_t lba = 0;
+	std::uint32_t sectors = 0;
+	int errors = 0;
+};
+
+struct C1Statistics {
+	long long total = 0;
+	std::size_t samples = 0;
+	std::uint64_t measuredSectors = 0;
+	bool verified = false;
+	bool timingKnown = false;
+	double average = 0.0;
+	double peakRate = 0.0;
+	int rawPeakCount = 0;
+	SeriesStats fullSeconds;
+	bool tenSecondWindowAvailable = false;
+	double worstTenSecondAverage = 0.0;
+	bool RateAvailable() const { return verified && timingKnown && measuredSectors > 0 && std::isfinite(average); }
+	double MeasuredSeconds() const { return measuredSectors / 75.0; }
+	C1Rating Rating() const { return RateC1(average, RateAvailable()); }
+};
+
+C1Statistics SummarizeC1(const std::vector<C1Interval>& samples, bool verified = true);
+// Acquisition validity is independent of whether any errors occurred.
+C1Statistics SummarizeCompletedC1(const std::vector<C1Interval>& samples,
+	std::size_t minimumSamples, bool completed);
+
+// Equal-width disc-position columns. -1 is missing data, distinct from a
+// measured zero. Partially covered columns retain their observed maximum.
+struct TimedCounterGraph {
+	std::vector<int> values;
+	std::vector<bool> partialCoverage;
+	std::uint32_t firstLba = 0;
+	std::uint64_t sectorCount = 0;
+	bool valid = false;
+	double average = 0;
+	double peak = 0;
+	std::uint32_t peakLba = 0;
+};
+TimedCounterGraph BuildTimedCounterGraph(const std::vector<C1Interval>& samples,
+	std::uint32_t firstLba, std::uint64_t sectorCount, int width);
+
+// Successful READ CD observations only; failed/missing sectors form real gaps.
+void AppendC1Sector(std::vector<C1Interval>& samples, std::uint32_t lba,
+	int errors, bool startNewInterval = false);
+void PrintC1Summary(std::ostream& os, const C1Statistics& c1,
+	std::uint64_t requestedSectors, const char* indent = "  ");
 
 // Pioneer E22 diagnostic tier. `correlatedWithC1` suppresses escalation when
 // the E22 peak coincides with the C1 peak.

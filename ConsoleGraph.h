@@ -30,6 +30,7 @@
 #include <algorithm>
 #include "ScanQualityRating.h"
 #include <cstdio>
+#include <optional>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
@@ -57,7 +58,24 @@ struct GraphOptions {
 	std::string severityLowLabel = "low";
 	std::string severityModerateLabel = "moderate";
 	std::string severityHighLabel = "high";
+	bool timedIntervals = false;
+	std::uint32_t firstLba = 0;
+	std::uint64_t sectorCount = 0;
+	std::vector<bool> partialCoverage;
+	std::optional<double> observedAverage;
+	std::optional<double> observedPeak;
+	std::optional<std::uint32_t> peakLba;
 };
+
+inline void ConfigureTimedGraph(GraphOptions& opts, const ScanQuality::TimedCounterGraph& graph) {
+	opts.timedIntervals = true;
+	opts.firstLba = graph.firstLba;
+	opts.sectorCount = graph.sectorCount;
+	opts.partialCoverage = graph.partialCoverage;
+	opts.observedAverage = graph.valid ? std::optional<double>{graph.average} : std::nullopt;
+	opts.observedPeak = graph.valid ? std::optional<double>{graph.peak} : std::nullopt;
+	opts.peakLba = graph.valid ? std::optional<std::uint32_t>{graph.peakLba} : std::nullopt;
+}
 
 inline void ConfigureC1Graph(GraphOptions& opts) {
 	opts.refLine = ScanQuality::kC1GraphHighThreshold;
@@ -85,6 +103,8 @@ struct HeatmapRow {
 	//   v >= highThresh                 → high      (█ red)
 	int lowThresh = 1;
 	int highThresh = 1;
+	bool coverageAware = false;
+	std::vector<bool> partialCoverage;
 };
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -149,6 +169,13 @@ namespace detail {
 		char buf[16];
 		std::snprintf(buf, sizeof(buf), "%u:%02u", m, s);
 		return std::string(buf);
+	}
+
+	inline std::string FormatDiscTime(std::uint64_t lba) {
+		std::ostringstream out;
+		out << (lba / 4500) << ":" << std::setfill('0') << std::setw(2) << (lba / 75 % 60);
+		if (lba % 75) out << "." << std::setw(3) << (lba % 75 * 1000 / 75);
+		return out.str();
 	}
 
 	// Width-aware string truncation for labels.
@@ -232,43 +259,51 @@ namespace detail {
 		const GraphOptions& opts, DWORD totalSeconds) {
 		(void)maxVal;
 		AccessibleHeader(opts.title, opts.subtitle);
-
-		const size_t n = buckets.size();
-		int peak = 0; size_t peakIdx = 0; long long sum = 0; int nonZero = 0; int overRef = 0;
-		for (size_t i = 0; i < n; i++) {
-			const int v = buckets[i];
-			sum += v;
-			if (v > peak) { peak = v; peakIdx = i; }
-			if (v > 0) nonZero++;
-			if (opts.refLine > 0 && v >= opts.refLine) overRef++;
+		const auto flags = std::cout.flags(); const auto precision = std::cout.precision();
+		int peak = 0, nonZero = 0, overRef = 0, measured = 0, partial = 0;
+		long long sum = 0; size_t peakIdx = 0;
+		for (size_t i = 0; i < buckets.size(); ++i) {
+			if (opts.timedIntervals && buckets[i] < 0) continue;
+			++measured; sum += buckets[i];
+			if (buckets[i] > peak) { peak = buckets[i]; peakIdx = i; }
+			if (buckets[i] > 0) ++nonZero;
+			if (opts.refLine > 0 && buckets[i] >= opts.refLine) ++overRef;
+			if (i < opts.partialCoverage.size() && opts.partialCoverage[i]) ++partial;
 		}
-		const std::string& unit = opts.unitSuffix;
-
-		std::cout << "  Peak " << peak << unit;
-		if (totalSeconds > 0 && n > 0) {
-			const unsigned t = static_cast<unsigned>(peakIdx * totalSeconds / n);
-			std::cout << " at " << FormatTime(t);
+		if (measured > 0) {
+			std::cout << "  Peak " << std::fixed << std::setprecision(2)
+				<< opts.observedPeak.value_or(peak) << opts.unitSuffix;
+			if (opts.peakLba) std::cout << " at " << FormatDiscTime(*opts.peakLba);
+			else if (totalSeconds > 0 && !buckets.empty())
+				std::cout << " at " << FormatTime(static_cast<unsigned>(peakIdx * totalSeconds / buckets.size()));
+			if (opts.observedAverage)
+				std::cout << ". Average " << *opts.observedAverage << opts.unitSuffix << " over measured audio";
+			else if (!opts.timedIntervals)
+				std::cout << ". Average column value " << sum / double(measured) << opts.unitSuffix;
+			std::cout << ". " << nonZero << " of " << measured << " measured columns had activity.\n";
 		}
-		std::cout << ". ";
-		if (n > 0) {
-			const int avg = static_cast<int>(sum / static_cast<long long>(n));
-			std::cout << "Average " << avg << unit << ". ";
+		else std::cout << "  No measured values in this range.\n";
+		if (opts.timedIntervals) {
+			std::cout << "  Coverage: " << buckets.size() - measured << " unmeasured columns, "
+				<< partial << " partially measured columns.\n";
+			std::cout << "  Disc span " << FormatDiscTime(opts.firstLba) << " to "
+				<< FormatDiscTime(std::uint64_t{opts.firstLba} + opts.sectorCount) << ".\n";
 		}
-		std::cout << nonZero << " of " << n << " intervals had activity.";
-		if (opts.refLine > 0) {
-			const std::string refName = opts.refLabel.empty() ? std::string("reference") : opts.refLabel;
-			std::cout << " " << overRef << " at or above the " << opts.refLine << unit
-			          << " " << refName << ".";
-		}
-		std::cout << "\n\n";
+		if (opts.refLine > 0)
+			std::cout << "  " << overRef << " measured columns at or above " << opts.refLine
+				<< opts.unitSuffix << " (reference only).\n";
+		std::cout << "\n";
+		std::cout.flags(flags); std::cout.precision(precision);
 	}
 
 	inline void AccessibleHeatmap(const std::vector<HeatmapRow>& rows,
-		const std::string& title, const std::string& subtitle, DWORD totalSeconds) {
+		const std::string& title, const std::string& subtitle, DWORD totalSeconds,
+		std::uint32_t firstLba = 0, std::uint64_t sectorCount = 0) {
 		AccessibleHeader(title, subtitle);
 		for (const auto& row : rows) {
-			int none = 0, low = 0, mod = 0, high = 0, peak = 0;
+			int none = 0, low = 0, mod = 0, high = 0, peak = 0, missing = 0;
 			for (int v : row.values) {
+				if (row.coverageAware && v < 0) { ++missing; continue; }
 				if (v > peak) peak = v;
 				if (v <= 0) none++;
 				else if (v < row.lowThresh) low++;
@@ -276,13 +311,18 @@ namespace detail {
 				else high++;
 			}
 			(void)none;
-			std::cout << "  " << row.label << ": peak " << peak
-			          << "; low " << low << ", moderate " << mod << ", high " << high
-			          << " (of " << row.values.size() << " intervals).\n";
+			std::cout << "  " << row.label << ": ";
+			if (missing == static_cast<int>(row.values.size())) std::cout << "no measured values";
+			else std::cout << "peak " << peak << "; low " << low << ", moderate " << mod << ", high " << high;
+			std::cout << " (" << missing << " unmeasured, "
+				<< std::count(row.partialCoverage.begin(), row.partialCoverage.end(), true)
+				<< " partial columns).\n";
 		}
-		if (totalSeconds > 0) {
+		if (sectorCount > 0)
+			std::cout << "  Disc span " << FormatDiscTime(firstLba) << " to "
+				<< FormatDiscTime(std::uint64_t{firstLba} + sectorCount) << ".\n";
+		else if (totalSeconds > 0)
 			std::cout << "  Span 0:00 to " << FormatTime(static_cast<unsigned>(totalSeconds)) << ".\n";
-		}
 		std::cout << "\n";
 	}
 
@@ -392,7 +432,11 @@ inline void DrawBarGraph(const std::vector<int>& buckets, int maxVal,
 		for (int col = 0; col < width; col++) {
 			double val = static_cast<double>(buckets[col]);
 
-			if (val >= rowTop) {
+			if (opts.timedIntervals && val < 0) {
+				SetColorRGB(Theme::DimR, Theme::DimG, Theme::DimB);
+				std::cout << (row == 1 ? "?" : " ");
+			}
+			else if (val >= rowTop) {
 				if (opts.colorize) detail::SetValueBarColor(static_cast<int>(val), maxVal, opts);
 				else SetColorRGB(Theme::CyanR, Theme::CyanG, Theme::CyanB);
 				std::cout << Sym::Bar8;
@@ -454,10 +498,12 @@ inline void DrawBarGraph(const std::vector<int>& buckets, int maxVal,
 	std::cout << "\xe2\x86\x92"; // →
 	std::cout << "\n";
 
-	// X-axis time labels: start, end, plus reference time if known.
-	if (totalSeconds > 0) {
-		std::string endStr = detail::FormatTime(totalSeconds);
-		std::string startStr = "0:00";
+	// Spatial plots use the actual requested disc range, including its gaps.
+	if (totalSeconds > 0 || opts.sectorCount > 0) {
+		std::string endStr = opts.timedIntervals
+			? detail::FormatDiscTime(std::uint64_t{opts.firstLba} + opts.sectorCount)
+			: detail::FormatTime(totalSeconds);
+		std::string startStr = opts.timedIntervals ? detail::FormatDiscTime(opts.firstLba) : "0:00";
 		// Row is a string of total visual width = barCol + width. We place
 		// the start time at index barCol and right-align the end time.
 		std::string row(static_cast<size_t>(barCol + width), ' ');
@@ -471,6 +517,16 @@ inline void DrawBarGraph(const std::vector<int>& buckets, int maxVal,
 
 		SetColorRGB(Theme::DimR, Theme::DimG, Theme::DimB);
 		std::cout << row << "\n";
+		Reset();
+	}
+
+	if (opts.timedIntervals) {
+		SetColorRGB(Theme::DimR, Theme::DimG, Theme::DimB);
+		std::cout << std::string(barCol, ' ');
+		for (size_t i = 0; i < buckets.size(); ++i)
+			std::cout << (buckets[i] < 0 ? '?' :
+				(i < opts.partialCoverage.size() && opts.partialCoverage[i] ? '~' : ' '));
+		std::cout << "\n" << std::string(barCol, ' ') << "? unmeasured   ~ partial coverage\n";
 		Reset();
 	}
 
@@ -493,11 +549,11 @@ inline void DrawBarGraph(const std::vector<int>& buckets, int maxVal,
 
 inline void DrawHeatmap(const std::vector<HeatmapRow>& rows,
 	const std::string& title, const std::string& subtitle,
-	DWORD totalSeconds = 0) {
+	DWORD totalSeconds = 0, std::uint32_t firstLba = 0, std::uint64_t sectorCount = 0) {
 	if (rows.empty()) return;
 
 	if (Accessibility::IsEnabled()) {
-		detail::AccessibleHeatmap(rows, title, subtitle, totalSeconds);
+		detail::AccessibleHeatmap(rows, title, subtitle, totalSeconds, firstLba, sectorCount);
 		return;
 	}
 
@@ -524,8 +580,19 @@ inline void DrawHeatmap(const std::vector<HeatmapRow>& rows,
 		std::cout << "  " << lbl << " ";
 
 		for (int col = 0; col < width; col++) {
-			int v = (col < static_cast<int>(row.values.size())) ? row.values[col] : 0;
-			if (v <= 0) {
+			int v = (col < static_cast<int>(row.values.size())) ? row.values[col] : -1;
+			const bool partial = col < static_cast<int>(row.partialCoverage.size()) && row.partialCoverage[col];
+			if (row.coverageAware && v < 0) {
+				SetColorRGB(Theme::DimR, Theme::DimG, Theme::DimB);
+				std::cout << "?";
+			}
+			else if (partial) {
+				if (v >= row.highThresh) SetBarColor(0.90);
+				else if (v >= row.lowThresh) SetBarColor(0.55);
+				else SetBarColor(0.20);
+				std::cout << "~";
+			}
+			else if (v <= 0) {
 				// "none" — dim shade, no colour emphasis.
 				SetColorRGB(Theme::DimR, Theme::DimG, Theme::DimB);
 				std::cout << "\xe2\x96\x91"; // ░
@@ -548,9 +615,10 @@ inline void DrawHeatmap(const std::vector<HeatmapRow>& rows,
 	}
 
 	// Time labels (no x-axis line — the coloured row IS the x-axis).
-	if (totalSeconds > 0) {
-		std::string endStr = detail::FormatTime(totalSeconds);
-		std::string startStr = "0:00";
+	if (totalSeconds > 0 || sectorCount > 0) {
+		std::string endStr = sectorCount > 0 ? detail::FormatDiscTime(std::uint64_t{firstLba} + sectorCount)
+			: detail::FormatTime(totalSeconds);
+		std::string startStr = sectorCount > 0 ? detail::FormatDiscTime(firstLba) : "0:00";
 		std::string trow(static_cast<size_t>(barCol + width), ' ');
 		for (size_t i = 0; i < startStr.size() && barCol + i < trow.size(); i++)
 			trow[barCol + i] = startStr[i];
@@ -579,6 +647,8 @@ inline void DrawHeatmap(const std::vector<HeatmapRow>& rows,
 	std::cout << Sym::Bar8;
 	SetColorRGB(Theme::DimR, Theme::DimG, Theme::DimB);
 	std::cout << " high";
+	if (std::any_of(rows.begin(), rows.end(), [](const HeatmapRow& r) { return r.coverageAware; }))
+		std::cout << "   ? unmeasured   ~ partial coverage";
 	Reset();
 	std::cout << "\n\n";
 }

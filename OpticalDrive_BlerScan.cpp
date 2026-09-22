@@ -76,6 +76,8 @@ bool OpticalDrive::RunBlerScan(const DiscInfo& disc, BlerResult& result, int sca
 	result = BlerResult{};
 	result.measurementMethod = "READ CD C2 error pointers";
 	result.totalSectors = totalSectors;
+	result.graphStartLba = firstLBA;
+	result.graphSectors = std::uint64_t{lastLBA} - firstLBA + 1;
 	result.totalSeconds = (totalSectors + 74) / 75;
 	result.perSecondC2.resize(result.totalSeconds, { 0, 0 });
 	result.hasC1Data = hasC1Support;
@@ -148,6 +150,8 @@ bool OpticalDrive::RunBlerScan(const DiscInfo& disc, BlerResult& result, int sca
 
 			if (readSuccess) {
 				bool recovered = (senseKey == 0x01);
+				if (hasC1Support)
+					ScanQuality::AppendC1Sector(result.c1Samples, lba, c1BlockErrors, lba == start);
 
 				// Collect C1 block errors (when available)
 				if (hasC1Support && c1BlockErrors > 0) {

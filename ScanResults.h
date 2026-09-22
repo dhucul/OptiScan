@@ -45,13 +45,14 @@ struct ScanPeakContext {
 	}
 };
 
-// ── Per-second sample from hardware quality scan ────────────────────────────
+// ── Counter sample from hardware quality scan ────────────────────────────
 struct QCheckSample {
 	DWORD lba = 0;          // Approximate LBA at this time slice
-	int c1 = 0;             // C1 (BLER) error count for this second
+	int c1 = 0;             // Raw C1 (BLER) count; duration is supplied separately
 	int c2 = 0;             // Verified C2 error count for this second
 	int cu = 0;             // CU (uncorrectable) count for this second
 	int pioneerE22 = 0;     // Pioneer vendor E22 diagnostic count, not counted as C2
+	DWORD measuredSectors = 0; // Exact disc coverage of these counters; zero = unknown
 };
 
 // ── Per-track aggregation of C2 / CU events for the report ──────────────────
@@ -68,14 +69,18 @@ struct QCheckTrackErrors {
 struct QCheckResult {
 	bool supported = false;                    // True if a scan method was available
 	std::string scanMethod;                    // E.g. "Plextor Q-Check (0xE9/0xEB)"
-	DWORD totalSectors = 0;                    // Disc sectors covered
-	DWORD totalSeconds = 0;                    // Scan duration in time slices
+	DWORD totalSectors = 0;                    // Requested scan range length
+	DWORD totalSeconds = 0;                    // Requested audio length, rounded up; not measured duration
+
+	DWORD graphStartLba = 0;
+	std::uint64_t graphSectors = 0;
+	ScanQuality::C1Statistics c1;
 
 	// Aggregate C1 statistics
 	int totalC1 = 0;
 	double avgC1PerSecond = 0.0;
-	int maxC1PerSecond = 0;
-	int maxC1SecondIndex = -1;
+	int maxC1PerSample = 0;
+	int maxC1SampleIndex = -1;
 
 	// Aggregate C2 statistics
 	int totalC2 = 0;
@@ -138,11 +143,11 @@ struct QCheckResult {
 	// Quality assessment
 	std::string qualityRating;                 // EXCELLENT / GOOD / FAIR / POOR / BAD
 
-	// Total C1 quality interpretation
-	std::string totalC1Quality;                // EXCELLENT / GOOD / FAIR / POOR / NOT RATED
+	// Average C1 rate interpretation; total remains ungraded
+	std::string averageC1Rating;                // EXCELLENT / GOOD / FAIR / POOR / NOT RATED
 
 	// Sustained C1 observed-rate assessment. Driven by peaks.sustainedC1PerSecond,
-	// separate from maxC1PerSecond and the whole-scan average.
+	// separate from maxC1PerSample and the whole-scan average.
 	std::string sustainedC1Rating;              // EXCELLENT / GOOD / FAIR / POOR / NOT RATED
 
 	// Pioneer E22 diagnostic rating (diagnostic only — not a copy trigger)
@@ -230,6 +235,22 @@ inline void ComputeScanPeakContext(const std::vector<QCheckSample>& samples,
 	}
 	if (!anyE22) e22.clear();
 	ComputeScanPeakContext(c1, e22, scanSpeedX, out, sampleLbas);
+}
+
+inline std::vector<ScanQuality::C1Interval> C1Intervals(const std::vector<QCheckSample>& samples) {
+	std::vector<ScanQuality::C1Interval> intervals;
+	intervals.reserve(samples.size());
+	for (const auto& sample : samples)
+		intervals.push_back({sample.lba, sample.measuredSectors, sample.c1});
+	return intervals;
+}
+
+inline void ComputeTimedC1(QCheckResult& result) {
+	result.c1 = ScanQuality::SummarizeC1(C1Intervals(result.samples), !result.c1Unverified);
+	result.avgC1PerSecond = result.c1.average;
+	result.peaks.sustainedMeasurable = result.c1.fullSeconds.persistenceMeasurable;
+	result.peaks.sustainedC1PerSecond = result.c1.fullSeconds.sustainedPeak;
+	result.peaks.p95C1PerSecond = result.c1.fullSeconds.p95;
 }
 
 // ── Shared rating entry points ──────────────────────────────────────────────
@@ -348,13 +369,18 @@ struct BlerResult {
 	DWORD worstSectorLBA = 0;
 	DWORD worstSecondLBA = 0;
 
+	DWORD graphStartLba = 0;
+	std::uint64_t graphSectors = 0;
+	ScanQuality::C1Statistics c1;
+	std::vector<ScanQuality::C1Interval> c1Samples;
+
 	// C1 error statistics
 	int totalC1Errors = 0;
 	int totalC1Sectors = 0;
 	int maxC1InSingleSector = 0;
 	DWORD worstC1SectorLBA = 0;
 	double avgC1PerSecond = 0.0;
-	int maxC1PerSecond = 0;
+	int maxC1PerSample = 0;
 	DWORD worstC1SecondLBA = 0;
 
 	// Cluster and pattern analysis
@@ -440,6 +466,9 @@ struct DiscRotAnalysis {
 	bool pioneerCdCheckRun = false;
 	int  pioneerCdCheckC1Frames = 0;            // worst-window C1 uncorrectable frame count
 	int  pioneerCdCheckC2Bytes  = 0;            // worst-window C2 uncorrectable byte count (real data loss)
+
+	ScanQuality::C1Statistics c1;
+	DWORD c1RequestedSectors = 0;
 
 	// Heuristic disc-rot pattern flags
 	bool edgeConcentration = false;             // Errors concentrated at inner/outer edges

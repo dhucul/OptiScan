@@ -7,6 +7,10 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cmath>
+#include <deque>
+#include <iomanip>
+#include <limits>
+#include <climits>
 #include <ostream>
 #include <sstream>
 
@@ -242,12 +246,175 @@ std::string CombineC1Quality(C1Rating c1, const std::string& readRating) {
 }
 
 void PrintC1Policy(std::ostream& os, const char* indent) {
-	PrintWrapped(os, "C1 rate bands (OptiScan): EXCELLENT <5; GOOD 5-<50; "
-		"FAIR 50-<220; POOR >=220 errors/sec. Average and sustained "
-		"(highest three-sample minimum) use the same bands; raw peaks are retained.", indent);
-	PrintWrapped(os, "These describe observed rates, not archival suitability or "
-		"remaining correction capacity. Red Book BLER uses a 10-second "
-		"measuring period; compliance is not evaluated by this scan.", indent);
+	PrintWrapped(os, "Average C1 bands (OptiScan): EXCELLENT <5; GOOD 5-<50; "
+		"FAIR 50-<220; POOR >=220 errors/sec. Total C1 is an ungraded count. "
+		"Rates use measured disc duration, not host scan time or poll count.", indent);
+	PrintWrapped(os, "Peaks and complete 10-second windows describe local activity. "
+		"These measurements do not certify archival suitability.", indent);
+	PrintWrapped(os, "Red Book compliance is not evaluated by this scan.", indent);
+}
+
+C1Statistics SummarizeC1(const std::vector<C1Interval>& samples, bool verified) {
+	C1Statistics result;
+	result.verified = verified;
+	result.samples = samples.size();
+	result.timingKnown = !samples.empty();
+	std::uint64_t previousEnd = 0;
+	bool havePrevious = false;
+	for (const auto& sample : samples) {
+		if (sample.errors < 0) { result.verified = false; result.timingKnown = false; continue; }
+		result.total += sample.errors;
+		result.rawPeakCount = std::max(result.rawPeakCount, sample.errors);
+		const auto end = std::uint64_t{sample.lba} + sample.sectors;
+		if (sample.sectors == 0 || (havePrevious && sample.lba < previousEnd) ||
+			end > std::uint64_t{std::numeric_limits<std::uint32_t>::max()} + 1) {
+			result.timingKnown = false;
+		}
+		result.measuredSectors += sample.sectors;
+		previousEnd = end;
+		havePrevious = true;
+	}
+	// Do not divide counts with unknown/overlapping coverage by a guessed time.
+	if (!result.RateAvailable()) return result;
+	result.average = result.total / result.MeasuredSeconds();
+	std::vector<int> seconds;
+	std::vector<unsigned long> positions;
+	std::deque<C1Interval> window;
+	std::uint64_t windowSectors = 0;
+	long long windowErrors = 0;
+	unsigned bucketSectors = 0;
+	long long bucketErrors = 0;
+	std::uint32_t bucketLba = 0;
+	previousEnd = 0;
+	havePrevious = false;
+	for (const auto& sample : samples) {
+		result.peakRate = std::max(result.peakRate, sample.errors * 75.0 / sample.sectors);
+		if (!havePrevious || sample.lba != previousEnd) {
+			bucketSectors = 0; bucketErrors = 0;
+			window.clear(); windowSectors = 0; windowErrors = 0;
+		}
+		// Never split an aggregate count proportionally across invented seconds.
+		if (bucketSectors + std::uint64_t{sample.sectors} > 75) {
+			bucketSectors = 0; bucketErrors = 0;
+		}
+		if (sample.sectors <= 75) {
+			if (bucketSectors == 0) bucketLba = sample.lba;
+			bucketSectors += sample.sectors; bucketErrors += sample.errors;
+			if (bucketSectors == 75) {
+				seconds.push_back(static_cast<int>(std::min<long long>(bucketErrors, INT_MAX)));
+				positions.push_back(bucketLba);
+				bucketSectors = 0; bucketErrors = 0;
+			}
+		}
+		window.push_back(sample);
+		windowSectors += sample.sectors; windowErrors += sample.errors;
+		while (windowSectors > 750 && !window.empty()) {
+			windowSectors -= window.front().sectors;
+			windowErrors -= window.front().errors; window.pop_front();
+		}
+		if (windowSectors == 750) {
+			result.tenSecondWindowAvailable = true;
+			result.worstTenSecondAverage = std::max(result.worstTenSecondAverage, windowErrors / 10.0);
+		}
+		previousEnd = std::uint64_t{sample.lba} + sample.sectors;
+		havePrevious = true;
+	}
+	result.fullSeconds = Analyze(seconds, kDefaultMinRunSamples, positions);
+	return result;
+}
+
+C1Statistics SummarizeCompletedC1(const std::vector<C1Interval>& samples,
+	std::size_t minimumSamples, bool completed) {
+	return SummarizeC1(samples, completed && minimumSamples > 0 && samples.size() >= minimumSamples);
+}
+
+TimedCounterGraph BuildTimedCounterGraph(const std::vector<C1Interval>& samples,
+	std::uint32_t firstLba, std::uint64_t sectorCount, int width) {
+	TimedCounterGraph graph;
+	constexpr std::uint64_t addressLimit = std::uint64_t{UINT32_MAX} + 1;
+	if (width <= 0 || sectorCount == 0 || sectorCount > addressLimit - firstLba) return graph;
+	graph.firstLba = firstLba;
+	graph.sectorCount = sectorCount;
+	graph.values.assign(width, -1);
+	graph.partialCoverage.assign(width, false);
+	const auto stats = SummarizeC1(samples);
+	if (!stats.RateAvailable()) return graph;
+	const auto endLba = std::uint64_t{firstLba} + sectorCount;
+	for (const auto& sample : samples) {
+		if (sample.lba < firstLba || std::uint64_t{sample.lba} + sample.sectors > endLba)
+			return graph; // an out-of-range aggregate cannot be split into invented counts
+	}
+	graph.valid = true;
+	graph.average = stats.average;
+	graph.peak = stats.peakRate;
+	graph.peakLba = samples.front().lba;
+	double peak = -1;
+	std::vector<std::uint64_t> coverage(width, 0);
+	const auto columns = static_cast<std::uint64_t>(width);
+	for (const auto& sample : samples) {
+		const double rate = sample.errors * 75.0 / sample.sectors;
+		if (rate > peak) { peak = rate; graph.peakLba = sample.lba; }
+		const int value = static_cast<int>(std::min(rate, double(INT_MAX)));
+		// Work in sector * column units to preserve exact fractional bin edges.
+		const auto start = (std::uint64_t{sample.lba} - firstLba) * columns;
+		const auto end = (std::uint64_t{sample.lba} - firstLba + sample.sectors) * columns;
+		const auto firstColumn = start / sectorCount;
+		const auto lastColumn = (end - 1) / sectorCount;
+		for (auto column = firstColumn; column <= lastColumn; ++column) {
+			graph.values[column] = std::max(graph.values[column], value);
+			coverage[column] += std::min(end, (column + 1) * sectorCount)
+				- std::max(start, column * sectorCount);
+		}
+	}
+	for (int column = 0; column < width; ++column)
+		graph.partialCoverage[column] = coverage[column] > 0 && coverage[column] < sectorCount;
+	return graph;
+}
+
+void AppendC1Sector(std::vector<C1Interval>& samples, std::uint32_t lba,
+	int errors, bool startNewInterval) {
+	if (!startNewInterval && !samples.empty() && samples.back().sectors < 75 &&
+		std::uint64_t{samples.back().lba} + samples.back().sectors == lba) {
+		++samples.back().sectors;
+		samples.back().errors += errors;
+	}
+	else samples.push_back({lba, 1, errors});
+}
+
+void PrintC1Summary(std::ostream& os, const C1Statistics& c1,
+	std::uint64_t requestedSectors, const char* indent) {
+	const auto flags = os.flags(); const auto precision = os.precision();
+	if (c1.samples > 0) os << indent << "Total C1 observed: " << c1.total << " (ungraded)\n";
+	else os << indent << "Total C1 observed: unavailable (no measurements)\n";
+	if (c1.timingKnown) {
+		const auto minutes = c1.measuredSectors / 4500;
+		const double seconds = (c1.measuredSectors % 4500) / 75.0;
+		os << indent << "Measured audio: " << minutes << ":" << std::fixed << std::setprecision(3)
+			<< (seconds < 10 ? "0" : "") << seconds << " (" << c1.measuredSectors << " sectors)\n";
+		if (requestedSectors > 0 && c1.measuredSectors <= requestedSectors)
+			os << indent << "Scan coverage: " << std::setprecision(2)
+				<< c1.measuredSectors * 100.0 / requestedSectors << "% of requested audio\n";
+		else os << indent << "Scan coverage: sampled region only\n";
+	}
+	else os << indent << "Measured audio / coverage: unavailable (sample duration or ordering unknown)\n";
+	if (c1.RateAvailable()) {
+		os << indent << "Average C1: " << std::fixed << std::setprecision(2) << c1.average
+			<< "/sec - " << C1RatingName(c1.Rating()) << " (OptiScan band)\n";
+		os << indent << "Peak C1 rate: " << c1.peakRate << "/sec (measured interval)\n";
+	}
+	else os << indent << "Average C1: NOT RATED (measurement or duration unverified)\n";
+	if (c1.samples > 0)
+		os << indent << "Raw peak C1 count: " << c1.rawPeakCount << " in one sample\n";
+	else os << indent << "Raw peak C1 count: unavailable (no measurements)\n";
+	if (c1.RateAvailable() && c1.fullSeconds.persistenceMeasurable)
+		os << indent << "Sustained C1: " << c1.fullSeconds.sustainedPeak
+			<< "/sec (minimum across three consecutive full seconds)\n";
+	else os << indent << "Sustained C1: unavailable (needs three contiguous measured seconds)\n";
+	if (c1.RateAvailable() && c1.tenSecondWindowAvailable)
+		os << indent << "Worst observed 10-second average: " << std::fixed << std::setprecision(2)
+			<< c1.worstTenSecondAverage << "/sec (complete sample-aligned windows; not a compliance test)\n";
+	else os << indent << "Worst observed 10-second average: unavailable (no complete timed window)\n";
+	os.flags(flags); os.precision(precision);
 }
 
 Tier RatePioneerE22(long long total, double avgPerSecond,

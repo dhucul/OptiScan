@@ -26,8 +26,8 @@ void RecalculateQCheckTotals(QCheckResult& result) {
 	result.totalC2 = 0;
 	result.totalCU = 0;
 	result.totalPioneerE22 = 0;
-	result.maxC1PerSecond = 0;
-	result.maxC1SecondIndex = -1;
+	result.maxC1PerSample = 0;
+	result.maxC1SampleIndex = -1;
 	result.maxC2PerSecond = 0;
 	result.maxC2SecondIndex = -1;
 	result.maxCUPerSecond = 0;
@@ -40,9 +40,9 @@ void RecalculateQCheckTotals(QCheckResult& result) {
 		result.totalC2 += s.c2;
 		result.totalCU += s.cu;
 		result.totalPioneerE22 += s.pioneerE22;
-		if (s.c1 > result.maxC1PerSecond) {
-			result.maxC1PerSecond = s.c1;
-			result.maxC1SecondIndex = i;
+		if (s.c1 > result.maxC1PerSample) {
+			result.maxC1PerSample = s.c1;
+			result.maxC1SampleIndex = i;
 		}
 		if (s.c2 > result.maxC2PerSecond) {
 			result.maxC2PerSecond = s.c2;
@@ -57,8 +57,7 @@ void RecalculateQCheckTotals(QCheckResult& result) {
 	}
 
 	DWORD sampleCount = static_cast<DWORD>(result.samples.size());
-	result.avgC1PerSecond = sampleCount > 0
-		? static_cast<double>(result.totalC1) / sampleCount : 0.0;
+	ComputeTimedC1(result);
 	result.avgC2PerSecond = sampleCount > 0
 		? static_cast<double>(result.totalC2) / sampleCount : 0.0;
 	result.avgPioneerE22PerSecond = sampleCount > 0
@@ -135,6 +134,8 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 			: usePioneer ? "Pioneer (0x3B/0x3C)"
 			: "LiteOn/MediaTek";
 		c1Result.totalSectors = lastLBA - firstLBA + 1;
+		c1Result.graphStartLba = firstLBA;
+		c1Result.graphSectors = std::uint64_t{lastLBA} - firstLBA + 1;
 		c1Result.totalSeconds = (c1Result.totalSectors + 74) / 75;
 
 		std::cout << "Phase 0: C1 quality scan (early degradation detection)...\n";
@@ -173,21 +174,22 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 
 				int c1 = 0, c2 = 0, cu = 0;
 				DWORD currentLBA = 0;
+				DWORD measuredSectors = 0;
 				bool pioneerSampleValid = true;
 
 				bool pollOk = usePlextor
 					? m_drive.PlextorQCheckPoll(c1, c2, cu, currentLBA, scanDone)
 					: usePioneer
 					? m_drive.PioneerScanPoll(c1, c2, cu, currentLBA, scanDone,
-						&pioneerSampleValid)
-					: m_drive.LiteOnScanPoll(c1, c2, cu, currentLBA, scanDone);
+						&pioneerSampleValid, &measuredSectors)
+					: m_drive.LiteOnScanPoll(c1, c2, cu, currentLBA, scanDone, &measuredSectors);
 
 				if (!pollOk && (usePlextor || usePioneer)) {
 					std::this_thread::sleep_for(std::chrono::milliseconds(200));
 					pollOk = usePlextor
 						? m_drive.PlextorQCheckPoll(c1, c2, cu, currentLBA, scanDone)
 						: m_drive.PioneerScanPoll(c1, c2, cu, currentLBA, scanDone,
-							&pioneerSampleValid);
+							&pioneerSampleValid, &measuredSectors);
 				}
 				if (!pollOk) {
 					c1Failed = true;
@@ -235,6 +237,7 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 
 				QCheckSample sample;
 				sample.lba = currentLBA;
+				sample.measuredSectors = measuredSectors;
 				sample.c1 = c1;
 				// Pioneer reports E22 here, not verified C2/E32. Keep it in the
 				// diagnostic field so it cannot masquerade as a copy error.
@@ -249,9 +252,9 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 				c1Result.totalCU += sample.cu;
 				c1Result.totalPioneerE22 += sample.pioneerE22;
 				int idx = static_cast<int>(c1Result.samples.size()) - 1;
-				if (c1 > c1Result.maxC1PerSecond) {
-					c1Result.maxC1PerSecond = c1;
-					c1Result.maxC1SecondIndex = idx;
+				if (c1 > c1Result.maxC1PerSample) {
+					c1Result.maxC1PerSample = c1;
+					c1Result.maxC1SampleIndex = idx;
 				}
 				if (sample.c2 > c1Result.maxC2PerSecond) {
 					c1Result.maxC2PerSecond = sample.c2;
@@ -305,12 +308,15 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 			// no samples.
 			if (hasC1) {
 				ComputeScanPeakContext(c1Result.samples, scanSpeed, c1Result.peaks);
+				ComputeTimedC1(c1Result);
 				result.peaks = c1Result.peaks;
+				result.c1 = c1Result.c1;
+				result.c1RequestedSectors = c1Result.totalSectors;
 			}
 			if (hasC1)
 				std::cout << "\r  C1 scan complete: " << c1Result.samples.size()
 				<< " samples, avg C1=" << std::fixed << std::setprecision(1)
-				<< c1Result.avgC1PerSecond << "/sec\n\n";
+				<< (c1Result.c1.RateAvailable() ? std::to_string(c1Result.avgC1PerSecond) + "/sec" : "unavailable (duration unknown)") << "\n\n";
 			// Pioneer E22 remains a separate early-warning diagnostic. Verified
 			// C2/E32 and CU are not inferred from it.
 			if (usePioneer && hasC1) {
@@ -567,12 +573,10 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 	PrintDiscRotReport(result);
 
 	// Print C1 graph if available
-	if (hasC1 && !c1Result.samples.empty()) {
-		// Convert samples to a flat int vector for BucketData
-		std::vector<int> c1Values;
-		c1Values.reserve(c1Result.samples.size());
-		for (const auto& s : c1Result.samples)
-			c1Values.push_back(s.c1);
+	if (hasC1 && c1Result.c1.RateAvailable() && !c1Result.samples.empty()) {
+		const auto c1Graph = ScanQuality::BuildTimedCounterGraph(C1Intervals(c1Result.samples),
+			c1Result.graphStartLba, c1Result.graphSectors, 60);
+		const auto& c1Values = c1Graph.values;
 
 		int maxC1 = 1;
 		for (int v : c1Values)
@@ -587,23 +591,26 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 		c1Opts.width = 60;
 		c1Opts.height = 10;
 		Console::ConfigureC1Graph(c1Opts);
+		Console::ConfigureTimedGraph(c1Opts, c1Graph);
 		c1Opts.colorize = true;
 
-		auto buckets = Console::BucketData(c1Values, c1Opts.width);
+		const auto& buckets = c1Graph.values;
 		Console::DrawBarGraph(buckets, maxC1, c1Opts,
 			static_cast<DWORD>(c1Result.samples.size()));
 
 		// Pioneer E22 uses the same source samples as the numeric summary. Show
 		// it separately from C1 and C2 because it is diagnostic-only.
 		if (usePioneer) {
-			std::vector<int> e22Values;
-			e22Values.reserve(c1Result.samples.size());
+			std::vector<ScanQuality::C1Interval> e22Intervals;
+			e22Intervals.reserve(c1Result.samples.size());
 			int peakE22 = 0;
 			for (const auto& s : c1Result.samples) {
-				e22Values.push_back(s.pioneerE22);
+				e22Intervals.push_back({s.lba, s.measuredSectors, s.pioneerE22});
 				peakE22 = std::max(peakE22, s.pioneerE22);
 			}
-			if (peakE22 > 0) {
+			const auto e22Graph = ScanQuality::BuildTimedCounterGraph(e22Intervals,
+				c1Result.graphStartLba, c1Result.graphSectors, 60);
+			if (e22Graph.valid && peakE22 > 0) {
 				Console::GraphOptions e22Opts;
 				e22Opts.title = "Disc Rot Pioneer E22 Profile (Diagnostic Only)";
 				e22Opts.subtitle = "E22 distribution used for early-warning pattern analysis; not C2/CU";
@@ -615,7 +622,9 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 				e22Opts.severityLowLabel = "1-24/sec low";
 				e22Opts.severityModerateLabel = "25-99/sec elevated";
 				e22Opts.severityHighLabel = "100+/sec heavy";
-				auto e22Buckets = Console::BucketData(e22Values, e22Opts.width);
+				Console::ConfigureTimedGraph(e22Opts, e22Graph);
+				const auto& e22Buckets = e22Graph.values;
+				peakE22 = *std::max_element(e22Buckets.begin(), e22Buckets.end());
 				Console::DrawBarGraph(e22Buckets, std::max(peakE22, 100), e22Opts,
 					static_cast<DWORD>(c1Result.samples.size()));
 			}
@@ -842,6 +851,8 @@ void OpticalDrive::PrintDiscRotReport(const DiscRotAnalysis& analysis) {
 	for (int i = 0; i < 58; i++) std::cout << Sym::Horizontal;
 	std::cout << Sym::BottomRight << "\n";
 	Reset();
+	std::cout << "\n--- C1 Observations ---\n";
+	ScanQuality::PrintC1Summary(std::cout, analysis.c1, analysis.c1RequestedSectors);
 
 	// Same measurement-confidence header the quality scan prints, so the two
 	// reports state their limits in the same words.
@@ -1003,6 +1014,9 @@ bool OpticalDrive::SaveDiscRotLog(const DiscRotAnalysis& analysis, const std::ws
 
 	fprintf(f, "# ==============================\n");
 	fprintf(f, "# Disc Rot Analysis Report\n");
+	std::ostringstream c1Summary;
+	ScanQuality::PrintC1Summary(c1Summary, analysis.c1, analysis.c1RequestedSectors, "# ");
+	fputs(c1Summary.str().c_str(), f);
 	fprintf(f, "# ==============================\n");
 	fprintf(f, "#\n");
 	fprintf(f, "# Risk Level:            %s\n", analysis.rotRiskLevel.c_str());
@@ -1082,9 +1096,14 @@ void OpticalDrive::AnalyzeC1RotPatterns(const QCheckResult& c1Result,
 	const uint64_t range = static_cast<uint64_t>(lastLBA) - static_cast<uint64_t>(firstLBA);
 	if (range == 0) return;
 
-	// Split C1 data into three zones and compute avg C1 per zone
+	if (!c1Result.c1.RateAvailable()) {
+		std::cout << "  C1 zone rates not assessed: sample duration is unverified.\n";
+		return;
+	}
+
+	// Split measured C1 counts and covered disc sectors into three zones.
 	double innerC1 = 0, middleC1 = 0, outerC1 = 0;
-	int innerN = 0, middleN = 0, outerN = 0;
+	std::uint64_t innerN = 0, middleN = 0, outerN = 0;
 
 	for (const auto& s : c1Result.samples) {
 		// Ignore out-of-scan-range samples to avoid wrap and bad positioning.
@@ -1094,17 +1113,17 @@ void OpticalDrive::AnalyzeC1RotPatterns(const QCheckResult& c1Result,
 		const uint64_t pos = static_cast<uint64_t>(s.lba) - static_cast<uint64_t>(firstLBA);
 		double posPct = static_cast<double>(pos) / static_cast<double>(range);
 
-		if (posPct < 0.33) { innerC1 += s.c1; innerN++; }
-		else if (posPct < 0.66) { middleC1 += s.c1; middleN++; }
-		else { outerC1 += s.c1; outerN++; }
+		if (posPct < 0.33) { innerC1 += s.c1; innerN += s.measuredSectors; }
+		else if (posPct < 0.66) { middleC1 += s.c1; middleN += s.measuredSectors; }
+		else { outerC1 += s.c1; outerN += s.measuredSectors; }
 	}
 
 	if (innerN == 0 && middleN == 0 && outerN == 0)
 		return;
 
-	double avgInner = innerN > 0 ? innerC1 / innerN : 0;
-	double avgMiddle = middleN > 0 ? middleC1 / middleN : 0;
-	double avgOuter = outerN > 0 ? outerC1 / outerN : 0;
+	double avgInner = innerN > 0 ? innerC1 * 75.0 / innerN : 0;
+	double avgMiddle = middleN > 0 ? middleC1 * 75.0 / middleN : 0;
+	double avgOuter = outerN > 0 ? outerC1 * 75.0 / outerN : 0;
 
 	std::cout << "\n--- C1 Zone Analysis (early warning) ---\n";
 	std::cout << "  Inner  avg C1/sec: " << std::fixed << std::setprecision(1) << avgInner << "\n";
@@ -1120,12 +1139,11 @@ void OpticalDrive::AnalyzeC1RotPatterns(const QCheckResult& c1Result,
 	bool c1EdgeElevated = zonesComparable && (avgOuter > avgInner * 3.0) && (avgOuter > 10.0);
 	bool c1Progressive = zonesComparable && (avgInner < avgMiddle) &&
 		(avgMiddle < avgOuter) && (avgOuter > 10.0);
-	const auto c1Band = ScanQuality::RateC1(c1Result.avgC1PerSecond);
+	const auto c1Band = c1Result.c1.Rating();
 	bool c1OverallHigh = c1Band == ScanQuality::C1Rating::Fair ||
 		c1Band == ScanQuality::C1Rating::Poor;
 	bool c1RateHigh = c1Band == ScanQuality::C1Rating::Poor;
-	std::cout << "  C1 average rating: " << ScanQuality::C1RatingName(c1Band) << "\n";
-	std::cout << "  C1 sustained rating: " << RateSustainedC1(c1Result.peaks) << "\n";
+
 	ScanQuality::PrintC1Policy(std::cout);
 
 	if (c1EdgeElevated)

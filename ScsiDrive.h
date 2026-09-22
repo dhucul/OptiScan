@@ -189,7 +189,7 @@ public:
 	// drives.  Similar to Q-Check but uses a different command set.
 	bool SupportsLiteOnScan();
 	bool LiteOnScanStart(DWORD startLBA, DWORD endLBA);
-	bool LiteOnScanPoll(int& c1, int& c2, int& cu, DWORD& currentLBA, bool& scanDone);
+	bool LiteOnScanPoll(int& c1, int& c2, int& cu, DWORD& currentLBA, bool& scanDone, DWORD* measuredSectors = nullptr);
 	bool LiteOnScanStop();
 
 	// ── LiteOn/MediaTek jitter & beta scan (0xDF/0x1B vendor command) ─
@@ -220,7 +220,7 @@ public:
 	bool SupportsPioneerScan();
 	bool PioneerScanStart(DWORD startLBA, DWORD endLBA);
 	bool PioneerScanPoll(int& c1, int& e22, int& cu, DWORD& currentLBA,
-		bool& scanDone, bool* outValid = nullptr);
+		bool& scanDone, bool* outValid = nullptr, DWORD* measuredSectors = nullptr);
 	bool PioneerScanStop();
 
 	// ── Drive capabilities ───────────────────────────────────────
@@ -380,7 +380,7 @@ private:
 	// LiteOn vendor scan accumulates real error/servo counts. Chunked <= 16
 	// sectors per read (0xFFFE ATAPI transfer ceiling). Read failures are ignored
 	// — a defective sector is itself a scan result the drive counts.
-	void LiteOnScanDriveHead(DWORD lba, DWORD sectors);
+	bool LiteOnScanDriveHead(DWORD lba, DWORD sectors);
 
 	// Lazily probe and cache the READ CD form (expected sector type + main
 	// channel) the drive accepts for CD-DA, using a throwaway 1-sector read at

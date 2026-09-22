@@ -450,11 +450,15 @@ OpticalDrive::PioneerQualityFallbackResult OpticalDrive::RunPioneerVendorQuality
 	result = BlerResult{};
 	result.measurementMethod = qc.scanMethod;
 	result.totalSectors = qc.totalSectors;
+	result.graphStartLba = qc.graphStartLba;
+	result.graphSectors = qc.graphSectors;
 	result.totalSeconds = static_cast<int>(qc.totalSeconds);
 	result.hasC1Data = !qc.c1Unverified && !qc.samples.empty();
 	result.totalC1Errors = qc.totalC1;
 	result.avgC1PerSecond = qc.avgC1PerSecond;
-	result.maxC1PerSecond = qc.maxC1PerSecond;
+	result.c1 = qc.c1;
+	result.c1Samples = C1Intervals(qc.samples);
+	result.maxC1PerSample = qc.maxC1PerSample;
 	result.totalC2Errors = qc.totalC2;
 	result.avgC2PerSecond = qc.avgC2PerSecond;
 	result.maxC2PerSecond = qc.maxC2PerSecond;

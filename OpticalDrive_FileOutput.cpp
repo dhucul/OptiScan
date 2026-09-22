@@ -273,16 +273,7 @@ bool OpticalDrive::SaveBlerLog(const BlerResult& result, const std::wstring& fil
 		<< std::setfill(' ') << " (mm:ss)\n";
 	log << "#\n";
 	log << "# --- Error Statistics ---\n";
-	if (result.hasC1Data) {
-		log << "# Total C1 Errors:       " << result.totalC1Errors << "\n";
-		log << "# Avg C1/sec:            " << std::fixed << std::setprecision(2)
-			<< result.avgC1PerSecond << "\n";
-		log << "# Max C1/sec:            " << result.maxC1PerSecond << "\n";
-		log << "# C1 Average Rating:     " << ScanQuality::C1RatingName(
-			ScanQuality::RateC1(result.avgC1PerSecond, !result.perSecondC1.empty())) << "\n";
-		log << "# C1 Sustained Rating:   " << result.sustainedC1Rating << "\n";
-		ScanQuality::PrintC1Policy(log, "# ");
-	}
+	ScanQuality::PrintC1Summary(log, result.c1, result.totalSectors, "# ");
 	if (result.c2Unverified) {
 		log << "# Total C2 Errors:       N/A (not measured)\n";
 		log << "# Sectors with C2:       N/A (not measured)\n";
@@ -368,8 +359,18 @@ bool OpticalDrive::SaveBlerLog(const BlerResult& result, const std::wstring& fil
 	}
 
 	// --- Per-second CSV data ---
+	log << "# C1Interval,LBA,CoveredSectors,RawCount,ErrorsPerSecond\n";
+	for (const auto& sample : result.c1Samples) {
+		log << "# C1Interval," << sample.lba << ",";
+		if (sample.sectors > 0) log << sample.sectors;
+		log << "," << sample.errors << ",";
+		if (result.c1.RateAvailable() && sample.sectors > 0)
+			log << std::fixed << std::setprecision(4) << sample.errors * 75.0 / sample.sectors;
+		log << "\n";
+	}
+
 	log << "# ==============================\n";
-	log << (result.c2Unverified ? "# Per-Second Measured Quality Data\n" : "# Per-Second C2 Error Data\n");
+	log << (result.c2Unverified ? "# Per-Sample Measured Quality Counts\n" : "# Per-Second C2 Error Data\n");
 	log << "# ==============================\n";
 	if (result.c2Unverified) {
 		if (result.pioneerVendorQuality) {
@@ -380,15 +381,15 @@ bool OpticalDrive::SaveBlerLog(const BlerResult& result, const std::wstring& fil
 					: result.perSecondPioneerE22[i].first;
 				int c1 = i < result.perSecondC1.size() ? result.perSecondC1[i].second : 0;
 				int e22 = i < result.perSecondPioneerE22.size() ? result.perSecondPioneerE22[i].second : 0;
-				log << (i / 60) << ":" << std::setfill('0') << std::setw(2) << (i % 60)
-					<< std::setfill(' ') << "," << i << "," << lba << "," << c1 << "," << e22 << "\n";
+				log << (lba / 75 / 60) << ":" << std::setfill('0') << std::setw(2) << (lba / 75 % 60)
+					<< std::setfill(' ') << "," << (lba / 75) << "," << lba << "," << c1 << "," << e22 << "\n";
 			}
 		}
 		else if (!result.perSecondC1.empty()) {
 			log << "Time,Second,LBA,C1\n";
 			for (size_t i = 0; i < result.perSecondC1.size(); i++)
-				log << (i / 60) << ":" << std::setfill('0') << std::setw(2) << (i % 60)
-					<< std::setfill(' ') << "," << i << "," << result.perSecondC1[i].first
+				log << (result.perSecondC1[i].first / 75 / 60) << ":" << std::setfill('0') << std::setw(2) << (result.perSecondC1[i].first / 75 % 60)
+					<< std::setfill(' ') << "," << (result.perSecondC1[i].first / 75) << "," << result.perSecondC1[i].first
 					<< "," << result.perSecondC1[i].second << "\n";
 		}
 		else {

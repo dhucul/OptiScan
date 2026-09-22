@@ -69,8 +69,7 @@ void OpticalDrive::PrintComprehensiveReport(const ComprehensiveScanResult& resul
 	// BLER Summary
 	std::cout << "\n--- BLER Quality ---\n";
 	std::cout << "  Rating:           " << result.bler.qualityRating << "\n";
-	std::cout << "  C1 average band:  " << ScanQuality::C1RatingName(
-		ComprehensiveQuality::C1Assessment(result)) << "\n";
+	ScanQuality::PrintC1Summary(std::cout, result.bler.c1, result.bler.totalSectors);
 	std::cout << "  C1 grade caps: Excellent=A, Good=B, Fair=C, Poor=F (OptiScan policy).\n";
 	if (result.bler.c2Unverified) {
 		std::cout << "  C2 measurement:   NOT VERIFIED / NOT MEASURED\n";
@@ -216,8 +215,7 @@ bool OpticalDrive::SaveComprehensiveReport(const ComprehensiveScanResult& result
 	file << "BLER Quality\n";
 	file << "------------\n";
 	file << "Rating:          " << result.bler.qualityRating << "\n";
-	file << "C1 average band: " << ScanQuality::C1RatingName(
-		ComprehensiveQuality::C1Assessment(result)) << "\n";
+	ScanQuality::PrintC1Summary(file, result.bler.c1, result.bler.totalSectors, "");
 	file << "C1 grade caps: Excellent=A, Good=B, Fair=C, Poor=F (OptiScan policy).\n";
 	file << "C2 measurement:  " << (result.bler.c2Unverified ? "NOT VERIFIED / NOT MEASURED" : "MEASURED") << "\n";
 	file << "Total C2 errors: ";

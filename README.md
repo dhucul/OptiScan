@@ -6,7 +6,7 @@ A Windows **GUI application** for high-quality audio CD ripping, writing, and ad
 
 OptiScan reads and writes audio CDs at the raw sector level using SCSI/MMC commands and provides multiple quality scanning modes to assess disc health before, during, or after extraction.
 
-**[Download OptiScan 3.35](https://github.com/dhucul/OptiScan/releases/latest)** — choose `OptiScan-3.35-Setup.exe`, the 64-bit installer for Windows 10 or later. It installs the Microsoft Visual C++ 2015–2022 runtime when needed, so setup requires administrator rights.
+**[Download OptiScan 3.38](https://github.com/dhucul/OptiScan/releases/latest)** — choose `OptiScan-3.38-Setup.exe`, the 64-bit installer for Windows 10 or later. It installs the Microsoft Visual C++ 2015–2022 runtime when needed, so setup requires administrator rights.
 
 > [!IMPORTANT]
 > **Drive compatibility is not universal.** OptiScan relies on low-level SCSI/MMC and vendor-specific optical-drive commands, so support depends on the exact drive model, firmware, chipset, USB bridge, and media type. A drive may work for normal ripping but still fail features such as pregap detection, subchannel reading/writing, CD-Text writing, C2/C1 reporting, or hardware quality scans.
@@ -329,11 +329,13 @@ Some drives expose per-sector C1 block error counts in bytes 294–295 of the C2
 
 | Metric | Description |
 |---|---|
-| **Avg C1/sec** | Mean C1 corrections per second (when available) |
+| **Avg C1/sec** | Observed C1 total divided by measured audio duration (covered sectors / 75); one rate grade |
+| **Total C1 / coverage** | Ungraded count, actual measured audio duration and percentage of requested audio |
+| **Worst observed 10-second average** | Highest complete contiguous timed window; unavailable when timing or coverage is insufficient |
 | **Max C1/sec** | Peak one-second C1 count |
 | **Avg C2/sec** | Mean C2 errors per second across the entire disc |
 | **Max C2/sec** | Peak one-second error count (with timestamp) |
-| **Sustained C1** | Highest level held across three consecutive samples; same bands as the average |
+| **Sustained C1** | Highest level held across three complete contiguous measured seconds; shown separately from the average grade |
 | **220/sec reference** | Context only; no Red Book compliance PASS/FAIL is claimed |
 | **Measurement limits** | C1 does not determine remaining C2 correction capacity or archival life |
 | **Per-track breakdown** | C1 count, C2 count, affected sectors, avg/sec, and status per track |
@@ -341,7 +343,7 @@ Some drives expose per-sector C1 block error counts in bytes 294–295 of the C2
 
 #### Shared C1 Assessment Scale
 
-| C1 errors/sec (average or sustained) | Assessment |
+| Average C1 errors/sec | Assessment |
 |---|---|
 | Below 5 | **EXCELLENT** |
 | 5 to below 50 | **GOOD** |
@@ -352,7 +354,7 @@ Some drives expose per-sector C1 block error counts in bytes 294–295 of the C2
 These are OptiScan observed-rate bands, not archival certification. Raw peaks
 remain visible; brief spikes have an unknown cause. Graph colours use fixed
 50/220 boundaries regardless of vertical scale. Whole-scan averages and the
-three-sample sustained diagnostic do not implement the ten-second BLER test.
+sustained diagnostic do not certify compliance. A worst observed 10-second average is reported only for complete contiguous timed windows; it remains a diagnostic, not a compliance verdict.
 See [C1 rating policy and sources](docs/c1-rating-policy.md) for measurement
 limits and consistent use by Q-Check, BLER, Disc Rot and Disc Balance.
 
@@ -1103,7 +1105,7 @@ Installer builds additionally require **Inno Setup 6** and `installer\redist\vc_
 powershell -ExecutionPolicy Bypass -File installer\build-installer.ps1
 ```
 
-The script discovers MSBuild with `vswhere`, builds `Release | x64` into the separate `installer\Release` staging directory, and writes the versioned setup executable to `installer\Output`. Using a separate staging directory allows packaging to succeed even when the regular `x64\Release\OptiScan.exe` is running.
+The script discovers MSBuild with `vswhere`, rebuilds `Release | x64` into `x64\Release`, and packages that same executable into the versioned setup in `installer\Output`. This is the only application Release output folder. Close OptiScan before rebuilding if you are running it from this folder.
 
 Before producing a release, keep the version synchronized in `installer\OptiScan.iss`, `OptiScan.rc`, and `UpdateChecker.cpp`. The installer filename is derived from the version in `installer\OptiScan.iss`.
 

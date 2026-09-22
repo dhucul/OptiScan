@@ -14,8 +14,7 @@ inline bool HasConfirmedFailure(const ComprehensiveScanResult& result) {
 }
 
 inline ScanQuality::C1Rating C1Assessment(const ComprehensiveScanResult& result) {
-	return ScanQuality::RateC1(result.bler.avgC1PerSecond,
-		result.bler.hasC1Data && !result.bler.perSecondC1.empty());
+	return result.bler.c1.Rating();
 }
 
 inline bool IsIncomplete(const ComprehensiveScanResult& result) {

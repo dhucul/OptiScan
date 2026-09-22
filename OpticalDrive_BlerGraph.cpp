@@ -32,8 +32,10 @@ void OpticalDrive::PrintBlerGraph(const BlerResult& result, int width, int heigh
 	if (width <= 0 || height <= 0) return;
 
 	// ── C1 Error Distribution ────────────────────────────────────────
-	if (result.hasC1Data && !result.perSecondC1.empty()) {
-		int peakC1 = PeakOf(result.perSecondC1);
+	if (result.c1.RateAvailable() && !result.c1Samples.empty()) {
+		const auto graph = ScanQuality::BuildTimedCounterGraph(result.c1Samples,
+			result.graphStartLba, result.graphSectors, width);
+		const int peakC1 = graph.valid ? *std::max_element(graph.values.begin(), graph.values.end()) : 0;
 		if (peakC1 > 0) {
 			// Ensure the Red Book reference line is always visible — pad
 			// scale to at least 250 even on pristine discs.
@@ -41,12 +43,13 @@ void OpticalDrive::PrintBlerGraph(const BlerResult& result, int width, int heigh
 
 			Console::GraphOptions opts;
 			opts.title = "C1 Error Distribution";
-			opts.subtitle = "Peak C1 errors per second across the disc";
+			opts.subtitle = "Measured C1 interval rates (whole-number display)";
 			opts.width = width;
 			opts.height = height;
 			Console::ConfigureC1Graph(opts);
+			Console::ConfigureTimedGraph(opts, graph);
 
-			auto buckets = ToBuckets(result.perSecondC1, width);
+			const auto& buckets = graph.values;
 			Console::DrawBarGraph(buckets, graphMax, opts, result.totalSeconds);
 
 			if (peakC1 >= ScanQuality::kC1GraphHighThreshold)

@@ -29,15 +29,30 @@ consumer drive. No label certifies archival suitability or a correct rip.
   discusses the 220 BLER limit and a preferred initial CD-R error rate below 50.
   This guidance is not a source for OptiScan's four named bands.
 
-OptiScan reports observed whole-scan or sampled-region means. Its sustained
-diagnostic is the maximum of the minimum values in each group of three
-consecutive samples. This is **not a three-second average or a ten-second BLER
-test**. Where positions are supplied, gaps, duplicates and reversed positions
-break persistence; fewer than three consecutive samples cannot receive a
-sustained rating. Unknown timing is not converted into a standards claim.
+OptiScan grades the **average C1 rate once**. The raw total is ungraded and
+is displayed with measured audio duration and coverage of the requested range.
+The mean is total observed C1 divided by **covered sectors / 75**. It never uses
+host elapsed time or the number of polls as a substitute for disc duration.
 
-The average and sustained diagnostic share the same bands but measure different
-things. Raw peaks and percentiles remain visible. Brief excursions are not
+The host-driven Lite-On and Pioneer readers attach their actual interval
+length, including shortened final intervals. Lite-On head-read failures leave
+duration unknown, and a failed interval-counter reset ends the scan rather
+than carrying accumulated counts into another interval. READ CD counts only successful
+C1 observations; failed sectors and non-audio gaps do not dilute the average.
+Fixed startup exclusions and skipped invalid vendor responses reduce reported
+coverage. Duplicate/overlapping or reversed intervals invalidate rate timing.
+Classic asynchronous Plextor and newer Lite-On responses do not currently
+establish counter-interval duration, so raw counts remain available but C1
+rates, coverage, rate graphs and the associated grade are withheld.
+
+The sustained diagnostic uses three **complete contiguous measured seconds**.
+Partial intervals contribute to the mean and peak interval rate, but counts
+are never proportionally split to manufacture one-second observations. The
+worst observed 10-second average uses complete contiguous windows aligned to
+sample boundaries; it is unavailable without 750 covered contiguous sectors.
+It is a local diagnostic, **not a Red Book compliance test**.
+
+The average is graded; sustained activity and the raw peak are shown as separate measurements. Raw peaks and percentiles remain visible. Brief excursions are not
 automatically attributed to the drive; they may still matter. Recorded early
 spikes are no longer deleted based on their size. Hardware scans still omit a
 fixed three-response startup warmup; their output describes retained samples.
@@ -78,3 +93,19 @@ Host-driven LiteOn samples now report interval **start** positions consistently,
 including the final full or partial interval. Reaching the end is represented
 by the completion flag; it no longer changes the coordinate convention and
 cannot turn a final full interval into a false sampling gap.
+
+## Graph positions and quiet balance samples
+
+C1 bar graphs and hardware-scan heatmaps bucket intervals by their actual
+LBA span over the requested disc range. A retained sample index is not a time
+coordinate. Missing columns display `?`; partly measured columns display `~`.
+Observed zero counts remain distinct from missing data. Screen-reader graphs
+use the original interval's peak position and the weighted measured average,
+not averages of pixel-column maxima. Nonzero scan starts and partial seconds
+are retained in axis labels.
+
+A completed, correctly timed balance sample is valid even when every counter
+is zero. The sweep continues to later speeds; a flat or entirely quiet sweep
+is assessed after collection. Failed, incomplete or untimed captures remain
+excluded. Reports with no C1 observations show an unavailable raw peak, never
+an invented zero peak.
