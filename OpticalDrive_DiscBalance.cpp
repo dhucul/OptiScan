@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "OpticalDrive.h"
+#include "QualityScanSession.h"
 #include "InterruptHandler.h"
 #include "PioneerVendor.h"
 #include <iostream>
@@ -63,6 +64,7 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 	bool hasPioneerHwC1 = m_drive.SupportsPioneerScan();
 	bool hasReadCdC2 = m_drive.CheckC2Support();
 	bool hasLiteOnHwC1 = !hasPioneerHwC1 && m_drive.SupportsLiteOnScan();
+	if (!m_drive.IsOpen()) { std::cout << "ERROR: Drive closed after scan cleanup failed. Reopen it.\n"; return false; }
 	bool hasHwC1 = hasPioneerHwC1 || hasLiteOnHwC1;
 	if (!hasReadCdC2 && !hasHwC1) {
 		std::cout << "ERROR: Disc balance check requires READ CD C2 or a supported\n"
@@ -449,10 +451,18 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 			m_drive.SetSpeed(speeds[s]);
 			Sleep(300);
 
+			QualityScanSession eccSession([&]() {
+				return hasPioneerHwC1 ? m_drive.PioneerScanStop() : m_drive.LiteOnScanStop();
+			});
 			bool started = hasPioneerHwC1
 				? m_drive.PioneerScanStart(outerStartLBA, maxLBA)
 				: m_drive.LiteOnScanStart(outerStartLBA, maxLBA);
 			if (!started) {
+				if (!eccSession.Stop()) {
+					std::cout << "\nERROR: Hardware scan cleanup failed; drive closed. Reopen it.\n";
+					m_drive.Close();
+					return false;
+				}
 				hwSweepFailed = true;
 				break;
 			}
@@ -464,6 +474,7 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 			DWORD firstLBA = 0, lastLBA = 0;
 			bool haveFirstLBA = false;
 			DWORD lastReportedLBA = DWORD(-1);
+			DWORD progressLBA = DWORD(-1);
 			int startupSamples = 0;
 			auto lastLBAProgress = std::chrono::steady_clock::now();
 			constexpr auto QCHECK_STALL_TIMEOUT = std::chrono::seconds(30);
@@ -477,36 +488,39 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 				DWORD lba = 0;
 				DWORD measuredSectors = 0;
 				bool done = false;
-				bool pioneerSampleValid = true;
+				bool sampleValid = true;
 
 				bool pollOk = hasPioneerHwC1
 					? m_drive.PioneerScanPoll(c1, secondStage, cu, lba, done,
-						&pioneerSampleValid, &measuredSectors)
-					: m_drive.LiteOnScanPoll(c1, secondStage, cu, lba, done, &measuredSectors);
+						&sampleValid, &measuredSectors)
+					: m_drive.LiteOnScanPoll(c1, secondStage, cu, lba, done, &measuredSectors, &sampleValid);
 				if (!pollOk && hasPioneerHwC1) {
 					std::this_thread::sleep_for(std::chrono::milliseconds(200));
 					pollOk = m_drive.PioneerScanPoll(
-						c1, secondStage, cu, lba, done, &pioneerSampleValid, &measuredSectors);
+						c1, secondStage, cu, lba, done, &sampleValid, &measuredSectors);
 				}
 				if (!pollOk) {
 					communicationLost = true;
 					break;
 				}
 
-				if (!hasPioneerHwC1 && lba >= maxLBA)
-					done = true;
-				if (hasPioneerHwC1 && !pioneerSampleValid)
-					continue;
+
 
 				const auto pollTime = std::chrono::steady_clock::now();
-				if (done || lba != lastReportedLBA)
+				if (done || progressLBA == DWORD(-1) || lba > progressLBA) {
+					progressLBA = lba;
 					lastLBAProgress = pollTime;
+				}
 				else if (pollTime - lastLBAProgress >= QCHECK_STALL_TIMEOUT) {
 					communicationLost = true;
 					break;
 				}
 
-				if (!hasPioneerHwC1 && lba == 0 && c1 == 0 &&
+				if (!sampleValid) {
+					if (done) break;
+					continue;
+				}
+				if (!hasPioneerHwC1 && measuredSectors == 0 && lba == 0 && c1 == 0 &&
 					secondStage == 0 && cu == 0 && !done) {
 					continue;
 				}
@@ -521,7 +535,7 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 				lastReportedLBA = lba;
 
 				// Skip first 3 samples — drive reports accumulated startup errors
-				if (startupSamples < 3 && !done) {
+				if (measuredSectors == 0 && startupSamples < 3 && !done) {
 					startupSamples++;
 					continue;
 				}
@@ -535,8 +549,11 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 			}
 
 			// Always called — even on cancel.
-			if (hasPioneerHwC1) m_drive.PioneerScanStop();
-			else m_drive.LiteOnScanStop();
+			if (!eccSession.Stop()) {
+				std::cout << "\nERROR: Could not stop hardware scan; remaining balance checks cancelled. Reopen the drive.\n";
+				m_drive.Close();
+				return false;
+			}
 
 			// Log actual scan position for diagnostics
 			char dbg[128];
@@ -551,7 +568,7 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore) {
 			if (communicationLost || validSamples < HW_SAMPLES_PER_SPEED) {
 				hwSweepFailed = true;
 				std::cout << "  Hardware ECC sweep at " << speeds[s] << "x "
-					<< (communicationLost ? "lost communication or stalled" : "ended early")
+					<< (communicationLost ? "lost communication, returned invalid positions, or stalled" : "ended early")
 					<< " after " << validSamples << "/" << HW_SAMPLES_PER_SPEED
 					<< " usable samples; partial bucket discarded.\n";
 				validSamples = 0;

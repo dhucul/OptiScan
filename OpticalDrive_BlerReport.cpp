@@ -1,4 +1,4 @@
-﻿#define NOMINMAX
+#define NOMINMAX
 #include "OpticalDrive.h"
 #include "ConsoleGraph.h"
 #include <iostream>
@@ -45,15 +45,17 @@ void OpticalDrive::PrintBlerReport(const DiscInfo& disc, const BlerResult& resul
 		if (result.pioneerVendorQuality) {
 			std::cout << "\n--- Pioneer E22 Diagnostic (not C2) ---\n";
 			std::cout << "  Total E22:        " << result.pioneerE22Total << "\n";
-			std::cout << "  Avg E22/sec:      " << std::fixed << std::setprecision(2)
-				<< result.pioneerE22AvgPerSecond << "\n";
-			std::cout << "  Sustained E22/sec: "
-				<< result.peaks.sustainedPioneerE22PerSecond << "  (rated on this)\n";
-			std::cout << "  Raw peak E22/sec: " << result.pioneerE22Peak << "\n";
+			ScanQuality::PrintCounterSummary(std::cout, "E22", result.pioneerE22Observations);
+			if (result.pioneerE22Observations.RateAvailable() && result.peaks.sustainedMeasurable)
+				std::cout << "  Sustained E22/sec: " << result.peaks.sustainedPioneerE22PerSecond << "\n";
+			else std::cout << "  Sustained E22: unavailable\n";
 			std::cout << "  Rating:           " << result.pioneerE22Rating
 				<< " (" << PioneerE22RatingDescription(result.pioneerE22Rating)
 				<< "; diagnostic only)\n";
-			if (ScanQuality::TransientNoteWarranted(result.pioneerE22Peak,
+			if (result.pioneerE22Observations.RateAvailable() &&
+				std::all_of(result.c1Samples.begin(), result.c1Samples.end(),
+					[](const ScanQuality::C1Interval& s) { return s.sectors == 75; }) &&
+				ScanQuality::TransientNoteWarranted(result.pioneerE22Peak,
 					result.peaks.peakPioneerE22Transient,
 					ScanQuality::kMinE22PeakWorthExplaining)) {
 				ScanQuality::SeriesStats shown;
@@ -76,6 +78,7 @@ void OpticalDrive::PrintBlerReport(const DiscInfo& disc, const BlerResult& resul
 			else
 				std::cout << "NO - completed Pioneer CD Check\n";
 		}
+		PrintBlerGraph(result);
 		std::cout << "\n" << std::string(60, '=') << "\n";
 		return;
 	}

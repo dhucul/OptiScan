@@ -330,7 +330,7 @@ Some drives expose per-sector C1 block error counts in bytes 294–295 of the C2
 | Metric | Description |
 |---|---|
 | **Avg C1/sec** | Observed C1 total divided by measured audio duration (covered sectors / 75); one rate grade |
-| **Total C1 / coverage** | Ungraded count, actual measured audio duration and percentage of requested audio |
+| **Total C1 / coverage** | Total count explained as Excellent, Good, Fair or Poor for the amount of audio measured, with duration and coverage |
 | **Worst observed 10-second average** | Highest complete contiguous timed window; unavailable when timing or coverage is insufficient |
 | **Max C1/sec** | Peak one-second C1 count |
 | **Avg C2/sec** | Mean C2 errors per second across the entire disc |

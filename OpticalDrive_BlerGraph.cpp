@@ -32,18 +32,19 @@ void OpticalDrive::PrintBlerGraph(const BlerResult& result, int width, int heigh
 	if (width <= 0 || height <= 0) return;
 
 	// ── C1 Error Distribution ────────────────────────────────────────
-	if (result.c1.RateAvailable() && !result.c1Samples.empty()) {
-		const auto graph = ScanQuality::BuildTimedCounterGraph(result.c1Samples,
-			result.graphStartLba, result.graphSectors, width);
+	if (!result.c1Samples.empty()) {
+		const auto graph = ScanQuality::BuildObservedCounterGraph(result.c1Samples,
+			result.graphStartLba, result.graphSectors, width, result.hasC1Data);
 		const int peakC1 = graph.valid ? *std::max_element(graph.values.begin(), graph.values.end()) : 0;
-		if (peakC1 > 0) {
+		if (graph.valid) {
 			// Ensure the Red Book reference line is always visible — pad
 			// scale to at least 250 even on pristine discs.
-			int graphMax = std::max(peakC1, 250);
+			int graphMax = std::max(peakC1, graph.rawCounts ? 1 : 250);
 
 			Console::GraphOptions opts;
 			opts.title = "C1 Error Distribution";
-			opts.subtitle = "Measured C1 interval rates (whole-number display)";
+			opts.subtitle = graph.rawCounts ? "Recorded C1 counts per sample; per-second rate unavailable"
+				: "Measured C1 interval rates (whole-number display)";
 			opts.width = width;
 			opts.height = height;
 			Console::ConfigureC1Graph(opts);
@@ -52,7 +53,7 @@ void OpticalDrive::PrintBlerGraph(const BlerResult& result, int width, int heigh
 			const auto& buckets = graph.values;
 			Console::DrawBarGraph(buckets, graphMax, opts, result.totalSeconds);
 
-			if (peakC1 >= ScanQuality::kC1GraphHighThreshold)
+			if (!graph.rawCounts && peakC1 >= ScanQuality::kC1GraphHighThreshold)
 				std::cout << "  Raw C1 crosses the 220/sec reference. A raw peak alone "
 					"does not establish a 10-second BLER failure.\n";
 

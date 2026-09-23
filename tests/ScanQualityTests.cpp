@@ -303,11 +303,11 @@ int RunScanQualityTests() {
 		"Empty replacement observations cannot retain a prior rate or local window");
 	std::ostringstream c1Report;
 	PrintC1Summary(c1Report, gap, 225);
-	check(c1Report.str().find("100 (ungraded)")!=std::string::npos &&
+	check(c1Report.str().find("Total C1 observed: 100 - FAIR for 0:02.000")!=std::string::npos &&
 		c1Report.str().find("0:02.000")!=std::string::npos &&
 		c1Report.str().find("66.67%")!=std::string::npos &&
 		c1Report.str().find("50.00/sec - FAIR")!=std::string::npos,
-		"Shared report associates the ungraded total with measured duration, coverage and one average grade");
+		"Shared report explains the total using measured duration, coverage and the average-rate assessment");
 	check(BuildTimedCounterGraph({{0,30,4}},0,30,1).values == std::vector<int>{10},
 		"C1 graph uses the same duration normalization as the numeric report");
 	QCheckResult timedHardware;
@@ -447,5 +447,121 @@ int RunScanQualityTests() {
 	check(accessible.str().find("at 1:40")!=std::string::npos &&
 		accessible.str().find("Average 33.33/sec")!=std::string::npos,
 		"The actual accessibility switch selects the corrected graph summary");
+
+	// A missing duration must not erase counters the drive actually returned.
+	const std::vector<C1Interval> unknownTiming = {{0,0,10},{75,0,80},{150,0,20}};
+	const auto rawGraph = BuildObservedCounterGraph(unknownTiming,0,225,3);
+	check(rawGraph.valid && rawGraph.rawCounts && rawGraph.values==std::vector<int>({10,80,20}) &&
+		rawGraph.peak==80 && rawGraph.peakLba==75,
+		"Untimed hardware samples retain their normal graph and observed peak");
+	const auto mixedGraph=BuildObservedCounterGraph({{0,75,10},{75,0,800},{150,75,20}},0,225,3);
+	check(mixedGraph.valid && mixedGraph.rawCounts && mixedGraph.values==std::vector<int>({10,800,20}),
+		"One unknown interval cannot discard the whole graph or its largest observed count");
+	check(!SummarizeC1(unknownTiming).RateAvailable() && !SummarizeC1(unknownTiming).tenSecondWindowAvailable,
+		"Restoring count graphs does not invent rates or change C1 quality ratings");
+	const auto measuredGraph=BuildObservedCounterGraph({{0,75,3},{75,30,4}},0,105,7);
+	check(measuredGraph.valid && !measuredGraph.rawCounts && measuredGraph.values==partialGraph.values,
+		"Verified durations keep the measured-rate graph and partial-interval normalization");
+	const auto unverifiedZero=BuildObservedCounterGraph({{0,75,0},{75,75,0}},0,150,2,false);
+	check(unverifiedZero.valid && unverifiedZero.rawCounts && unverifiedZero.peak==0 &&
+		unverifiedZero.values==std::vector<int>({0,0}),
+		"Unverified zero counters remain visible as recorded zeros without a clean rate verdict");
+	const auto rawGap=BuildObservedCounterGraph({{0,0,10},{150,0,80}},0,225,3);
+	check(rawGap.valid && rawGap.values==std::vector<int>({10,-1,80}) && rawGap.partialCoverage.empty(),
+		"Raw count plots keep reported positions without inventing coverage between polls");
+	check(!BuildObservedCounterGraph({},0,75,3).valid &&
+		!BuildObservedCounterGraph({{75,0,10}},0,75,3).valid &&
+		!BuildObservedCounterGraph({{0,0,-1}},0,75,3).valid,
+		"Empty, out-of-range and invalid raw counts cannot fabricate a graph");
+	Console::ConfigureC1Graph(timedOptions);
+	Console::ConfigureTimedGraph(timedOptions,rawGraph);
+	const auto countDisplay = Console::GraphDisplayOptions(timedOptions);
+	check(countDisplay.unitSuffix=="/sample" && countDisplay.refLine==0 &&
+		!countDisplay.colorize && countDisplay.severityLowThreshold==0,
+		"Count-only graphs remove per-second labels, the 220 reference and rate-based colors");
+	Accessibility::SetEnabled(false);
+	accessible.str(""); accessible.clear();
+	savedOutput=std::cout.rdbuf(accessible.rdbuf());
+	Console::DrawBarGraph(rawGraph.values,80,timedOptions,3);
+	std::cout.rdbuf(savedOutput);
+	check(accessible.str().find("80/sample")!=std::string::npos &&
+		accessible.str().find(Console::Sym::Bar8)!=std::string::npos &&
+		accessible.str().find('?')==std::string::npos && accessible.str().find("/sec")==std::string::npos,
+		"Normal bars return for recorded samples instead of an all-question-mark display");
+	Accessibility::SetEnabled(true);
+	accessible.str(""); accessible.clear();
+	savedOutput=std::cout.rdbuf(accessible.rdbuf());
+	Console::DrawBarGraph(rawGraph.values,80,timedOptions,3);
+	std::cout.rdbuf(savedOutput);
+	Accessibility::SetEnabled(previousAccessibility);
+	check(accessible.str().find("Peak 80.00/sample at 0:01")!=std::string::npos &&
+		accessible.str().find("over recorded samples")!=std::string::npos &&
+		accessible.str().find("over measured audio")==std::string::npos,
+		"Accessible count graphs report the true raw peak and avoid claiming measured duration");
+
+	// Rate -> count -> missing -> rate transitions preserve the original style.
+	Console::ConfigureTimedGraph(timedOptions,measuredGraph);
+	const auto restored = Console::GraphDisplayOptions(timedOptions);
+	check(!restored.rawCounts && restored.unitSuffix=="/sec" && restored.refLine==220 &&
+		restored.colorize && restored.severityLowThreshold==50 && restored.severityHighThreshold==220,
+		"Returning from raw counts restores rate units, reference line, thresholds and colors");
+	Console::ConfigureTimedGraph(timedOptions,rawGraph);
+	Console::ConfigureTimedGraph(timedOptions,noGraph);
+	check(!timedOptions.observedPeak && !timedOptions.observedAverage && !timedOptions.peakLba,
+		"Missing data after a raw-count graph clears all observed statistics");
+	Console::ConfigureTimedGraph(timedOptions,measuredGraph);
+	check(Console::GraphDisplayOptions(timedOptions).refLine==220 &&
+		Console::GraphDisplayOptions(timedOptions).unitSuffix=="/sec",
+		"A missing-data transition cannot preserve count-only formatting in the next rate plot");
+	Console::GraphOptions customStyle;
+	customStyle.refLine=100; customStyle.refLabel="custom"; customStyle.unitSuffix="/sec";
+	customStyle.colorize=false; customStyle.severityLowThreshold=25; customStyle.severityHighThreshold=100;
+	Console::ConfigureTimedGraph(customStyle,rawGraph);
+	Console::ConfigureTimedGraph(customStyle,measuredGraph);
+	check(!Console::GraphDisplayOptions(customStyle).colorize && customStyle.refLine==100 &&
+		customStyle.refLabel=="custom" && customStyle.severityLowThreshold==25,
+		"Returning to rates restores caller-specific style rather than generic defaults");
+
+	QCheckResult unitReport;
+	unitReport.graphSectors=105;
+	QCheckSample whole; whole.lba=0; whole.measuredSectors=75; whole.c1=1;
+	QCheckSample tail; tail.lba=75; tail.measuredSectors=30; tail.c1=1; tail.c2=8; tail.cu=1; tail.pioneerE22=3;
+	unitReport.samples={whole,tail};
+	const auto measuredC2=BuildQCheckCounterGraph(unitReport,&QCheckSample::c2);
+	const auto measuredCU=BuildQCheckCounterGraph(unitReport,&QCheckSample::cu);
+	check(measuredC2.RateAvailable() && std::abs(measuredC2.average-8.0/1.4)<1e-9 &&
+		CounterPeakText(measuredC2)=="20.00/sec" && CounterPeakText(measuredCU)=="2.50/sec",
+		"Partial-second C2/CU summaries retain fractional rates and agree with their graphs");
+	std::ostringstream screenSummary, csvSummary;
+	PrintCounterSummary(screenSummary,"Primary C2",measuredC2);
+	PrintCounterSummary(csvSummary,"Primary C2",measuredC2,"# ");
+	check(screenSummary.str().find("5.71/sec")!=std::string::npos &&
+		csvSummary.str().find("5.71/sec")!=std::string::npos &&
+		screenSummary.str().find("20.00/sec (at LBA 75)")!=std::string::npos &&
+		csvSummary.str().find("20.00/sec (at LBA 75)")!=std::string::npos,
+		"Screen and exported summaries use identical averages, peaks, units and peak positions");
+	unitReport.c2RecheckSamples={tail};
+	unitReport.c2RecheckSamples[0].measuredSectors=0;
+	const auto untimedRecheck=BuildQCheckCounterGraph(unitReport,&QCheckSample::c2,60,true);
+	check(!untimedRecheck.RateAvailable() && CounterAverageText(untimedRecheck)=="8.00/sample" &&
+		CounterPeakText(untimedRecheck)=="8.00/sample" && measuredC2.RateAvailable(),
+		"A verification pass with unknown duration has its own units and cannot alter primary rates");
+	unitReport.samples[1].measuredSectors=0;
+	const auto rotCounts=BuildQCheckCounterGraph(unitReport,&QCheckSample::c1);
+	check(rotCounts.valid && rotCounts.rawCounts && !SummarizeC1(C1Intervals(unitReport.samples)).RateAvailable(),
+		"Disc Rot and Quality Scan share a count graph even when rate-based assessment is unavailable");
+	const auto untimedC2=BuildQCheckCounterGraph(unitReport,&QCheckSample::c2);
+	const auto untimedCU=BuildQCheckCounterGraph(unitReport,&QCheckSample::cu);
+	screenSummary.str(""); screenSummary.clear();
+	PrintCounterSummary(screenSummary,"C2",untimedC2);
+	PrintCounterSummary(screenSummary,"CU",untimedCU);
+	check(screenSummary.str().find("8.00/sample")!=std::string::npos &&
+		screenSummary.str().find("1.00/sample")!=std::string::npos &&
+		screenSummary.str().find("/sec")==std::string::npos,
+		"Unknown-duration C2/CU counts are never labeled per second in shared summaries");
+	unitReport.samples.clear();
+	const auto emptyCounter=BuildQCheckCounterGraph(unitReport,&QCheckSample::c2);
+	check(CounterAverageText(emptyCounter)=="unavailable" && CounterPeakText(emptyCounter)=="unavailable",
+		"Empty counters report unavailable rather than a fabricated zero rate");
 	return failed;
 }

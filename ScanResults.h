@@ -116,7 +116,7 @@ struct QCheckResult {
 	int maxCUPerSecond = 0;
 
 	// Whether the scan backend actually measures CU (uncorrectable) errors.
-	// Plextor Q-Check and LiteOn/MediaTek report a real E32/CU counter; the
+	// Plextor Q-Check and host-driven LiteOn report E32/CU. LiteOn F3 and the
 	// Pioneer 0x3B/0x3C vendor scan does NOT — it only exposes C1 (BLER) and
 	// the E22 second-stage counter, so its CU is always 0 by omission, not by
 	// measurement. When false, the report must not present CU == 0 as a clean
@@ -172,6 +172,19 @@ enum class QCheckC2Stability {
 	RecheckIncomplete
 };
 
+inline bool HasCompleteQCheckCoverage(const std::vector<QCheckSample>& samples,
+	std::uint32_t firstLba, std::uint64_t sectorCount) {
+	if (samples.empty() || sectorCount == 0 || sectorCount > 0x100000000ULL - firstLba) return false;
+	const std::uint64_t end = std::uint64_t{firstLba} + sectorCount;
+	std::uint64_t next = firstLba;
+	for (const auto& sample : samples) {
+		if (sample.measuredSectors == 0 || sample.lba != next ||
+			sample.measuredSectors > end - next) return false;
+		next += sample.measuredSectors;
+	}
+	return next == end;
+}
+
 inline QCheckC2Stability ClassifyQCheckC2Stability(const QCheckResult& result) {
 	// Positive evidence remains valid even if the verification pass was
 	// interrupted. Only a clean verdict requires a completed pass with at
@@ -180,7 +193,8 @@ inline QCheckC2Stability ClassifyQCheckC2Stability(const QCheckResult& result) {
 		return QCheckC2Stability::Unrecoverable;
 	if (result.c2RecheckTotal > 0)
 		return QCheckC2Stability::Reproducible;
-	if (result.c2RecheckCompleted && !result.c2RecheckSamples.empty() &&
+	if (result.c2RecheckCompleted && HasCompleteQCheckCoverage(result.c2RecheckSamples,
+		result.graphStartLba, result.graphSectors) &&
 		result.totalC2 > 0)
 		return QCheckC2Stability::Intermittent;
 	if (result.totalC2 > 0)
@@ -237,12 +251,25 @@ inline void ComputeScanPeakContext(const std::vector<QCheckSample>& samples,
 	ComputeScanPeakContext(c1, e22, scanSpeedX, out, sampleLbas);
 }
 
-inline std::vector<ScanQuality::C1Interval> C1Intervals(const std::vector<QCheckSample>& samples) {
+inline std::vector<ScanQuality::C1Interval> QCheckCounterIntervals(
+	const std::vector<QCheckSample>& samples, int QCheckSample::*counter) {
 	std::vector<ScanQuality::C1Interval> intervals;
 	intervals.reserve(samples.size());
 	for (const auto& sample : samples)
-		intervals.push_back({sample.lba, sample.measuredSectors, sample.c1});
+		intervals.push_back({sample.lba, sample.measuredSectors, sample.*counter});
 	return intervals;
+}
+
+inline std::vector<ScanQuality::C1Interval> C1Intervals(const std::vector<QCheckSample>& samples) {
+	return QCheckCounterIntervals(samples, &QCheckSample::c1);
+}
+
+// Reports, exports and menu graphs use identical values, units and peak positions.
+inline ScanQuality::TimedCounterGraph BuildQCheckCounterGraph(const QCheckResult& result,
+	int QCheckSample::*counter, int width = 60, bool verificationPass = false) {
+	return ScanQuality::BuildObservedCounterGraph(QCheckCounterIntervals(
+		verificationPass ? result.c2RecheckSamples : result.samples, counter),
+		result.graphStartLba, result.graphSectors, width, !result.c1Unverified);
 }
 
 inline void ComputeTimedC1(QCheckResult& result) {
@@ -251,6 +278,9 @@ inline void ComputeTimedC1(QCheckResult& result) {
 	result.peaks.sustainedMeasurable = result.c1.fullSeconds.persistenceMeasurable;
 	result.peaks.sustainedC1PerSecond = result.c1.fullSeconds.sustainedPeak;
 	result.peaks.p95C1PerSecond = result.c1.fullSeconds.p95;
+	const auto e22 = ScanQuality::SummarizeC1(
+		QCheckCounterIntervals(result.samples, &QCheckSample::pioneerE22), !result.c1Unverified);
+	result.peaks.sustainedPioneerE22PerSecond = e22.fullSeconds.sustainedPeak;
 }
 
 // ── Shared rating entry points ──────────────────────────────────────────────
@@ -404,6 +434,7 @@ struct BlerResult {
 	int pioneerE22Total = 0;
 	double pioneerE22AvgPerSecond = 0.0;
 	int pioneerE22Peak = 0;
+	ScanQuality::TimedCounterGraph pioneerE22Observations;
 	std::string pioneerE22Rating;
 
 	// Pioneer CD Check (0xE6) cross-check. This is the only Pioneer path here
@@ -447,6 +478,7 @@ struct DiscRotAnalysis {
 	int pioneerE22Total = 0;                    // Pioneer vendor diagnostic E22, not counted as C2
 	double pioneerE22AvgPerSecond = 0.0;        // Average Pioneer E22 diagnostic count in Phase 0
 	int pioneerE22Peak = 0;                     // Peak Pioneer E22 diagnostic count in Phase 0
+	ScanQuality::TimedCounterGraph pioneerE22Observations;
 	std::string pioneerE22Rating;               // Ideal / Good / Acceptable / Concerning / NOT RATED
 	bool pioneerDrive = false;                   // Enables explicit CU-unmeasured reporting
 	bool pioneerQualityScanRun = false;          // Phase 0 completed with valid Pioneer samples

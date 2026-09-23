@@ -3,6 +3,7 @@
 #include "InterruptHandler.h"
 #include "ConsoleColor.h"
 #include "ConsoleGraph.h"
+#include "QualityScanSession.h"
 #include "ConsoleFormat.h"
 #include "PioneerVendor.h"
 #include <iostream>
@@ -56,12 +57,11 @@ void RecalculateQCheckTotals(QCheckResult& result) {
 		}
 	}
 
-	DWORD sampleCount = static_cast<DWORD>(result.samples.size());
 	ComputeTimedC1(result);
-	result.avgC2PerSecond = sampleCount > 0
-		? static_cast<double>(result.totalC2) / sampleCount : 0.0;
-	result.avgPioneerE22PerSecond = sampleCount > 0
-		? static_cast<double>(result.totalPioneerE22) / sampleCount : 0.0;
+	const auto c2 = BuildQCheckCounterGraph(result, &QCheckSample::c2);
+	const auto e22 = BuildQCheckCounterGraph(result, &QCheckSample::pioneerE22);
+	result.avgC2PerSecond = c2.RateAvailable() ? c2.average : 0.0;
+	result.avgPioneerE22PerSecond = e22.RateAvailable() ? e22.average : 0.0;
 }
 
 // The E22 tier thresholds used to be duplicated here and in
@@ -127,12 +127,14 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 			useLiteOn = m_drive.SupportsLiteOnScan();
 	}
 
+	if (!m_drive.IsOpen()) { std::cout << "ERROR: Drive closed after scan cleanup failed. Reopen it.\n"; return false; }
 	if (usePlextor || usePioneer || useLiteOn) {
 		c1Result.supported = true;
 		c1Result.scanMethod = usePlextor
 			? "Plextor Q-Check (0xE9/0xEB)"
 			: usePioneer ? "Pioneer (0x3B/0x3C)"
-			: "LiteOn/MediaTek";
+			: m_drive.LiteOnScanMethodName();
+		c1Result.cuMeasured = usePlextor || (useLiteOn && m_drive.LiteOnScanMeasuresCu());
 		c1Result.totalSectors = lastLBA - firstLBA + 1;
 		c1Result.graphStartLba = firstLBA;
 		c1Result.graphSectors = std::uint64_t{lastLBA} - firstLBA + 1;
@@ -143,6 +145,10 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 
 		m_drive.SetSpeed(scanSpeed);
 
+		QualityScanSession c1Session([&]() {
+			return usePlextor ? m_drive.PlextorQCheckStop()
+				: usePioneer ? m_drive.PioneerScanStop() : m_drive.LiteOnScanStop();
+		});
 		bool started = usePlextor
 			? m_drive.PlextorQCheckStart(firstLBA, lastLBA)
 			: usePioneer ? m_drive.PioneerScanStart(firstLBA, lastLBA)
@@ -175,26 +181,26 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 				int c1 = 0, c2 = 0, cu = 0;
 				DWORD currentLBA = 0;
 				DWORD measuredSectors = 0;
-				bool pioneerSampleValid = true;
+				bool sampleValid = true;
 
 				bool pollOk = usePlextor
 					? m_drive.PlextorQCheckPoll(c1, c2, cu, currentLBA, scanDone)
 					: usePioneer
 					? m_drive.PioneerScanPoll(c1, c2, cu, currentLBA, scanDone,
-						&pioneerSampleValid, &measuredSectors)
-					: m_drive.LiteOnScanPoll(c1, c2, cu, currentLBA, scanDone, &measuredSectors);
+						&sampleValid, &measuredSectors)
+					: m_drive.LiteOnScanPoll(c1, c2, cu, currentLBA, scanDone, &measuredSectors, &sampleValid);
 
 				if (!pollOk && (usePlextor || usePioneer)) {
 					std::this_thread::sleep_for(std::chrono::milliseconds(200));
 					pollOk = usePlextor
 						? m_drive.PlextorQCheckPoll(c1, c2, cu, currentLBA, scanDone)
 						: m_drive.PioneerScanPoll(c1, c2, cu, currentLBA, scanDone,
-							&pioneerSampleValid, &measuredSectors);
+							&sampleValid, &measuredSectors);
 				}
 				if (!pollOk) {
 					c1Failed = true;
 					std::ostringstream reason;
-					reason << "lost communication";
+					reason << "lost communication or returned invalid positions";
 					if (lastReportedLBA != DWORD(-1)) {
 						const double coverage = c1Result.totalSectors > 0 &&
 							lastReportedLBA >= firstLBA
@@ -212,13 +218,10 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 
 				// Match Q-Check's completion ordering: detect LiteOn's positional
 				// end marker before filtering empty, duplicate, or startup samples.
-				if (useLiteOn && currentLBA >= lastLBA)
-					scanDone = true;
-				if (usePioneer && !pioneerSampleValid)
-					continue;
+
 
 				auto pollTime = std::chrono::steady_clock::now();
-				if (scanDone || currentLBA != progressLBA) {
+				if (scanDone || progressLBA == DWORD(-1) || currentLBA > progressLBA) {
 					progressLBA = currentLBA;
 					lastLBAProgress = pollTime;
 				}
@@ -228,12 +231,16 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 						std::to_string(currentLBA);
 					break;
 				}
-				if (!usePioneer && currentLBA == 0 && c1 == 0 && c2 == 0 && cu == 0 && !scanDone) continue;
+				if (!sampleValid) {
+					if (scanDone) break;
+					continue;
+				}
+				if (!usePioneer && measuredSectors == 0 && currentLBA == 0 && c1 == 0 && c2 == 0 && cu == 0 && !scanDone) continue;
 				if (currentLBA == lastReportedLBA && !scanDone) continue;
 				lastReportedLBA = currentLBA;
 
 				// Match Q-Check: discard the first 3 startup/seek-settle samples.
-				if (sampleIndex < 3 && !scanDone) { sampleIndex++; continue; }
+				if (measuredSectors == 0 && sampleIndex < 3 && !scanDone) { sampleIndex++; continue; }
 
 				QCheckSample sample;
 				sample.lba = currentLBA;
@@ -279,9 +286,11 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 			c1Progress.Finish(!c1Cancelled && !c1Failed,
 				static_cast<int>(c1Result.totalSectors));
 
-			if (usePlextor) m_drive.PlextorQCheckStop();
-			else if (usePioneer) m_drive.PioneerScanStop();
-			else m_drive.LiteOnScanStop();
+			if (!c1Session.Stop()) {
+				std::cout << "\nERROR: Could not stop C1 scan; remaining Disc Rot checks cancelled. Reopen the drive.\n";
+				m_drive.Close();
+				return false;
+			}
 
 			if (c1Cancelled) {
 				m_drive.SetSpeed(0);
@@ -298,6 +307,7 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 
 			hasC1 = !c1Result.samples.empty() && (c1Result.totalC1 > 0 ||
 				c1Result.totalC2 > 0 || c1Result.totalCU > 0 || c1Result.totalPioneerE22 > 0);
+			c1Result.c1Unverified = !hasC1;
 			if (!hasC1 && !c1Result.samples.empty())
 				std::cout << "  C1 NOT RATED: all counters are zero; measurement unverified.\n";
 
@@ -324,6 +334,7 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 				result.pioneerE22Total = c1Result.totalPioneerE22;
 				result.pioneerE22AvgPerSecond = c1Result.avgPioneerE22PerSecond;
 				result.pioneerE22Peak = c1Result.maxPioneerE22PerSecond;
+				result.pioneerE22Observations = BuildQCheckCounterGraph(c1Result, &QCheckSample::pioneerE22);
 				result.pioneerE22Rating = RatePioneerE22(
 					result.pioneerE22Total,
 					result.pioneerE22AvgPerSecond,
@@ -331,6 +342,11 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 			}
 		}
 		else {
+			if (!c1Session.Stop()) {
+				std::cout << "  ERROR: C1 cleanup failed; drive closed before further checks.\n";
+				m_drive.Close();
+				return false;
+			}
 			std::cout << "  C1 quality scan could not start; continuing with "
 				"the independent C2 and consistency phases.\n";
 		}
@@ -573,9 +589,8 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 	PrintDiscRotReport(result);
 
 	// Print C1 graph if available
-	if (hasC1 && c1Result.c1.RateAvailable() && !c1Result.samples.empty()) {
-		const auto c1Graph = ScanQuality::BuildTimedCounterGraph(C1Intervals(c1Result.samples),
-			c1Result.graphStartLba, c1Result.graphSectors, 60);
+	if (!c1Result.samples.empty()) {
+		const auto c1Graph = BuildQCheckCounterGraph(c1Result, &QCheckSample::c1);
 		const auto& c1Values = c1Graph.values;
 
 		int maxC1 = 1;
@@ -583,37 +598,32 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 			if (v > maxC1) maxC1 = v;
 
 		// Ensure the chart is tall enough to show the Red Book reference line
-		if (maxC1 < 250) maxC1 = 250;
+		if (!c1Graph.rawCounts && maxC1 < 250) maxC1 = 250;
 
 		Console::GraphOptions c1Opts;
 		c1Opts.title = "C1 Quality Profile";
-		c1Opts.subtitle = "C1 = corrected errors - early warning for degradation";
+		c1Opts.subtitle = c1Graph.rawCounts ? "Recorded C1 counts per sample; per-second rate unavailable"
+			: "C1 = corrected errors - early warning for degradation";
 		c1Opts.width = 60;
 		c1Opts.height = 10;
 		Console::ConfigureC1Graph(c1Opts);
 		Console::ConfigureTimedGraph(c1Opts, c1Graph);
-		c1Opts.colorize = true;
+
 
 		const auto& buckets = c1Graph.values;
-		Console::DrawBarGraph(buckets, maxC1, c1Opts,
-			static_cast<DWORD>(c1Result.samples.size()));
+		if (c1Graph.valid)
+			Console::DrawBarGraph(buckets, maxC1, c1Opts, c1Result.totalSeconds);
 
 		// Pioneer E22 uses the same source samples as the numeric summary. Show
 		// it separately from C1 and C2 because it is diagnostic-only.
 		if (usePioneer) {
-			std::vector<ScanQuality::C1Interval> e22Intervals;
-			e22Intervals.reserve(c1Result.samples.size());
-			int peakE22 = 0;
-			for (const auto& s : c1Result.samples) {
-				e22Intervals.push_back({s.lba, s.measuredSectors, s.pioneerE22});
-				peakE22 = std::max(peakE22, s.pioneerE22);
-			}
-			const auto e22Graph = ScanQuality::BuildTimedCounterGraph(e22Intervals,
-				c1Result.graphStartLba, c1Result.graphSectors, 60);
-			if (e22Graph.valid && peakE22 > 0) {
+			const auto e22Graph = BuildQCheckCounterGraph(c1Result, &QCheckSample::pioneerE22);
+			int peakE22 = e22Graph.valid ? *std::max_element(e22Graph.values.begin(), e22Graph.values.end()) : 0;
+			if (e22Graph.valid && (peakE22 > 0 || e22Graph.rawCounts)) {
 				Console::GraphOptions e22Opts;
 				e22Opts.title = "Disc Rot Pioneer E22 Profile (Diagnostic Only)";
-				e22Opts.subtitle = "E22 distribution used for early-warning pattern analysis; not C2/CU";
+				e22Opts.subtitle = e22Graph.rawCounts ? "Recorded E22 counts per sample; diagnostic only; per-second rate unavailable"
+					: "E22 distribution used for early-warning pattern analysis; not C2/CU";
 				e22Opts.width = 60;
 				e22Opts.height = 10;
 				e22Opts.unitSuffix = "/sec";
@@ -625,8 +635,8 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 				Console::ConfigureTimedGraph(e22Opts, e22Graph);
 				const auto& e22Buckets = e22Graph.values;
 				peakE22 = *std::max_element(e22Buckets.begin(), e22Buckets.end());
-				Console::DrawBarGraph(e22Buckets, std::max(peakE22, 100), e22Opts,
-					static_cast<DWORD>(c1Result.samples.size()));
+				Console::DrawBarGraph(e22Buckets, std::max(peakE22, e22Graph.rawCounts ? 1 : 100),
+					e22Opts, c1Result.totalSeconds);
 			}
 		}
 	}
@@ -955,8 +965,8 @@ void OpticalDrive::PrintDiscRotReport(const DiscRotAnalysis& analysis) {
 
 	if (analysis.pioneerQualityScanRun) {
 		std::cout << "\n  Pioneer E22:        " << analysis.pioneerE22Total << " total, "
-			<< std::fixed << std::setprecision(2) << analysis.pioneerE22AvgPerSecond
-			<< "/sec avg, " << analysis.pioneerE22Peak << "/sec peak"
+			<< ScanQuality::CounterAverageText(analysis.pioneerE22Observations)
+			<< " avg, " << ScanQuality::CounterPeakText(analysis.pioneerE22Observations) << " peak"
 			<< " [" << analysis.pioneerE22Rating << "]\n";
 		std::cout << "                       Diagnostic only; E22 is not a verified C2/CU result.\n";
 	}
@@ -1045,9 +1055,9 @@ bool OpticalDrive::SaveDiscRotLog(const DiscRotAnalysis& analysis, const std::ws
 	fprintf(f, "# Pinhole Pattern:       %s\n", analysis.pinholePattern ? "YES" : "NO");
 	fprintf(f, "# Read Instability:      %s\n", analysis.readInstability ? "YES" : "NO");
 	if (analysis.pioneerQualityScanRun) {
-		fprintf(f, "# Pioneer E22:          %d total, %.2f/sec avg, %d/sec peak [%s] (diagnostic, not C2/CU)\n",
-			analysis.pioneerE22Total, analysis.pioneerE22AvgPerSecond,
-			analysis.pioneerE22Peak, analysis.pioneerE22Rating.c_str());
+		fprintf(f, "# Pioneer E22:          %d total, %s avg, %s peak [%s] (diagnostic, not C2/CU)\n",
+			analysis.pioneerE22Total, ScanQuality::CounterAverageText(analysis.pioneerE22Observations).c_str(),
+			ScanQuality::CounterPeakText(analysis.pioneerE22Observations).c_str(), analysis.pioneerE22Rating.c_str());
 	}
 	if (analysis.pioneerDrive && !analysis.pioneerCdCheckRun) {
 		fprintf(f, "# Uncorrectable (CDChk): NOT MEASURED - CU/E32 unknown\n");
@@ -1178,7 +1188,7 @@ void OpticalDrive::AnalyzeC1RotPatterns(const QCheckResult& c1Result,
 			analysis.rotRiskLevel = "HIGH";
 
 		if (analysis.rotRiskLevel != current) {
-			std::cout << "  Risk level upgraded from " << current
+			std::cout << "  Risk level increased from " << current
 				<< " to " << analysis.rotRiskLevel
 				<< " based on C1 early-warning data\n";
 		}
@@ -1192,18 +1202,18 @@ void OpticalDrive::AnalyzeC1RotPatterns(const QCheckResult& c1Result,
 	// sustained, edge-concentrated, or progressive E22 pattern raises rot risk.
 	if (c1Result.scanMethod.find("Pioneer") != std::string::npos) {
 		double innerE22 = 0, middleE22 = 0, outerE22 = 0;
-		int inN = 0, midN = 0, outN = 0;
+		std::uint64_t inN = 0, midN = 0, outN = 0;
 		for (const auto& s : c1Result.samples) {
 			if (s.lba < firstLBA || s.lba > lastLBA) continue;
 			const uint64_t pos = static_cast<uint64_t>(s.lba) - static_cast<uint64_t>(firstLBA);
 			double posPct = static_cast<double>(pos) / static_cast<double>(range);
-			if (posPct < 0.33) { innerE22 += s.pioneerE22; inN++; }
-			else if (posPct < 0.66) { middleE22 += s.pioneerE22; midN++; }
-			else { outerE22 += s.pioneerE22; outN++; }
+			if (posPct < 0.33) { innerE22 += s.pioneerE22; inN += s.measuredSectors; }
+			else if (posPct < 0.66) { middleE22 += s.pioneerE22; midN += s.measuredSectors; }
+			else { outerE22 += s.pioneerE22; outN += s.measuredSectors; }
 		}
-		double aInE22 = inN > 0 ? innerE22 / inN : 0;
-		double aMidE22 = midN > 0 ? middleE22 / midN : 0;
-		double aOutE22 = outN > 0 ? outerE22 / outN : 0;
+		double aInE22 = inN > 0 ? innerE22 * 75.0 / inN : 0;
+		double aMidE22 = midN > 0 ? middleE22 * 75.0 / midN : 0;
+		double aOutE22 = outN > 0 ? outerE22 * 75.0 / outN : 0;
 
 		if (c1Result.totalPioneerE22 > 0) {
 			std::cout << "\n--- E22 Zone Analysis (Pioneer diagnostic) ---\n";
@@ -1213,8 +1223,10 @@ void OpticalDrive::AnalyzeC1RotPatterns(const QCheckResult& c1Result,
 			std::cout << "  Total E22: " << c1Result.totalPioneerE22
 				<< " (avg " << std::fixed << std::setprecision(2) << c1Result.avgPioneerE22PerSecond
 				<< "/sec, sustained " << c1Result.peaks.sustainedPioneerE22PerSecond
-				<< "/sec, raw peak " << c1Result.maxPioneerE22PerSecond << "/sec)\n";
-			if (ScanQuality::TransientNoteWarranted(
+				<< "/sec, peak " << ScanQuality::CounterPeakText(BuildQCheckCounterGraph(c1Result, &QCheckSample::pioneerE22)) << ")\n";
+			if (std::all_of(c1Result.samples.begin(), c1Result.samples.end(),
+				[](const QCheckSample& s) { return s.measuredSectors == 75; }) &&
+				ScanQuality::TransientNoteWarranted(
 					c1Result.maxPioneerE22PerSecond,
 					c1Result.peaks.peakPioneerE22Transient,
 					ScanQuality::kMinE22PeakWorthExplaining)) {
@@ -1258,7 +1270,7 @@ void OpticalDrive::AnalyzeC1RotPatterns(const QCheckResult& c1Result,
 			if (current == "LOW" && e22Score >= 20) analysis.rotRiskLevel = "MODERATE";
 			if (current == "MODERATE" && e22Score >= 25) analysis.rotRiskLevel = "HIGH";
 			if (analysis.rotRiskLevel != current)
-				std::cout << "  Risk level upgraded from " << current
+				std::cout << "  Risk level increased from " << current
 					<< " to " << analysis.rotRiskLevel
 					<< " based on Pioneer E22 diagnostics\n";
 		}

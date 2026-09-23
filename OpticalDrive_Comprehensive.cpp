@@ -87,8 +87,8 @@ void OpticalDrive::PrintComprehensiveReport(const ComprehensiveScanResult& resul
 	std::cout << "  Read failures:    " << result.bler.totalReadFailures << "\n";
 	if (result.bler.pioneerVendorQuality) {
 		std::cout << "  Pioneer E22:      " << result.bler.pioneerE22Total << " total, "
-			<< std::fixed << std::setprecision(2) << result.bler.pioneerE22AvgPerSecond
-			<< "/sec avg, " << result.bler.pioneerE22Peak << "/sec peak (diagnostic)\n";
+			<< ScanQuality::CounterAverageText(result.bler.pioneerE22Observations)
+			<< " avg, " << ScanQuality::CounterPeakText(result.bler.pioneerE22Observations) << " peak (diagnostic)\n";
 		std::cout << "  Uncorrectable:    ";
 		if (!result.bler.pioneerCdCheckRun) std::cout << "NOT MEASURED\n";
 		else if (result.bler.pioneerCdCheckC2Bytes > 0)
@@ -106,7 +106,7 @@ void OpticalDrive::PrintComprehensiveReport(const ComprehensiveScanResult& resul
 	std::cout << "  Error clusters:    " << result.rot.clusters.size() << "\n";
 	if (result.rot.pioneerQualityScanRun) {
 		std::cout << "  Pioneer E22:       " << result.rot.pioneerE22Total << " total, "
-			<< result.rot.pioneerE22Peak << "/sec peak (diagnostic)\n";
+			<< ScanQuality::CounterPeakText(result.rot.pioneerE22Observations) << " peak (diagnostic)\n";
 		std::cout << "  CU cross-check:    "
 			<< (result.rot.pioneerCdCheckRun ?
 				(result.rot.pioneerCdCheckC2Bytes > 0 ? "DATA LOSS CONFIRMED" : "measured clean")
@@ -230,8 +230,8 @@ bool OpticalDrive::SaveComprehensiveReport(const ComprehensiveScanResult& result
 	else file << result.bler.avgC2PerSecond << "\n";
 	if (result.bler.pioneerVendorQuality) {
 		file << "Pioneer E22:     " << result.bler.pioneerE22Total << " total, "
-			<< result.bler.pioneerE22AvgPerSecond << "/sec avg, "
-			<< result.bler.pioneerE22Peak << "/sec peak (diagnostic only)\n";
+			<< ScanQuality::CounterAverageText(result.bler.pioneerE22Observations) << " avg, "
+			<< ScanQuality::CounterPeakText(result.bler.pioneerE22Observations) << " peak (diagnostic only)\n";
 		file << "Uncorrectable:   ";
 		if (!result.bler.pioneerCdCheckRun) file << "NOT MEASURED\n";
 		else if (result.bler.pioneerCdCheckC2Bytes > 0)
@@ -250,8 +250,8 @@ bool OpticalDrive::SaveComprehensiveReport(const ComprehensiveScanResult& result
 	file << "Error clusters:  " << result.rot.clusters.size() << "\n\n";
 	if (result.rot.pioneerQualityScanRun) {
 		file << "Pioneer E22:     " << result.rot.pioneerE22Total << " total, "
-			<< result.rot.pioneerE22AvgPerSecond << "/sec avg, "
-			<< result.rot.pioneerE22Peak << "/sec peak (diagnostic only)\n";
+			<< ScanQuality::CounterAverageText(result.rot.pioneerE22Observations) << " avg, "
+			<< ScanQuality::CounterPeakText(result.rot.pioneerE22Observations) << " peak (diagnostic only)\n";
 		file << "CU cross-check:  "
 			<< (result.rot.pioneerCdCheckRun ?
 				(result.rot.pioneerCdCheckC2Bytes > 0 ? "DATA LOSS CONFIRMED" : "measured clean")

@@ -43,6 +43,25 @@ static constexpr UINT_PTR kDeferredExitTimer = 0x4F50;
 
 static void RequestCleanShutdown(HWND hWnd);
 
+// Keep each batch result visibly separate, including its name and outcome.
+// AppendInfoText shares the stream's FIFO and accessible output mirror.
+static void AppendBatchBoundary(size_t step, size_t total, int choice,
+                                const wchar_t* outcome = nullptr)
+{
+    if (choice < 1 || choice > 34) return;
+    std::wstring label = CommandLabels[choice - 1];
+    const size_t last = label.find_last_not_of(L" *");
+    if (last != std::wstring::npos) label.resize(last + 1);
+    const std::wstring rule(64, L'\x2550');
+    std::wstring text = L"\r\n\r\n" + rule + L"\r\n";
+    text += outcome ? L"END OF BATCH STEP " : L"BATCH STEP ";
+    text += std::to_wstring(step) + L" OF " + std::to_wstring(total) + L"\r\n";
+    text += label + L"\r\n";
+    if (outcome) text += L"Status: " + std::wstring(outcome) + L"\r\n";
+    text += rule + L"\r\n\r\n";
+    AppendInfoText(hInfoEdit, text.c_str());
+}
+
 // Forward declarations of functions kept in this code module:
 ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
@@ -750,13 +769,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                             break;
                                         }
                                         int choice = choices[i];
-                                        WCHAR header[160];
-                                        wsprintfW(header,
-                                            L"\r\n=== Batch step %u/%u: option %d ===\r\n",
-                                            static_cast<unsigned>(i + 1),
-                                            static_cast<unsigned>(choices.size()),
-                                            choice);
-                                        AppendInfoText(hInfoEdit, header);
+                                        AppendBatchBoundary(i + 1, choices.size(), choice);
                                         // `choice` is the displayed button number; map it to
                                         // the stable op id the dispatcher expects.
                                         const int batchOpId = ButtonToMenuChoice(choice - 1);
@@ -766,6 +779,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                             if (!EnsureDriveOpen(hWndCopy, &freshlyScanned, needsAudio, needsAudio)) {
                                                 batchEnd = g_interrupt.IsInterrupted()
                                                     ? BatchEnd::Cancelled : BatchEnd::StepFailed;
+                                                AppendBatchBoundary(i + 1, choices.size(), choice,
+                                                    g_interrupt.IsInterrupted() ? L"CANCELLED" : L"NOT RUN");
                                                 break;
                                             }
                                         }
@@ -784,6 +799,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                             if (!prepared || g_interrupt.IsInterrupted() || !g_hasTOC) {
                                                 batchEnd = g_interrupt.IsInterrupted()
                                                     ? BatchEnd::Cancelled : BatchEnd::DiscGone;
+                                                AppendBatchBoundary(i + 1, choices.size(), choice,
+                                                    g_interrupt.IsInterrupted() ? L"CANCELLED" : L"NOT RUN");
                                                 break;
                                             }
                                         }
@@ -793,6 +810,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                                             DispatchMenuChoice(g_copier, g_disc, g_workDir,
                                                                g_audioDrive, g_hasTOC,
                                                                batchOpId);
+                                        AppendBatchBoundary(i + 1, choices.size(), choice,
+                                            (g_interrupt.IsInterrupted() || stepStatus == 2) ? L"CANCELLED"
+                                                : (stepStatus == 0 ? L"COMPLETED" : L"FAILED"));
                                         batchPrescan.FinishStep(batchOpId, g_audioDrive, g_hasTOC,
                                             stepStatus == 0 && !g_interrupt.IsInterrupted());
                                         if (batchOpId == 25) {

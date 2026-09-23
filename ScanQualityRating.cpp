@@ -247,8 +247,10 @@ std::string CombineC1Quality(C1Rating c1, const std::string& readRating) {
 
 void PrintC1Policy(std::ostream& os, const char* indent) {
 	PrintWrapped(os, "Average C1 bands (OptiScan): EXCELLENT <5; GOOD 5-<50; "
-		"FAIR 50-<220; POOR >=220 errors/sec. Total C1 is an ungraded count. "
-		"Rates use measured disc duration, not host scan time or poll count.", indent);
+		"FAIR 50-<220; POOR >=220 errors/sec.", indent);
+	PrintWrapped(os, "The total C1 count is assessed for the amount of audio measured. "
+		"Total C1 divided by measured audio seconds gives the average above. "
+		"More audio can accumulate more C1 counts. These labels are OptiScan's descriptive scale.", indent);
 	PrintWrapped(os, "Peaks and complete 10-second windows describe local activity. "
 		"These measurements do not certify archival suitability.", indent);
 	PrintWrapped(os, "Red Book compliance is not evaluated by this scan.", indent);
@@ -371,6 +373,56 @@ TimedCounterGraph BuildTimedCounterGraph(const std::vector<C1Interval>& samples,
 	return graph;
 }
 
+TimedCounterGraph BuildObservedCounterGraph(const std::vector<C1Interval>& samples,
+	std::uint32_t firstLba, std::uint64_t sectorCount, int width, bool allowRates) {
+	auto graph = BuildTimedCounterGraph(allowRates ? samples : std::vector<C1Interval>{},
+		firstLba, sectorCount, width);
+	if (graph.valid || graph.values.empty() || samples.empty()) return graph;
+	graph.rawCounts = true;
+	// A poll with unknown duration is still an observed count, not missing data.
+	// Plot it as a point; do not invent the interval it covered or grade its rate.
+	graph.partialCoverage.clear();
+	long long total = 0;
+	std::size_t count = 0;
+	for (const auto& sample : samples) {
+		if (sample.errors < 0 || sample.lba < firstLba ||
+			std::uint64_t{sample.lba} >= std::uint64_t{firstLba} + sectorCount) continue;
+		const auto column = (std::uint64_t{sample.lba} - firstLba) * width / sectorCount;
+		graph.values[column] = std::max(graph.values[column], sample.errors);
+		if (!graph.valid || sample.errors > graph.peak) {
+			graph.peak = sample.errors;
+			graph.peakLba = sample.lba;
+		}
+		graph.valid = true;
+		total += sample.errors;
+		++count;
+	}
+	if (count > 0) graph.average = total / double(count);
+	return graph;
+}
+
+std::string CounterAverageText(const TimedCounterGraph& graph) {
+	if (!graph.valid) return "unavailable";
+	std::ostringstream out;
+	out << std::fixed << std::setprecision(2) << graph.average << graph.UnitSuffix();
+	return out.str();
+}
+
+std::string CounterPeakText(const TimedCounterGraph& graph) {
+	if (!graph.valid) return "unavailable";
+	std::ostringstream out;
+	out << std::fixed << std::setprecision(2) << graph.peak << graph.UnitSuffix();
+	return out.str();
+}
+
+void PrintCounterSummary(std::ostream& os, const char* label,
+	const TimedCounterGraph& graph, const char* indent) {
+	os << indent << label << " average: " << CounterAverageText(graph) << "\n";
+	os << indent << label << " peak: " << CounterPeakText(graph);
+	if (graph.valid) os << " (at LBA " << graph.peakLba << ")";
+	os << "\n";
+}
+
 void AppendC1Sector(std::vector<C1Interval>& samples, std::uint32_t lba,
 	int errors, bool startNewInterval) {
 	if (!startNewInterval && !samples.empty() && samples.back().sectors < 75 &&
@@ -384,15 +436,28 @@ void AppendC1Sector(std::vector<C1Interval>& samples, std::uint32_t lba,
 void PrintC1Summary(std::ostream& os, const C1Statistics& c1,
 	std::uint64_t requestedSectors, const char* indent) {
 	const auto flags = os.flags(); const auto precision = os.precision();
-	if (c1.samples > 0) os << indent << "Total C1 observed: " << c1.total << " (ungraded)\n";
+	std::ostringstream duration;
+	const auto minutes = c1.measuredSectors / 4500;
+	const double seconds = (c1.measuredSectors % 4500) / 75.0;
+	duration << minutes << ":" << std::fixed << std::setprecision(3)
+		<< (seconds < 10 ? "0" : "") << seconds;
+	if (c1.samples > 0) {
+		std::ostringstream totalLine;
+		totalLine << "Total C1 observed: " << c1.total;
+		if (c1.RateAvailable())
+			totalLine << " - " << C1RatingName(c1.Rating()) << " for " << duration.str()
+				<< " of measured audio (" << std::fixed << std::setprecision(2) << c1.average << "/sec).";
+		else totalLine << " - rating unavailable.";
+		PrintWrapped(os, totalLine.str(), indent);
+		if (!c1.RateAvailable())
+			PrintWrapped(os, "This total cannot be rated until its measurements and the amount "
+				"of audio measured are verified.", indent);
+	}
 	else os << indent << "Total C1 observed: unavailable (no measurements)\n";
 	if (c1.timingKnown) {
-		const auto minutes = c1.measuredSectors / 4500;
-		const double seconds = (c1.measuredSectors % 4500) / 75.0;
-		os << indent << "Measured audio: " << minutes << ":" << std::fixed << std::setprecision(3)
-			<< (seconds < 10 ? "0" : "") << seconds << " (" << c1.measuredSectors << " sectors)\n";
+		os << indent << "Measured audio: " << duration.str() << " (" << c1.measuredSectors << " sectors)\n";
 		if (requestedSectors > 0 && c1.measuredSectors <= requestedSectors)
-			os << indent << "Scan coverage: " << std::setprecision(2)
+			os << indent << "Scan coverage: " << std::fixed << std::setprecision(2)
 				<< c1.measuredSectors * 100.0 / requestedSectors << "% of requested audio\n";
 		else os << indent << "Scan coverage: sampled region only\n";
 	}

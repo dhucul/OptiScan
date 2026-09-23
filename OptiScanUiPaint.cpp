@@ -1,4 +1,4 @@
-﻿// OptiScanUiPaint.cpp - UI images, brushes, and custom painting.
+// OptiScanUiPaint.cpp - UI images, brushes, and custom painting.
 
 #include "framework.h"
 #include "OptiScanUiInternal.h"
@@ -543,18 +543,20 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
 
         if (primary)
         {
+            // Match the small command labels' family, weight and ClearType path.
+            // Whole-pixel text sizes/positions avoid fractional scaling softness.
+            const auto textPx = [](int value) { return static_cast<Gdiplus::REAL>(ScalePx(value)); };
             Gdiplus::GraphicsPath iconTile;
             AddRoundedRectangle(iconTile, rc.left + ScalePx(28), rc.top + ScalePx(28),
                                 ScalePx(76), ScalePx(76), ScalePx(14));
             Gdiplus::SolidBrush iconBg(ThemeArgb(255, p.accentSurface));
             graphics.FillPath(&iconBg, &iconTile);
-            DrawOpticalRingMark(graphics, rc.left + ScaleReal(66), rc.top + ScaleReal(66), ScaleReal(24), 210, true);
+            DrawOpticalRingMark(graphics, rc.left + textPx(66), rc.top + textPx(66), textPx(24), 210, true);
 
-            Gdiplus::Font titleFont(&uiFamily, ScaleReal(27), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
-            Gdiplus::Font badgeFont(&uiFamily, ScaleReal(18), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
-            Gdiplus::FontFamily descriptionFamily(UiFamily(), UiFontCollection());
-            Gdiplus::Font descriptionFont(&descriptionFamily, ScaleReal(20), Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
-            Gdiplus::Font actionFont(&uiFamily, ScaleReal(18), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+            Gdiplus::Font titleFont(&uiFamily, textPx(38), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+            Gdiplus::Font badgeFont(&uiFamily, textPx(26), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+            Gdiplus::Font descriptionFont(&uiFamily, textPx(26), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+            Gdiplus::Font actionFont(&uiFamily, textPx(24), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
             const wchar_t* description = commandIndex == 0
                 ? L"Create an exact copy of the current disc."
                 : (commandIndex == 1 ? L"Extract audio tracks to WAV or FLAC."
@@ -563,30 +565,44 @@ void DrawCommandButton(const DRAWITEMSTRUCT* drawItem)
                 : (commandIndex == 1 ? L"Rip tracks" : L"Quality scan");
             const wchar_t* menuNumber = commandIndex == 0 ? L"1" : (commandIndex == 1 ? L"2" : L"7");
             Gdiplus::GraphicsPath numberBadge;
-            AddRoundedRectangle(numberBadge, rc.left + ScalePx(128), rc.top + ScalePx(28),
-                                ScalePx(34), ScalePx(30), ScalePx(7));
+            AddRoundedRectangle(numberBadge, rc.left + ScalePx(128), rc.top + ScalePx(24),
+                                ScalePx(44), ScalePx(40), ScalePx(7));
             Gdiplus::SolidBrush badgeBg(ThemeArgb(255, p.accentSurface));
             graphics.FillPath(&badgeBg, &numberBadge);
+            Gdiplus::StringFormat centered;
+            centered.SetAlignment(Gdiplus::StringAlignmentCenter);
+            centered.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+            centered.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
             graphics.DrawString(menuNumber, -1, &badgeFont,
-                                Gdiplus::PointF(rc.left + ScaleReal(139), rc.top + ScaleReal(33)), &blue);
+                                Gdiplus::RectF(rc.left + textPx(128), rc.top + textPx(24),
+                                               textPx(44), textPx(40)), &centered, &blue);
+            Gdiplus::StringFormat singleLine;
+            singleLine.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
+            singleLine.SetTrimming(Gdiplus::StringTrimmingEllipsisWord);
+            singleLine.SetLineAlignment(Gdiplus::StringAlignmentCenter);
             graphics.DrawString(primaryTitle, -1, &titleFont,
-                                Gdiplus::PointF(rc.left + ScaleReal(176), rc.top + ScaleReal(27)), &ink);
+                                Gdiplus::RectF(rc.left + textPx(184), rc.top + textPx(18),
+                                    max(textPx(20), (Gdiplus::REAL)(rc.right - rc.left) - textPx(210)),
+                                    textPx(46)), &singleLine, &ink);
             // Same brush as the title, so a disabled hero card dims both. The
             // old dedicated "secondary" brush ignored `disabled` and left the
             // description at full strength under a greyed-out title.
             graphics.DrawString(description, -1, &descriptionFont,
-                                Gdiplus::PointF(rc.left + ScaleReal(128), rc.top + ScaleReal(66)), &ink);
+                                Gdiplus::RectF(rc.left + textPx(128), rc.top + textPx(72),
+                                    max(textPx(20), (Gdiplus::REAL)(rc.right - rc.left) - textPx(154)),
+                                    textPx(34)), &singleLine, &ink);
 
             Gdiplus::GraphicsPath actionPill;
-            AddRoundedRectangle(actionPill, rc.left + ScalePx(128), rc.top + ScalePx(112),
-                                ScalePx(142), ScalePx(38), ScalePx(7));
+            AddRoundedRectangle(actionPill, rc.left + ScalePx(128), rc.top + ScalePx(118),
+                                ScalePx(184), ScalePx(40), ScalePx(7));
             graphics.FillPath(&blue, &actionPill);
             // Ink ON the accent, not white: white fails contrast on the lighter
             // accents (2.4:1 on Nord's frost blue).
             Gdiplus::SolidBrush pillInk(ThemeArgb(255, p.onAccentInk));
             graphics.DrawString(commandIndex == 0 ? L"Copy disc" : (commandIndex == 1 ? L"Rip tracks" : L"Quality scan"),
                                 -1, &actionFont,
-                                Gdiplus::PointF(rc.left + ScaleReal(145), rc.top + ScaleReal(119)), &pillInk);
+                                Gdiplus::RectF(rc.left + textPx(128), rc.top + textPx(118),
+                                               textPx(184), textPx(40)), &centered, &pillInk);
         }
         else
         {

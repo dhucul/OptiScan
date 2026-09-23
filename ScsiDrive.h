@@ -7,6 +7,7 @@
 #include "DriveTypes.h"
 #include "Constants.h"
 #include "MediaIdentity.h"
+#include "LiteOnScanState.h"
 #include <windows.h>
 #include <winioctl.h>     // DEVICE_TYPE — required by ntddstor.h
 #include <ntddcdrm.h>
@@ -88,6 +89,10 @@ private:
 	// ── Cached capability probe results ─────────────────────
 	int m_qcheckProbed = -1;           // -1 = not probed, 0 = unsupported, 1 = supported
 	int m_liteonScanProbed = -1;       // -1 = not probed, 0 = unsupported, 1 = supported
+	LiteOnScanMethod m_liteonScanMethod = LiteOnScanMethod::Unknown;
+	DWORD m_liteonLBA = 0, m_liteonEndLBA = 0;
+	LiteOnPositionGuard m_liteonPosition;
+	bool m_liteonScanActive = false;
 	int m_liteonJitterProbed = -1;     // -1 = not probed, 0 = unsupported, 1 = supported
 	int m_liteonFeTeProbed = -1;       // -1 = not probed, 0 = unsupported, 1 = supported
 	int m_pioneerScanProbed = -1;      // -1 = not probed, 0 = unsupported, 1 = supported
@@ -189,8 +194,14 @@ public:
 	// drives.  Similar to Q-Check but uses a different command set.
 	bool SupportsLiteOnScan();
 	bool LiteOnScanStart(DWORD startLBA, DWORD endLBA);
-	bool LiteOnScanPoll(int& c1, int& c2, int& cu, DWORD& currentLBA, bool& scanDone, DWORD* measuredSectors = nullptr);
+	bool LiteOnScanPoll(int& c1, int& c2, int& cu, DWORD& currentLBA, bool& scanDone,
+		DWORD* measuredSectors = nullptr, bool* sampleValid = nullptr);
 	bool LiteOnScanStop();
+	bool LiteOnScanMeasuresCu() const { return LiteOnMethodMeasuresCu(m_liteonScanMethod); }
+	const char* LiteOnScanMethodName() const {
+		return LiteOnScanMeasuresCu() ? "LiteOn/MediaTek (measured intervals)"
+			: "LiteOn/MediaTek (counter samples; CU unavailable)";
+	}
 
 	// ── LiteOn/MediaTek jitter & beta scan (0xDF/0x1B vendor command) ─
 	// Physical-layer measurement: jitter (EFM timing variation) and beta

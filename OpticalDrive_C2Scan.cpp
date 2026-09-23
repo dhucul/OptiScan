@@ -1,4 +1,4 @@
-﻿#define NOMINMAX
+#define NOMINMAX
 #include "OpticalDrive.h"
 #include "ConsoleGraph.h"
 #include "InterruptHandler.h"
@@ -468,6 +468,7 @@ OpticalDrive::PioneerQualityFallbackResult OpticalDrive::RunPioneerVendorQuality
 	result.pioneerE22Total = qc.totalPioneerE22;
 	result.pioneerE22AvgPerSecond = qc.avgPioneerE22PerSecond;
 	result.pioneerE22Peak = qc.maxPioneerE22PerSecond;
+	result.pioneerE22Observations = BuildQCheckCounterGraph(qc, &QCheckSample::pioneerE22);
 	result.pioneerE22Rating = qc.pioneerE22Rating;
 	// Carry the sustained-level statistics and scan-speed confidence across, so
 	// the BLER-shaped report reaches the same verdict as the Q-Check report it

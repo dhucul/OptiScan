@@ -59,6 +59,7 @@ struct GraphOptions {
 	std::string severityModerateLabel = "moderate";
 	std::string severityHighLabel = "high";
 	bool timedIntervals = false;
+	bool rawCounts = false;
 	std::uint32_t firstLba = 0;
 	std::uint64_t sectorCount = 0;
 	std::vector<bool> partialCoverage;
@@ -69,12 +70,27 @@ struct GraphOptions {
 
 inline void ConfigureTimedGraph(GraphOptions& opts, const ScanQuality::TimedCounterGraph& graph) {
 	opts.timedIntervals = true;
+	opts.rawCounts = graph.rawCounts;
 	opts.firstLba = graph.firstLba;
 	opts.sectorCount = graph.sectorCount;
 	opts.partialCoverage = graph.partialCoverage;
 	opts.observedAverage = graph.valid ? std::optional<double>{graph.average} : std::nullopt;
 	opts.observedPeak = graph.valid ? std::optional<double>{graph.peak} : std::nullopt;
 	opts.peakLba = graph.valid ? std::optional<std::uint32_t>{graph.peakLba} : std::nullopt;
+
+}
+
+// Apply count-only presentation to a copy so switching back to rates restores
+// the caller's units, reference line, thresholds and color settings.
+inline GraphOptions GraphDisplayOptions(GraphOptions opts) {
+	if (opts.rawCounts) {
+		opts.unitSuffix = "/sample";
+		opts.refLine = 0;
+		opts.refLabel.clear();
+		opts.severityLowThreshold = opts.severityHighThreshold = 0;
+		opts.colorize = false;
+	}
+	return opts;
 }
 
 inline void ConfigureC1Graph(GraphOptions& opts) {
@@ -256,7 +272,8 @@ namespace detail {
 	}
 
 	inline void AccessibleBarGraph(const std::vector<int>& buckets, int maxVal,
-		const GraphOptions& opts, DWORD totalSeconds) {
+		const GraphOptions& requestedOpts, DWORD totalSeconds) {
+		const auto opts = GraphDisplayOptions(requestedOpts);
 		(void)maxVal;
 		AccessibleHeader(opts.title, opts.subtitle);
 		const auto flags = std::cout.flags(); const auto precision = std::cout.precision();
@@ -277,15 +294,19 @@ namespace detail {
 			else if (totalSeconds > 0 && !buckets.empty())
 				std::cout << " at " << FormatTime(static_cast<unsigned>(peakIdx * totalSeconds / buckets.size()));
 			if (opts.observedAverage)
-				std::cout << ". Average " << *opts.observedAverage << opts.unitSuffix << " over measured audio";
+				std::cout << ". Average " << *opts.observedAverage << opts.unitSuffix
+					<< (opts.rawCounts ? " over recorded samples" : " over measured audio");
 			else if (!opts.timedIntervals)
 				std::cout << ". Average column value " << sum / double(measured) << opts.unitSuffix;
 			std::cout << ". " << nonZero << " of " << measured << " measured columns had activity.\n";
 		}
 		else std::cout << "  No measured values in this range.\n";
 		if (opts.timedIntervals) {
-			std::cout << "  Coverage: " << buckets.size() - measured << " unmeasured columns, "
-				<< partial << " partially measured columns.\n";
+			if (opts.rawCounts)
+				std::cout << "  " << buckets.size() - measured << " columns without recorded samples.\n";
+			else
+				std::cout << "  Coverage: " << buckets.size() - measured << " unmeasured columns, "
+					<< partial << " partially measured columns.\n";
 			std::cout << "  Disc span " << FormatDiscTime(opts.firstLba) << " to "
 				<< FormatDiscTime(std::uint64_t{opts.firstLba} + opts.sectorCount) << ".\n";
 		}
@@ -343,8 +364,9 @@ namespace detail {
 // ────────────────────────────────────────────────────────────────────────────
 
 inline void DrawBarGraph(const std::vector<int>& buckets, int maxVal,
-	const GraphOptions& opts, DWORD totalSeconds = 0) {
+	const GraphOptions& requestedOpts, DWORD totalSeconds = 0) {
 	if (buckets.empty() || maxVal <= 0) return;
+	const auto opts = GraphDisplayOptions(requestedOpts);
 
 	if (Accessibility::IsEnabled()) {
 		detail::AccessibleBarGraph(buckets, maxVal, opts, totalSeconds);
@@ -520,18 +542,24 @@ inline void DrawBarGraph(const std::vector<int>& buckets, int maxVal,
 		Reset();
 	}
 
-	if (opts.timedIntervals) {
+	if (opts.timedIntervals &&
+		(std::any_of(buckets.begin(), buckets.end(), [](int v) { return v < 0; }) ||
+		 std::any_of(opts.partialCoverage.begin(), opts.partialCoverage.end(), [](bool v) { return v; }))) {
 		SetColorRGB(Theme::DimR, Theme::DimG, Theme::DimB);
 		std::cout << std::string(barCol, ' ');
 		for (size_t i = 0; i < buckets.size(); ++i)
 			std::cout << (buckets[i] < 0 ? '?' :
 				(i < opts.partialCoverage.size() && opts.partialCoverage[i] ? '~' : ' '));
-		std::cout << "\n" << std::string(barCol, ' ') << "? unmeasured   ~ partial coverage\n";
+		std::cout << "\n" << std::string(barCol, ' ')
+			<< (opts.rawCounts ? "? no recorded samples\n" : "? unmeasured   ~ partial coverage\n");
 		Reset();
 	}
 
 	// Legend (indented under the bars).
-	detail::DrawSeverityLegend(barCol, opts);
+	if (opts.rawCounts)
+		std::cout << std::string(barCol, ' ') << "Recorded counts; no rate-based severity rating\n";
+	else
+		detail::DrawSeverityLegend(barCol, opts);
 
 	std::cout << "\n";
 	Reset();

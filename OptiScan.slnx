@@ -4,4 +4,5 @@
   </Configurations>
   <Project Path="OptiScan.vcxproj" Id="9c187de4-b07d-4185-9193-873092f2da16" />
   <Project Path="tests/OptiScan.Tests.vcxproj" Id="6f5861a1-f9fd-4e07-a79b-7ce3f4f76c8b" />
+  <Project Path="tests/OptiScan.LiteOn.Tests.vcxproj" Id="57b02373-3215-455a-9b36-d13c74e271cb" />
 </Solution>

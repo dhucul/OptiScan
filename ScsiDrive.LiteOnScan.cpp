@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // ScsiDrive.LiteOnScan.cpp - LiteOn/MediaTek CD quality scan
 //
 // OLD-method (0xDF) protocol HARDWARE-VERIFIED on a PLEXTOR PX-891SAF PLUS
@@ -39,13 +39,6 @@
 #include <thread>
 #include <chrono>
 
-// Which method the drive supports
-static bool s_liteonNewMethod = false;
-
-// Current LBA tracking for old method
-static DWORD s_liteonLBA = 0;
-static DWORD s_liteonEndLBA = 0;
-
 // ── Head-driving reads (shared by the C1/C2, jitter and FE/TE scans) ────────
 // The MediaTek/PLDS error counters only advance for sectors the host reads, so
 // the scan must sweep the disc itself. These reads exist purely to move the
@@ -63,177 +56,78 @@ bool ScsiDrive::LiteOnScanDriveHead(DWORD lba, DWORD sectors) {
 }
 
 bool ScsiDrive::SupportsLiteOnScan() {
-	if (m_liteonScanProbed >= 0)
-		return m_liteonScanProbed == 1;
-
-	std::string vendor, model;
-	GetDriveInfo(vendor, model);
-
-	char dbg[256];
-	snprintf(dbg, sizeof(dbg), "LiteOnScan: Probing on '%s' '%s'\n", vendor.c_str(), model.c_str());
-	OutputDebugStringA(dbg);
-
-	// Try NEW method first: seek to 0, then probe 0xF3/0x0E
-	SeekToLBA(0);
-
-	BYTE cdb[12] = {};
-	cdb[0] = 0xF3;
-	cdb[1] = 0x0E;
-	std::vector<BYTE> buf(0x10, 0);
-	BYTE sk = 0, asc = 0, ascq = 0;
-	bool ok = SendSCSIWithSense(cdb, 12, buf.data(), 0x10, &sk, &asc, &ascq);
-
-	snprintf(dbg, sizeof(dbg), "LiteOnScan: 0xF3/0x0E probe ok=%d sk=0x%02X asc=0x%02X\n", ok, sk, asc);
-	OutputDebugStringA(dbg);
-
-	if (ok) {
-		// Verify the response contains actual ERROR-MEASUREMENT data (C1/C2 in
-		// bytes 4-7), not merely an MSF position (bytes 1-3). The new (0xF3)
-		// method must scan autonomously to be usable here — this poll path does
-		// not drive the head. A MediaTek/PLDS drive that only reports position
-		// (or all zeros) without host reads correctly falls through to the OLD
-		// (0xDF) method below, which DOES drive the head.
-		bool hasData = false;
-		for (int i = 4; i <= 7; i++) {
-			if (buf[i] != 0) { hasData = true; break; }
-		}
-
-		if (!hasData) {
-			// Drive may still be seeking — retry once after a delay
-			std::this_thread::sleep_for(std::chrono::milliseconds(500));
-			std::fill(buf.begin(), buf.end(), BYTE(0));
-			memset(cdb, 0, 12); cdb[0] = 0xF3; cdb[1] = 0x0E;
-			ok = SendSCSIWithSense(cdb, 12, buf.data(), 0x10, &sk, &asc, &ascq);
-			if (ok) {
-				for (int i = 4; i <= 7; i++) {
-					if (buf[i] != 0) { hasData = true; break; }
-				}
+	if (m_liteonScanProbed >= 0) return m_liteonScanProbed == 1;
+	// Prefer explicit host-driven intervals. A successful F3 response alone
+	// cannot establish interval coverage or CU support (notably on PX-891SAF).
+	if (m_liteonScanActive && !LiteOnScanStop()) { Close(); return false; }
+	const auto selected = ProbeLiteOnScanMethod([&]() {
+		m_liteonScanMethod = LiteOnScanMethod::MeasuredIntervals;
+		if (!LiteOnScanStart(0, 224)) return false;
+		bool accepted = false;
+		for (int trial = 0; trial < 3; ++trial) {
+			int c1 = 0, c2 = 0, cu = 0;
+			DWORD lba = 0, sectors = 0;
+			bool done = false, valid = false;
+			if (!LiteOnScanPoll(c1, c2, cu, lba, done, &sectors, &valid)) {
+				accepted = false;
+				break;
 			}
+			accepted = accepted || valid; // measured zero is a valid response
+			if (done) break;
 		}
-
-		if (hasData) {
-			s_liteonNewMethod = true;
-			m_liteonScanProbed = 1;
-			return true;
-		}
-
-		snprintf(dbg, sizeof(dbg), "LiteOnScan: 0xF3 accepted but response all zeros\n");
-		OutputDebugStringA(dbg);
-		// Fall through to try OLD method
-	}
-
-	// Try OLD method: 0xDF/0xA3 init sequence
-	s_liteonNewMethod = false;
-	SeekToLBA(0);
-
-	memset(cdb, 0, 12);
-	cdb[0] = 0xDF;
-	cdb[1] = 0xA3;
-	std::vector<BYTE> buf256(256, 0);
-	ok = SendSCSIWithSense(cdb, 12, buf256.data(), 256, &sk, &asc, &ascq);
-
-	snprintf(dbg, sizeof(dbg), "LiteOnScan: 0xDF/0xA3 probe ok=%d sk=0x%02X asc=0x%02X\n", ok, sk, asc);
-	OutputDebugStringA(dbg);
-
-	if (ok) {
-		// Probe accepted — verify the drive actually produces scan data
-		// by completing the init sequence and doing trial reads.
-
-		// Steps B-E of old-method init (same as LiteOnScanStart)
-		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0xA0; cdb[4] = 0x02;
-		SendSCSIWithSense(cdb, 12, buf256.data(), 256, &sk, &asc, &ascq);
-
-		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0xA0;
-		SendSCSIWithSense(cdb, 12, buf256.data(), 256, &sk, &asc, &ascq);
-
-		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0xA0; cdb[4] = 0x04;
-		SendSCSIWithSense(cdb, 12, buf256.data(), 256, &sk, &asc, &ascq);
-
-		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0xA0; cdb[4] = 0x02;
-		SendSCSIWithSense(cdb, 12, buf256.data(), 256, &sk, &asc, &ascq);
-
-		// Sweep a few intervals and read the tallied counters. Support is a
-		// property of the DRIVE, not the disc: a Q-Check-capable MediaTek/PLDS
-		// drive ACCEPTS the 0xDF/0x82 counter-read triplet even when the sampled
-		// sectors happen to be error-free. Earlier versions REQUIRED a non-zero
-		// C1/C2/CU here, which wrongly reported a fully-capable drive (e.g. the
-		// PX-891SAF PLUS) as unsupported whenever the first few seconds of the
-		// disc read clean or the drive wasn't yet up to speed — surfacing a false
-		// "Q-Check requires a classic Plextor drive" warning that only a rescan
-		// (which re-probes) cleared. So the getdata command being accepted is the
-		// support signal; non-zero counts are just an early confirmation.
-		// CRITICAL: a MediaTek/PLDS drive tallies errors only for sectors the
-		// host reads, so each trial drives the head first (same as the real scan).
-		bool getDataAccepted = false;
-		bool hasData = false;
-		for (int trial = 0; trial < 3 && !hasData; trial++) {
-			LiteOnScanDriveHead(static_cast<DWORD>(trial) * 150, 75);
-
-			// Latch interval counters
-			memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0x82; cdb[2] = 0x09;
-			SendSCSIWithSense(cdb, 12, buf256.data(), 256, &sk, &asc, &ascq);
-
-			// Get data — acceptance here (GOOD or a recovered error) is what
-			// proves the drive implements the measurement mode.
-			std::fill(buf256.begin(), buf256.end(), BYTE(0));
-			memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0x82; cdb[2] = 0x05;
-			bool gdOk = SendSCSIWithSense(cdb, 12, buf256.data(), 256, &sk, &asc, &ascq);
-			if (gdOk)
-				getDataAccepted = true;
-
-			// Check C1 (bytes 0-1), C2 (bytes 2-3), CU (byte 4)
-			for (int i = 0; i <= 4; i++) {
-				if (buf256[i] != 0) { hasData = true; break; }
+		const bool stopped = LiteOnScanStop();
+		return accepted && stopped;
+	}, [&]() {
+		if (m_liteonScanActive && !LiteOnScanStop()) return false;
+		m_liteonScanMethod = LiteOnScanMethod::CounterSamples;
+		if (!SeekToLBA(0)) return false;
+		bool havePosition = false;
+		DWORD previous = 0;
+		// A command accepted with empty/stale bytes does not establish support.
+		// A healthy disc may have zero counters; advancing positions are enough.
+		for (int attempt = 0; attempt < 8; ++attempt) {
+			BYTE cdb[12] = {};
+			cdb[0] = 0xF3; cdb[1] = 0x0E;
+			BYTE buf[16] = {};
+			BYTE sk = 0, asc = 0, ascq = 0;
+			if (!SendSCSIWithSense(cdb, 12, buf, sizeof(buf), &sk, &asc, &ascq))
+				return false;
+			if (buf[2] >= 60 || buf[3] >= 75) return false;
+			const DWORD msf = DWORD(buf[1]) * 4500 + DWORD(buf[2]) * 75 + buf[3];
+			if (msf >= 150) {
+				const DWORD position = msf - 150;
+				if (havePosition && position < previous) return false;
+				if (havePosition && position > previous) return true;
+				previous = position;
+				havePosition = true;
 			}
-
-			// Reset interval
-			memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0x97;
-			SendSCSIWithSense(cdb, 12, buf256.data(), 256, &sk, &asc, &ascq);
+			if (attempt < 7) std::this_thread::sleep_for(std::chrono::milliseconds(100));
 		}
-
-		// Stop the scan session
-		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0xA3; cdb[2] = 0x01;
-		SendSCSIWithSense(cdb, 12, buf256.data(), 256, &sk, &asc, &ascq);
-
-		if (hasData || getDataAccepted) {
-			m_liteonScanProbed = 1;
-			return true;
-		}
-
-		// 0xDF/0xA3 armed but the 0x82/0x05 getdata was rejected on every trial —
-		// the drive doesn't actually implement the scan.
-		OutputDebugStringA("LiteOnScan: 0xDF armed but 0x82/0x05 getdata rejected\n");
-		m_liteonScanProbed = 0;
+		return false;
+	});
+	if (selected == LiteOnScanMethod::Unknown) {
+		if (m_liteonScanActive) { Close(); return false; }
+		m_liteonScanMethod = LiteOnScanMethod::Unknown;
+		// Failed probes can be transient; allow a later attempt to retry.
+		m_liteonScanProbed = -1;
 		return false;
 	}
-
-	// The 0xDF/0xA3 init was rejected. ILLEGAL REQUEST (sk=0x05) means the drive
-	// parsed the CDB and refuses the opcode → it genuinely isn't a MediaTek/PLDS
-	// scan drive, so cache the negative. Any OTHER sense (NOT READY / UNIT
-	// ATTENTION while the disc spins up, aborted, hardware) is transient and must
-	// NOT poison the cache — leaving m_liteonScanProbed at -1 re-probes on the
-	// next attempt, so a working drive is never stuck "unsupported" until the user
-	// runs a manual rescan.
-	if (sk == 0x05) {
-		OutputDebugStringA("LiteOnScan: 0xDF rejected (illegal request) - not a scan drive\n");
-		m_liteonScanProbed = 0;
-	}
-	else {
-		snprintf(dbg, sizeof(dbg),
-			"LiteOnScan: 0xDF init inconclusive (sk=0x%02X) - will re-probe\n", sk);
-		OutputDebugStringA(dbg);
-	}
-	return false;
+	m_liteonScanMethod = selected;
+	m_liteonScanProbed = 1;
+	return true;
 }
 
 bool ScsiDrive::LiteOnScanStart(DWORD startLBA, DWORD endLBA) {
-	if (startLBA > endLBA)
+	if (startLBA > endLBA || m_liteonScanMethod == LiteOnScanMethod::Unknown)
 		return false;
-	s_liteonLBA = startLBA;
-	s_liteonEndLBA = endLBA;
+	if (m_liteonScanActive && !LiteOnScanStop()) return false;
+	m_liteonLBA = startLBA;
+	m_liteonEndLBA = endLBA;
+	m_liteonPosition.Reset(startLBA, endLBA);
+	if (!SeekToLBA(startLBA)) return false;
+	m_liteonScanActive = true;
 
-	if (s_liteonNewMethod) {
-		SeekToLBA(startLBA);          // ✅ seeks
+	if (m_liteonScanMethod == LiteOnScanMethod::CounterSamples) {
 
 		BYTE cdb[12] = {};
 		cdb[0] = 0xF3;
@@ -246,11 +140,11 @@ bool ScsiDrive::LiteOnScanStart(DWORD startLBA, DWORD endLBA) {
 		snprintf(dbg, sizeof(dbg), "LiteOnScanStart(new): startLBA=%lu ok=%d sk=0x%02X\n",
 			(unsigned long)startLBA, ok, sk);
 		OutputDebugStringA(dbg);
+		if (!ok) LiteOnScanStop();
 		return ok;
 	}
 	else {
 		// OLD: full 5-command init sequence from QPXTool
-		SeekToLBA(startLBA);
 
 		std::vector<BYTE> buf(256, 0);
 		BYTE cdb[12] = {};
@@ -259,36 +153,52 @@ bool ScsiDrive::LiteOnScanStart(DWORD startLBA, DWORD endLBA) {
 		// Step A: 0xDF/0xA3
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0xA3;
 		if (!SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq))
-			return false;
+			{ LiteOnScanStop(); return false; }
 
 		// Step B: 0xDF/0xA0 with byte[4]=0x02
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0xA0; cdb[4] = 0x02;
 		if (!SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq))
-			return false;
+			{ LiteOnScanStop(); return false; }
 
 		// Step C: 0xDF/0xA0
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0xA0;
 		if (!SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq))
-			return false;
+			{ LiteOnScanStop(); return false; }
 
 		// Step D: 0xDF/0xA0 with byte[4]=0x04
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0xA0; cdb[4] = 0x04;
 		if (!SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq))
-			return false;
+			{ LiteOnScanStop(); return false; }
 
 		// Step E: 0xDF/0xA0 with byte[4]=0x02
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0xA0; cdb[4] = 0x02;
 		if (!SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq))
-			return false;
+			{ LiteOnScanStop(); return false; }
 
+		// Exclude seek/probe activity before the first explicitly read interval.
+		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0x97;
+		if (!SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq)) {
+			LiteOnScanStop();
+			return false;
+		}
 		OutputDebugStringA("LiteOnScanStart(old): init sequence complete\n");
 		return true;
 	}
 }
 
 bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
-	DWORD& currentLBA, bool& scanDone, DWORD* measuredSectors) {
+	DWORD& currentLBA, bool& scanDone, DWORD* measuredSectors, bool* sampleValid) {
 	if (measuredSectors) *measuredSectors = 0;
+	if (sampleValid) *sampleValid = false;
+	c1 = c2 = cu = 0;
+	scanDone = false;
+	currentLBA = m_liteonLBA;
+	if (!m_liteonScanActive) return false;
+	if (m_liteonPosition.complete) {
+		currentLBA = m_liteonEndLBA;
+		scanDone = true;
+		return true;
+	}
 	BYTE sk = 0, asc = 0, ascq = 0;
 	constexpr int kCommandAttempts = 5;
 	auto sendPollCommand = [&](BYTE* cdb, BYTE cdbLength, BYTE* data,
@@ -308,13 +218,13 @@ bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
 		snprintf(dbg, sizeof(dbg),
 			"LiteOnScanPoll: %s failed after %d attempts "
 			"at LBA %lu (sk=0x%02X asc=0x%02X ascq=0x%02X)\n",
-			stage, kCommandAttempts, static_cast<unsigned long>(s_liteonLBA),
+			stage, kCommandAttempts, static_cast<unsigned long>(m_liteonLBA),
 			sk, asc, ascq);
 		OutputDebugStringA(dbg);
 		return false;
 	};
 
-	if (s_liteonNewMethod) {
+	if (m_liteonScanMethod == LiteOnScanMethod::CounterSamples) {
 		// NEW: each 0xF3/0x0E call returns one time slice
 		BYTE cdb[12] = {};
 		cdb[0] = 0xF3;
@@ -322,34 +232,39 @@ bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
 		std::vector<BYTE> buf(0x10, 0);
 
 		if (!sendPollCommand(cdb, 12, buf.data(), 0x10, "0xF3/0x0E data")) {
-			scanDone = true;
 			return false;
 		}
 
-		// LBA from MSF: byte[1]=min, byte[2]=sec, byte[3]=frame
+		if (buf[2] >= 60 || buf[3] >= 75) {
+			OutputDebugStringA("LiteOn scan: invalid position response; pass incomplete.\n");
+			return false;
+		}
 		const DWORD rawMsf = static_cast<DWORD>(buf[1]) * 60 * 75
-			+ static_cast<DWORD>(buf[2]) * 75
-			+ static_cast<DWORD>(buf[3]);
-		currentLBA = rawMsf >= 150 ? rawMsf - 150 : 0;
-
-		c1 = (static_cast<int>(buf[4]) << 8) | buf[5];   // BLER
-		c2 = (static_cast<int>(buf[6]) << 8) | buf[7];   // E22
-		cu = 0;
-
-		// A zero position after real data is the new protocol's terminal
-		// response. Preserve the last position rather than moving backward to
-		// LBA 0, which would make a completed scan look like lost coverage.
-		scanDone = (rawMsf == 0 && s_liteonLBA > 0);
-		if (scanDone)
-			currentLBA = s_liteonLBA;
-		else
-			s_liteonLBA = currentLBA;
+			+ static_cast<DWORD>(buf[2]) * 75 + static_cast<DWORD>(buf[3]);
+		const DWORD position = rawMsf >= 150 ? rawMsf - 150 : 0;
+		const auto disposition = m_liteonPosition.Observe(position, rawMsf == 0);
+		if (disposition == ScanPositionResult::Invalid) {
+			OutputDebugStringA("LiteOn scan: position regressed or ended early; pass incomplete.\n");
+			return false;
+		}
+		scanDone = m_liteonPosition.complete;
+		// Completion markers and duplicate polls contain no new observation.
+		if (disposition != ScanPositionResult::Sample) {
+			currentLBA = scanDone ? m_liteonEndLBA : m_liteonPosition.previous;
+			return true;
+		}
+		currentLBA = position;
+		m_liteonLBA = position;
+		c1 = (static_cast<int>(buf[4]) << 8) | buf[5];
+		c2 = (static_cast<int>(buf[6]) << 8) | buf[7];
+		// This protocol has no CU counter and no verified interval duration.
+		if (sampleValid) *sampleValid = true;
 		return true;
 	}
 	else {
-		const auto interval = CdScanInterval::At(s_liteonLBA, s_liteonEndLBA);
+		const auto interval = CdScanInterval::At(m_liteonLBA, m_liteonEndLBA);
 		if (interval.sectors == 0) {
-			currentLBA = s_liteonEndLBA;
+			currentLBA = m_liteonEndLBA;
 			scanDone = true;
 			return true;
 		}
@@ -366,7 +281,6 @@ bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
 		// 1. Latch interval counters: 0xDF/0x82/0x09
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0x82; cdb[2] = 0x09;
 		if (!sendPollCommand(cdb, 12, buf.data(), 256, "0xDF/0x82/0x09 latch")) {
-			scanDone = true;
 			return false;
 		}
 
@@ -374,7 +288,6 @@ bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
 		std::fill(buf.begin(), buf.end(), BYTE(0));
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0x82; cdb[2] = 0x05;
 		if (!sendPollCommand(cdb, 12, buf.data(), 256, "0xDF/0x82/0x05 data")) {
-			scanDone = true;
 			return false;
 		}
 
@@ -385,32 +298,31 @@ bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
 		// 3. Reset interval: 0xDF/0x97
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0x97;
 		if (!sendPollCommand(cdb, 12, buf.data(), 256, "0xDF/0x97 reset")) {
-			scanDone = true;
 			return false; // subsequent counts could include earlier intervals
 		}
 
 		// All samples use interval starts. Mixing exclusive endpoints with an
 		// inclusive final end created a false gap in sustained-C1 analysis.
 		if (measuredSectors && coverageKnown) *measuredSectors = interval.sectors;
+		if (sampleValid) *sampleValid = true;
 		currentLBA = interval.startLba;
 		scanDone = interval.final;
+		m_liteonPosition.complete = scanDone;
 		if (!scanDone)
-			s_liteonLBA += interval.sectors;
+			m_liteonLBA += interval.sectors;
 		return true;
 	}
 }
 
 bool ScsiDrive::LiteOnScanStop() {
-	if (!s_liteonNewMethod) {
-		// OLD method: send end command
+	const bool wasActive = m_liteonScanActive;
+	if (wasActive && m_liteonScanMethod == LiteOnScanMethod::MeasuredIntervals) {
 		BYTE cdb[12] = {};
-		cdb[0] = 0xDF;
-		cdb[1] = 0xA3;
-		cdb[2] = 0x01;
+		cdb[0] = 0xDF; cdb[1] = 0xA3; cdb[2] = 0x01;
 		std::vector<BYTE> buf(256, 0);
 		BYTE sk = 0, asc = 0, ascq = 0;
-		SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq);
+		if (!SendSCSIWithSense(cdb, 12, buf.data(), 256, &sk, &asc, &ascq)) return false;
 	}
-	// NEW method: no explicit stop needed
+	m_liteonScanActive = false;
 	return true;
 }

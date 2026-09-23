@@ -113,8 +113,10 @@ bool ScsiDrive::Open(wchar_t driveLetter) {
 		// Commit only after the new open succeeds. This preserves an existing
 		// usable handle when a retarget attempt fails and prevents handle leaks
 		// when Open() is called twice without an intervening Close().
-		if (m_handle != INVALID_HANDLE_VALUE)
+		if (m_handle != INVALID_HANDLE_VALUE) {
+			if (m_liteonScanActive) LiteOnScanStop();
 			CloseHandle(m_handle);
+		}
 		m_handle = newHandle;
 		static std::atomic<uint64_t> nextOpenSession{0};
 		m_openSession = nextOpenSession.fetch_add(1) + 1;
@@ -123,6 +125,10 @@ bool ScsiDrive::Open(wchar_t driveLetter) {
 		// Reset cached probe results — new handle may be a different drive
 		m_qcheckProbed = -1;
 		m_liteonScanProbed = -1;
+		m_liteonScanMethod = LiteOnScanMethod::Unknown;
+		m_liteonLBA = m_liteonEndLBA = 0;
+		m_liteonPosition = {};
+		m_liteonScanActive = false;
 		m_liteonJitterProbed = -1;   // these two were omitted, so a jitter/FE-TE
 		m_liteonFeTeProbed = -1;     // verdict leaked across a drive switch
 		m_pioneerScanProbed = -1;
@@ -153,6 +159,8 @@ bool ScsiDrive::Open(wchar_t driveLetter) {
 }
 
 void ScsiDrive::Close() {
+	if (m_handle != INVALID_HANDLE_VALUE && m_liteonScanActive)
+		LiteOnScanStop();
 	if (m_handle != INVALID_HANDLE_VALUE) {
 		CloseHandle(m_handle);
 		m_handle = INVALID_HANDLE_VALUE;
@@ -160,6 +168,9 @@ void ScsiDrive::Close() {
 	// Closing the handle releases any drive-held door lock; drop the ref-count so
 	// a stale value can't suppress the lock CDB after the next Open().
 	m_doorLockCount = 0;
+	m_liteonScanActive = false;
+	m_liteonScanMethod = LiteOnScanMethod::Unknown;
+	m_liteonScanProbed = -1;
 }
 
 bool ScsiDrive::Reopen() {

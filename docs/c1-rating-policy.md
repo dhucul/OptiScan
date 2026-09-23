@@ -29,8 +29,14 @@ consumer drive. No label certifies archival suitability or a correct rip.
   discusses the 220 BLER limit and a preferred initial CD-R error rate below 50.
   This guidance is not a source for OptiScan's four named bands.
 
-OptiScan grades the **average C1 rate once**. The raw total is ungraded and
-is displayed with measured audio duration and coverage of the requested range.
+OptiScan uses the **average C1 rate** to explain whether the total count is low
+or high for the amount of audio measured. The total line includes that assessment,
+the measured audio duration and the average rate. For example:
+"Total C1 observed: 11832 - EXCELLENT for 54:24.733 of measured audio (3.62/sec)."
+This is the same average-rate assessment shown below the total; more audio can
+accumulate more C1 counts. If measurement or timing is unverified, the report
+explains why the total cannot be rated. Coverage of the requested range is
+displayed separately.
 The mean is total observed C1 divided by **covered sectors / 75**. It never uses
 host elapsed time or the number of polls as a substitute for disc duration.
 
@@ -39,11 +45,11 @@ length, including shortened final intervals. Lite-On head-read failures leave
 duration unknown, and a failed interval-counter reset ends the scan rather
 than carrying accumulated counts into another interval. READ CD counts only successful
 C1 observations; failed sectors and non-audio gaps do not dilute the average.
-Fixed startup exclusions and skipped invalid vendor responses reduce reported
-coverage. Duplicate/overlapping or reversed intervals invalidate rate timing.
+Startup exclusions for untimed responses and skipped invalid vendor responses reduce reported
+coverage; explicitly timed intervals are retained from the start. Duplicate/overlapping or reversed intervals invalidate rate timing.
 Classic asynchronous Plextor and newer Lite-On responses do not currently
 establish counter-interval duration, so raw counts remain available but C1
-rates, coverage, rate graphs and the associated grade are withheld.
+counts-per-sample graphs remain available while rates, coverage and the associated grade are unavailable.
 
 The sustained diagnostic uses three **complete contiguous measured seconds**.
 Partial intervals contribute to the mean and peak interval rate, but counts
@@ -54,8 +60,8 @@ It is a local diagnostic, **not a Red Book compliance test**.
 
 The average is graded; sustained activity and the raw peak are shown as separate measurements. Raw peaks and percentiles remain visible. Brief excursions are not
 automatically attributed to the drive; they may still matter. Recorded early
-spikes are no longer deleted based on their size. Hardware scans still omit a
-fixed three-response startup warmup; their output describes retained samples.
+spikes are no longer deleted based on their size. Untimed hardware responses still use a
+three-response startup warmup; explicitly timed intervals are retained.
 
 Graphs use absolute bands: below 50 green, 50 through 219 yellow, and 220 or
 higher red. The green range combines EXCELLENT and GOOD. Rescaling the chart

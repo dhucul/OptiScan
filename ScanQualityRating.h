@@ -168,12 +168,23 @@ struct TimedCounterGraph {
 	std::uint32_t firstLba = 0;
 	std::uint64_t sectorCount = 0;
 	bool valid = false;
+	bool rawCounts = false; // Observed counts remain plottable without verified duration.
 	double average = 0;
 	double peak = 0;
 	std::uint32_t peakLba = 0;
+	bool RateAvailable() const { return valid && !rawCounts; }
+	const char* UnitSuffix() const { return rawCounts ? "/sample" : "/sec"; }
 };
 TimedCounterGraph BuildTimedCounterGraph(const std::vector<C1Interval>& samples,
 	std::uint32_t firstLba, std::uint64_t sectorCount, int width);
+// Prefer measured rates; otherwise plot raw counts at their reported positions.
+// This display fallback never changes the rate-based quality assessment.
+TimedCounterGraph BuildObservedCounterGraph(const std::vector<C1Interval>& samples,
+	std::uint32_t firstLba, std::uint64_t sectorCount, int width, bool allowRates = true);
+std::string CounterAverageText(const TimedCounterGraph& graph);
+std::string CounterPeakText(const TimedCounterGraph& graph);
+void PrintCounterSummary(std::ostream& os, const char* label,
+	const TimedCounterGraph& graph, const char* indent = "  ");
 
 // Successful READ CD observations only; failed/missing sectors form real gaps.
 void AppendC1Sector(std::vector<C1Interval>& samples, std::uint32_t lba,

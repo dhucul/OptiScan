@@ -267,6 +267,11 @@ int main() {
 		"Q-Check does not accept a sample-less verification pass as clean");
 	qcheckStability.c2RecheckSamples.push_back(QCheckSample{});
 	Check(ClassifyQCheckC2Stability(qcheckStability) ==
+		QCheckC2Stability::RecheckIncomplete,
+		"Q-Check does not accept unknown coverage as a clean verification pass");
+	qcheckStability.graphSectors = 75;
+	qcheckStability.c2RecheckSamples.front().measuredSectors = 75;
+	Check(ClassifyQCheckC2Stability(qcheckStability) ==
 		QCheckC2Stability::Intermittent,
 		"Q-Check treats a clean verification pass as intermittent");
 	qcheckStability.c2RecheckTotal = 3;

@@ -300,9 +300,7 @@ bool OpticalDrive::SaveBlerLog(const BlerResult& result, const std::wstring& fil
 	log << "# Read Failures:         " << result.totalReadFailures << "\n";
 	if (result.pioneerVendorQuality) {
 		log << "# Pioneer E22 Total:     " << result.pioneerE22Total << " (diagnostic; not C2)\n";
-		log << "# Pioneer E22 Avg/sec:   " << std::fixed << std::setprecision(2)
-			<< result.pioneerE22AvgPerSecond << "\n";
-		log << "# Pioneer E22 Peak/sec:  " << result.pioneerE22Peak << "\n";
+		ScanQuality::PrintCounterSummary(log, "Pioneer E22", result.pioneerE22Observations, "# ");
 		log << "# Pioneer E22 Rating:    " << result.pioneerE22Rating << "\n";
 		if (result.pioneerCdCheckRun) {
 			log << "# Uncorrectable CD Check: "
