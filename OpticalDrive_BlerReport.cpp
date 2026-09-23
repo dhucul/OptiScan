@@ -1,6 +1,7 @@
 #define NOMINMAX
 #include "OpticalDrive.h"
 #include "ConsoleGraph.h"
+#include "ScanMeasurementReporting.h"
 #include <iostream>
 #include <iomanip>
 #include <sstream>
@@ -25,23 +26,18 @@ void OpticalDrive::PrintBlerReport(const DiscInfo& disc, const BlerResult& resul
 	std::cout << "  Disc length:     "
 		<< (result.totalSeconds / 60) << ":" << std::setfill('0') << std::setw(2) << (result.totalSeconds % 60)
 		<< std::setfill(' ') << " (mm:ss)\n";
-	if (hasC1Support)
-		std::cout << "  C1 reporting:    Yes (block error bytes 294-295)\n";
-	else
-		std::cout << "  C1 reporting:    No (drive does not support C1 stats)\n";
+	std::cout << "  C1 reporting:    " << result.C1MeasurementLabel() << "\n";
 	if (!result.measurementMethod.empty())
 		std::cout << "  Method:          " << result.measurementMethod << "\n";
 
 	std::cout << "\n--- C1 Observations ---\n";
-	ScanQuality::PrintC1Summary(std::cout, result.c1, result.totalSectors);
+	PrintMethodC1Summary(std::cout, result);
 	if (hasC1Support) ScanQuality::PrintC1Policy(std::cout);
 	ScanQuality::PrintConfidenceCaveat(std::cout, result.peaks.PeakConfidence());
 
-	if (result.c2Unverified) {
+	if (!result.CanAssessC2()) {
 		std::cout << "\n--- C2 Measurement ---\n";
-		std::cout << "  Status:           NOT VERIFIED / NOT MEASURED\n";
-		std::cout << "  A zero C2 total is not a clean result because this drive did not\n"
-			<< "  provide a trustworthy C2 error-pointer measurement.\n";
+		PrintUnverifiedC2Summary(std::cout, result);
 		if (result.pioneerVendorQuality) {
 			std::cout << "\n--- Pioneer E22 Diagnostic (not C2) ---\n";
 			std::cout << "  Total E22:        " << result.pioneerE22Total << "\n";
@@ -312,7 +308,7 @@ void OpticalDrive::PrintBlerQualitySummary(const BlerResult& result) {
 
 	if (result.totalReadFailures > 0)
 		std::cout << "  Read failures detected; some data may be unrecoverable.\n";
-	else if (result.c2Unverified)
+	else if (!result.CanAssessC2())
 		std::cout << "  C2 was not verified; a zero count does not establish copy integrity.\n";
 	else if (result.totalC2Sectors > 0)
 		std::cout << "  C2 activity detected. Use secure extraction and verify the result.\n";

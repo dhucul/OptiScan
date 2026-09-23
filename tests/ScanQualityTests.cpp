@@ -3,6 +3,7 @@
 #include "../ConsoleGraph.h"
 #include "../CdScanInterval.h"
 #include "../ComprehensiveQuality.h"
+#include "../ScanMeasurementReporting.h"
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -150,6 +151,11 @@ int RunScanQualityTests() {
 				BlerResult exported;
 				exported.hasC1Data = c1Present;
 				exported.c2Unverified = c2Unverified;
+				exported.c2PointerDataRecorded = !c2Unverified;
+				if (c1Present) {
+					exported.c1Samples = {{0,75,1}};
+					exported.c1 = SummarizeC1(exported.c1Samples);
+				}
 				exported.qualityRating = failure == 3 ? "BAD" : "UNVERIFIED";
 				exported.totalReadFailures = failure == 1 ? 1 : 0;
 				exported.pioneerVendorQuality = true;
@@ -174,6 +180,7 @@ int RunScanQualityTests() {
 
 	ComprehensiveScanResult composite;
 	composite.bler.hasC1Data = true;
+	composite.bler.c2PointerDataRecorded = true;
 	composite.bler.perSecondC1 = {{0, 1}, {75, 1}, {150, 1}};
 	composite.bler.c1Samples = {{0,75,1}, {75,75,1}, {150,75,1}};
 	composite.rot.rotRiskLevel = "LOW";
@@ -563,5 +570,130 @@ int RunScanQualityTests() {
 	const auto emptyCounter=BuildQCheckCounterGraph(unitReport,&QCheckSample::c2);
 	check(CounterAverageText(emptyCounter)=="unavailable" && CounterPeakText(emptyCounter)=="unavailable",
 		"Empty counters report unavailable rather than a fabricated zero rate");
+
+	// READ CD observations and confidence are separate from vendor C1 support.
+	BlerResult reportedZero;
+	reportedZero.measurementMethod="READ CD C2 error pointers";
+	reportedZero.totalSectors=150;
+	reportedZero.totalSeconds=2;
+	reportedZero.c2Unverified=true;
+	reportedZero.c2PointerDataRecorded=true;
+	reportedZero.qualityRating="EXCELLENT"; // Must not become a clean CSV grade.
+	reportedZero.perSecondC2={{0,0},{75,0},{0,0}};
+	std::ostringstream methodReport;
+	PrintMethodC1Summary(methodReport,reportedZero);
+	PrintUnverifiedC2Summary(methodReport,reportedZero);
+	check(methodReport.str().find("C1 was not measured by this scan method")!=std::string::npos &&
+		methodReport.str().find("option 7")!=std::string::npos &&
+		methodReport.str().find("drive does not support")==std::string::npos,
+		"A missing READ CD C1 channel is explained as method-specific, not a drive-wide limitation");
+	check(methodReport.str().find("C2 activity reported: 0")!=std::string::npos &&
+		methodReport.str().find("DETECTION NOT INDEPENDENTLY VERIFIED")!=std::string::npos &&
+		methodReport.str().find("Pioneer")==std::string::npos,
+		"Unvalidated zero pointer readings remain visible without a vendor-mismatched warning");
+	const auto methodLog=std::filesystem::temp_directory_path()/L"optiscan-c2-method-report.csv";
+	check(drive.SaveBlerLog(reportedZero,methodLog.wstring()),
+		"Unvalidated READ CD readings can be exported");
+	auto readMethodLog=[&]() {
+		std::ifstream file(methodLog);
+		return std::string{std::istreambuf_iterator<char>(file),std::istreambuf_iterator<char>()};
+	};
+	auto methodCsv=readMethodLog();
+	check(methodCsv.find("# Quality Rating:        INCOMPLETE")!=std::string::npos &&
+		methodCsv.find("# Total C2 Errors:       0 (reported; detection unverified)")!=std::string::npos &&
+		methodCsv.find("C2_Reported,DetectionVerified")!=std::string::npos,
+		"Export preserves observed zeros and their unverified status without assigning a clean rating");
+	check(methodCsv.find("0:00,0,0,0,0")!=std::string::npos &&
+		methodCsv.find("0:01,1,75,0,0")!=std::string::npos &&
+		methodCsv.find("0:02,2,0")==std::string::npos,
+		"Export retains recorded zero buckets without inventing a trailing unused bucket");
+	reportedZero.totalReadFailures=1;
+	drive.SaveBlerLog(reportedZero,methodLog.wstring());
+	check(readMethodLog().find("# Quality Rating:        BAD")!=std::string::npos,
+		"Confirmed read failures remain BAD when pointer detection is unverified");
+	reportedZero.totalReadFailures=0;
+	reportedZero.c2PointerDataRecorded=false;
+	reportedZero.pioneerVendorQuality=true;
+	reportedZero.measurementMethod="Pioneer (0x3B/0x3C)";
+	drive.SaveBlerLog(reportedZero,methodLog.wstring());
+	methodCsv=readMethodLog();
+	check(methodCsv.find("NOT MEASURED - NO C2 READINGS RECORDED")!=std::string::npos &&
+		methodCsv.find("# Total C2 Errors:       N/A (not measured)")!=std::string::npos &&
+		methodCsv.find("C2_Reported,DetectionVerified")==std::string::npos,
+		"A vendor backend with no C2 pointer channel still exports unavailable rather than zero");
+
+	BlerResult noReadings;
+	noReadings.measurementMethod="READ CD C2 error pointers";
+	noReadings.hasC1Data=true; // Capability alone is not an observation.
+	noReadings.totalSectors=75; noReadings.totalSeconds=1;
+	noReadings.totalReadFailures=75; noReadings.qualityRating="BAD";
+	noReadings.perSecondC2={{0,75}}; // Historical histogram counts read failures.
+	noReadings.perSecondC1={{0,0}}; // Preallocated but never populated.
+	check(!noReadings.CanAssessC2() &&
+		std::string(noReadings.C2MeasurementLabel())=="NOT MEASURED - NO C2 READINGS RECORDED" &&
+		std::string(noReadings.C1MeasurementLabel())=="NOT MEASURED - NO C1 READINGS RECORDED",
+		"No successful reads cannot be labeled measured even when capability/confidence flags are set");
+	methodReport.str(""); methodReport.clear();
+	PrintUnverifiedC2Summary(methodReport,noReadings);
+	check(methodReport.str().find("Read failures: 75")!=std::string::npos &&
+		methodReport.str().find("Assessment: BAD")!=std::string::npos &&
+		methodReport.str().find("C2 activity reported: 0")==std::string::npos,
+		"The no-data report preserves read failure evidence instead of showing a zero-C2 result");
+	drive.SaveBlerLog(noReadings,methodLog.wstring());
+	methodCsv=readMethodLog();
+	check(methodCsv.find("# Quality Rating:        BAD")!=std::string::npos &&
+		methodCsv.find("# C2 Measurement:        NOT MEASURED - NO C2 READINGS RECORDED")!=std::string::npos &&
+		methodCsv.find("# Total C2 Errors:       N/A (not measured)")!=std::string::npos &&
+		methodCsv.find("C2_Reported,DetectionVerified")==std::string::npos &&
+		methodCsv.find("Time,Second,LBA,C1\n")==std::string::npos &&
+		methodCsv.find("All 1 seconds read cleanly")==std::string::npos,
+		"An all-failed scan exports BAD and unavailable C2 without fabricated C1/C2 zero rows");
+
+	BlerResult recordedC1;
+	recordedC1.measurementMethod="Pioneer (0x3B/0x3C)";
+	recordedC1.c2Unverified=true; recordedC1.pioneerVendorQuality=true;
+	recordedC1.qualityRating="UNVERIFIED";
+	recordedC1.c1Samples={{0,75,0},{75,75,0}};
+	recordedC1.c1=SummarizeC1(recordedC1.c1Samples,false);
+	check(recordedC1.HasC1Observations() &&
+		std::string(recordedC1.C1MeasurementLabel())=="RECORDED - MEASUREMENT UNVERIFIED",
+		"Recorded unverified C1 samples are distinguished from absent readings");
+	drive.SaveBlerLog(recordedC1,methodLog.wstring());
+	methodCsv=readMethodLog();
+	check(methodCsv.find("INCOMPLETE (C1 recorded but unverified; C2 not measured)")!=std::string::npos &&
+		methodCsv.find("Total C1 observed: 0 - rating unavailable")!=std::string::npos &&
+		methodCsv.find("C1 unavailable through this method")==std::string::npos,
+		"CSV assessment and raw C1 observations agree for an unverified vendor capture");
+	recordedC1.hasC1Data=true;
+	recordedC1.c1Samples={{0,0,4}};
+	recordedC1.c1=SummarizeC1(recordedC1.c1Samples);
+	drive.SaveBlerLog(recordedC1,methodLog.wstring());
+	check(std::string(recordedC1.C1MeasurementLabel())=="RECORDED - RATE UNAVAILABLE" &&
+		readMethodLog().find("C1 recorded; rate unavailable")!=std::string::npos,
+		"Unknown C1 duration is not mislabeled as missing or unverified counter data");
+
+	ComprehensiveScanResult statusTransition;
+	statusTransition.bler.hasC1Data=true;
+	statusTransition.bler.c1=SummarizeC1({{0,75,1}});
+	ComprehensiveQuality::Finalize(statusTransition);
+	check(statusTransition.overallRating=="INCOMPLETE",
+		"A clear unverified flag cannot make a comprehensive result complete when C2 data is absent");
+	statusTransition.bler.c2PointerDataRecorded=true;
+	statusTransition.bler.c2Unverified=true;
+	ComprehensiveQuality::Finalize(statusTransition);
+	check(!statusTransition.bler.CanAssessC2() && statusTransition.overallRating=="INCOMPLETE",
+		"Receiving unverified C2 data preserves the incomplete assessment");
+	statusTransition.bler.c2Unverified=false;
+	ComprehensiveQuality::Finalize(statusTransition);
+	check(statusTransition.bler.CanAssessC2() && statusTransition.overallRating=="A" &&
+		std::string(statusTransition.bler.C2MeasurementLabel())=="MEASURED",
+		"Available assessable C2 data clears the missing-data state");
+	statusTransition.bler.c2PointerDataRecorded=false;
+	statusTransition.bler.totalReadFailures=1;
+	ComprehensiveQuality::Finalize(statusTransition);
+	check(statusTransition.overallRating=="F" && !statusTransition.bler.CanAssessC2(),
+		"Confirmed failure still overrides missing measurements after a state transition");
+	std::filesystem::remove(methodLog,cleanup);
+	check(!cleanup,"Method-report regression output removed");
 	return failed;
 }

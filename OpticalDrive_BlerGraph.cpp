@@ -61,10 +61,12 @@ void OpticalDrive::PrintBlerGraph(const BlerResult& result, int width, int heigh
 	}
 
 	// ── C2 Error Distribution ────────────────────────────────────────
-	if (result.c2Unverified) {
+	if (!result.CanAssessC2()) {
 		Console::SetColorRGB(Console::Theme::YellowR,
 			Console::Theme::YellowG, Console::Theme::YellowB);
-		std::cout << "\n  C2 graph omitted: C2 was not verified/measured.\n";
+		std::cout << (result.c2PointerDataRecorded
+			? "\n  C2 graph omitted: error detection through this method is unverified.\n"
+			: "\n  C2 graph unavailable: no C2 pointer readings were recorded.\n");
 		Console::Reset();
 		return;
 	}

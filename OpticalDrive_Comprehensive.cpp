@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "OpticalDrive.h"
+#include "ScanMeasurementReporting.h"
 #include "ComprehensiveQuality.h"
 #include <iostream>
 #include <fstream>
@@ -69,13 +70,10 @@ void OpticalDrive::PrintComprehensiveReport(const ComprehensiveScanResult& resul
 	// BLER Summary
 	std::cout << "\n--- BLER Quality ---\n";
 	std::cout << "  Rating:           " << result.bler.qualityRating << "\n";
-	ScanQuality::PrintC1Summary(std::cout, result.bler.c1, result.bler.totalSectors);
+	PrintMethodC1Summary(std::cout, result.bler);
 	std::cout << "  C1 grade caps: Excellent=A, Good=B, Fair=C, Poor=F (OptiScan policy).\n";
-	if (result.bler.c2Unverified) {
-		std::cout << "  C2 measurement:   NOT VERIFIED / NOT MEASURED\n";
-		std::cout << "  Total C2 errors:  N/A\n";
-		std::cout << "  C2 sectors:       N/A\n";
-		std::cout << "  Avg C2/sec:       N/A\n";
+	if (!result.bler.CanAssessC2()) {
+		PrintUnverifiedC2Summary(std::cout, result.bler);
 	}
 	else {
 		std::cout << "  C2 measurement:   MEASURED\n";
@@ -215,18 +213,19 @@ bool OpticalDrive::SaveComprehensiveReport(const ComprehensiveScanResult& result
 	file << "BLER Quality\n";
 	file << "------------\n";
 	file << "Rating:          " << result.bler.qualityRating << "\n";
-	ScanQuality::PrintC1Summary(file, result.bler.c1, result.bler.totalSectors, "");
+	PrintMethodC1Summary(file, result.bler, "");
 	file << "C1 grade caps: Excellent=A, Good=B, Fair=C, Poor=F (OptiScan policy).\n";
-	file << "C2 measurement:  " << (result.bler.c2Unverified ? "NOT VERIFIED / NOT MEASURED" : "MEASURED") << "\n";
+	file << "C2 measurement:  " << result.bler.C2MeasurementLabel() << "\n";
+	if (!result.bler.CanAssessC2()) PrintUnverifiedC2Summary(file, result.bler, "", false);
 	file << "Total C2 errors: ";
-	if (result.bler.c2Unverified) file << "N/A\n";
+	if (!result.bler.c2PointerDataRecorded) file << "N/A\n";
 	else file << result.bler.totalC2Errors << "\n";
 	file << "C2 sectors:      ";
-	if (result.bler.c2Unverified) file << "N/A\n";
+	if (!result.bler.c2PointerDataRecorded) file << "N/A\n";
 	else file << result.bler.totalC2Sectors << "\n";
 	file << "Read failures:   " << result.bler.totalReadFailures << "\n";
 	file << "Avg C2/sec:      ";
-	if (result.bler.c2Unverified) file << "N/A\n";
+	if (!result.bler.c2PointerDataRecorded) file << "N/A\n";
 	else file << result.bler.avgC2PerSecond << "\n";
 	if (result.bler.pioneerVendorQuality) {
 		file << "Pioneer E22:     " << result.bler.pioneerE22Total << " total, "

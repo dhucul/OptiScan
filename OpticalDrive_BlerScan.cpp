@@ -1,4 +1,4 @@
-﻿	#define NOMINMAX
+	#define NOMINMAX
 #include "OpticalDrive.h"
 #include "InterruptHandler.h"
 #include "PioneerVendor.h"
@@ -53,8 +53,9 @@ bool OpticalDrive::RunBlerScan(const DiscInfo& disc, BlerResult& result, int sca
 		std::cout << "C1 block error reporting available - C1 and C2 errors will be reported.\n\n";
 	}
 	else {
-		std::cout << "Note: C1 errors are not available on this drive.\n";
-		std::cout << "      This scan verifies read integrity (C2) but cannot measure physical disc degradation.\n\n";
+		std::cout << "C1 is unavailable through the sector-reading method used for this scan.\n";
+		std::cout << "Hardware quality scan (option 7) uses a separate method and may report C1.\n";
+		std::cout << "This run will collect C2 error-pointer readings and read failures.\n\n";
 	}
 
 	DWORD totalSectors = 0, firstLBA = 0, lastLBA = 0;
@@ -149,6 +150,7 @@ bool OpticalDrive::RunBlerScan(const DiscInfo& disc, BlerResult& result, int sca
 			int zoneError = 0;
 
 			if (readSuccess) {
+				result.c2PointerDataRecorded = true;
 				bool recovered = (senseKey == 0x01);
 				if (hasC1Support)
 					ScanQuality::AppendC1Sector(result.c1Samples, lba, c1BlockErrors, lba == start);

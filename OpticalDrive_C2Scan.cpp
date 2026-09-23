@@ -1,6 +1,7 @@
 #define NOMINMAX
 #include "OpticalDrive.h"
 #include "ConsoleGraph.h"
+#include "ScanMeasurementReporting.h"
 #include "InterruptHandler.h"
 #include "PioneerVendor.h"
 #include <iostream>
@@ -213,6 +214,7 @@ bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanS
 				c2Buffer.data(), c2Opts, &senseKey, &asc, &ascq);
 
 			if (readSuccess) {
+				result.c2PointerDataRecorded = true;
 				// CRITICAL: Check if errors were recovered by the drive
 				// Sense key 0x01 means "Recovered Error" - drive fixed it internally
 				bool recovered = (senseKey == 0x01);
@@ -369,10 +371,8 @@ bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanS
 	else
 		result.qualityRating = "POOR";
 
-	// Flag potentially non-functional C2 reporting.
-	// If the entire disc scanned with zero C2 errors AND the drive doesn't
-	// populate C1 block error stats (bytes 294-295), the C2 pointer bitmap
-	// may also be non-functional.  Suggest vendor-command-based scanning.
+	// Keep the legacy conservative confidence rule for zero-only results.
+	// Lack of a separate C1 counter is not proof that C2 reporting is broken.
 	if (result.totalC2Sectors == 0 && result.totalReadFailures == 0
 		&& result.recoveredC2Sectors == 0 && result.recoveredC2Errors == 0
 		&& !m_drive.SupportsC1BlockErrors()) {
@@ -383,13 +383,6 @@ bool OpticalDrive::RunC2Scan(const DiscInfo& disc, BlerResult& result, int scanS
 	PrintC2ScanReport(result, disc, scanSpeed);
 	PrintC2SenseCodeChart(badSectors, disc, result);
 
-	if (result.c2Unverified) {
-		std::cout << "\n  ** NOTE: Zero C2 errors across entire disc, but this drive\n"
-			<< "     does not populate C2 block error stats (bytes 294-295).\n"
-			<< "     The C2 pointer bitmap may not be functional.\n"
-			<< "     Run the hardware quality scan for backend-specific ECC data;\n"
-			<< "     Pioneer reports C1/E22, not verified C2/E32 or CU. **\n";
-	}
 
 	return true;
 }
@@ -683,15 +676,12 @@ void OpticalDrive::PrintC2ScanReport(const BlerResult& result, const DiscInfo& d
 	std::cout << std::setfill(' ') << " (mm:ss)\n";
 	std::cout << "  Scan speed:        "
 		<< (scanSpeed == 0 ? "Max" : std::to_string(scanSpeed) + "x") << "\n";
-	if (result.c2Unverified) {
+	if (!result.CanAssessC2()) {
 		std::cout << "\n--- C2 Measurement ---\n";
 		Console::SetColor(Console::Color::Yellow);
-		std::cout << "  STATUS: NOT VERIFIED / NOT MEASURED\n";
+		std::cout << "  STATUS: " << result.C2MeasurementLabel() << "\n";
 		Console::Reset();
-		std::cout << "  The drive returned zero C2 activity but did not expose the\n"
-			<< "  supporting error statistics needed to trust that bitmap.\n"
-			<< "  No clean-disc rating is assigned. Use a supported hardware\n"
-			<< "  quality backend or verify the rip independently.\n";
+		PrintUnverifiedC2Summary(std::cout, result, "  ", false);
 		std::cout << std::string(60, '=') << "\n";
 		return;
 	}

@@ -418,7 +418,8 @@ struct BlerResult {
 	bool hasEdgeConcentration = false;
 	bool hasProgressivePattern = false;
 	bool hasC1Data = false;
-	bool c2Unverified = false;             // C2 bitmap may not be functional
+	bool c2Unverified = false;             // C2 cannot support a verified clean-disc conclusion
+	bool c2PointerDataRecorded = false;    // The sector-reading method returned C2 pointer data, including zero
 	std::string qualityRating;
 
 	// Sustained-level statistics and scan-speed confidence, shared with the
@@ -459,6 +460,22 @@ struct BlerResult {
 	bool HasConfirmedFailure() const {
 		return totalReadFailures > 0 || qualityRating == "BAD" ||
 			(pioneerCdCheckRun && pioneerCdCheckC2Bytes > 0);
+	}
+
+	bool HasC1Observations() const { return c1.samples > 0; }
+	bool CanAssessC2() const { return c2PointerDataRecorded && !c2Unverified; }
+
+	const char* C1MeasurementLabel() const {
+		if (!HasC1Observations()) return "NOT MEASURED - NO C1 READINGS RECORDED";
+		if (!hasC1Data || !c1.verified) return "RECORDED - MEASUREMENT UNVERIFIED";
+		if (!c1.RateAvailable()) return "RECORDED - RATE UNAVAILABLE";
+		return "MEASURED";
+	}
+
+	const char* C2MeasurementLabel() const {
+		if (!c2PointerDataRecorded) return "NOT MEASURED - NO C2 READINGS RECORDED";
+		if (c2Unverified) return "REPORTED - DETECTION NOT INDEPENDENTLY VERIFIED";
+		return "MEASURED";
 	}
 
 	// Top worst sectors by C2 error count: (LBA, C2 count)

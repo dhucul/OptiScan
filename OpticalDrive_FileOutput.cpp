@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "OpticalDrive.h"
+#include "ScanMeasurementReporting.h"
 #include "AccurateRip.h"
 #include "InterruptHandler.h"
 #include "MenuHelpers.h"
@@ -254,18 +255,26 @@ bool OpticalDrive::SaveBlerLog(const BlerResult& result, const std::wstring& fil
 	log << "# Quality Rating:        ";
 	if (result.HasConfirmedFailure())
 		log << "BAD";
-	else if (result.c2Unverified && !result.hasC1Data)
-		log << "INCOMPLETE (no trustworthy C1/C2 measurement)";
+	else if (!result.CanAssessC2() && !result.c1.RateAvailable()) {
+		log << "INCOMPLETE (";
+		if (!result.HasC1Observations()) log << "C1 not measured";
+		else if (!result.hasC1Data || !result.c1.verified) log << "C1 recorded but unverified";
+		else log << "C1 recorded; rate unavailable";
+		log << (result.c2PointerDataRecorded ? "; C2 unverified)" : "; C2 not measured)");
+	}
 	else {
 		log << result.qualityRating;
-		if (result.c2Unverified)
-			log << " (C1 quality only; C2 is not verified)";
+		if (!result.CanAssessC2())
+			log << (result.c2PointerDataRecorded
+				? " (C1 quality only; C2 is not verified)"
+				: " (C1 quality only; C2 was not measured)");
 	}
 	log << "\n";
 	log << "# Measurement Method:    "
 		<< (result.measurementMethod.empty() ? "unspecified" : result.measurementMethod) << "\n";
 	log << "# C2 Measurement:        "
-		<< (result.c2Unverified ? "NOT VERIFIED / NOT MEASURED" : "MEASURED") << "\n";
+		<< result.C2MeasurementLabel() << "\n";
+	if (!result.CanAssessC2()) PrintUnverifiedC2Summary(log, result, "# ", false);
 	log << "# Total Sectors:         " << result.totalSectors << "\n";
 	log << "# Disc Length:           "
 		<< (result.totalSeconds / 60) << ":"
@@ -273,8 +282,16 @@ bool OpticalDrive::SaveBlerLog(const BlerResult& result, const std::wstring& fil
 		<< std::setfill(' ') << " (mm:ss)\n";
 	log << "#\n";
 	log << "# --- Error Statistics ---\n";
-	ScanQuality::PrintC1Summary(log, result.c1, result.totalSectors, "# ");
-	if (result.c2Unverified) {
+	PrintMethodC1Summary(log, result, "# ");
+	if (result.c2Unverified && result.c2PointerDataRecorded) {
+		log << "# Total C2 Errors:       " << result.totalC2Errors << " (reported; detection unverified)\n";
+		log << "# Sectors with C2:       " << result.totalC2Sectors << " (reported)\n";
+		log << "# Avg C2/sec:            " << result.avgC2PerSecond << " (reported)\n";
+		log << "# Max C2/sec:            " << result.maxC2PerSecond << " (reported)\n";
+		log << "# Max C2 in One Sector:  " << result.maxC2InSingleSector << " (reported)\n";
+		log << "# Longest Error Run:     " << result.consecutiveErrorSectors << " (reported)\n";
+	}
+	else if (!result.c2PointerDataRecorded) {
 		log << "# Total C2 Errors:       N/A (not measured)\n";
 		log << "# Sectors with C2:       N/A (not measured)\n";
 		log << "# Avg C2/sec:            N/A (not measured)\n";
@@ -315,7 +332,9 @@ bool OpticalDrive::SaveBlerLog(const BlerResult& result, const std::wstring& fil
 	}
 	log << "#\n";
 	log << "# --- Observed Read Result (not Red Book compliance) ---\n";
-	if (result.c2Unverified)
+	if (result.c2Unverified && result.c2PointerDataRecorded)
+		log << "# C2 Result:             Reported readings only; C2 detection unverified\n";
+	else if (!result.c2PointerDataRecorded)
 		log << "# C2 Result:             N/A - no verified C2 measurement\n";
 	else
 		log << "# C2 Result:             "
@@ -324,8 +343,8 @@ bool OpticalDrive::SaveBlerLog(const BlerResult& result, const std::wstring& fil
 
 	// --- Zone stats ---
 	log << "# --- Zone Error Rates ---\n";
-	if (result.c2Unverified) {
-		log << "# N/A - verified C2 zone data was not measured.\n#\n";
+	if (!result.CanAssessC2()) {
+		log << "# C2 zone assessment unavailable: error detection is unverified or not measured by this method.\n#\n";
 	}
 	else {
 	log << "# Inner  (0-33%):        " << std::fixed << std::setprecision(2)
@@ -368,10 +387,22 @@ bool OpticalDrive::SaveBlerLog(const BlerResult& result, const std::wstring& fil
 	}
 
 	log << "# ==============================\n";
-	log << (result.c2Unverified ? "# Per-Sample Measured Quality Counts\n" : "# Per-Second C2 Error Data\n");
+	log << (!result.CanAssessC2() ? "# Per-Sample Measured Quality Counts\n" : "# Per-Second C2 Error Data\n");
 	log << "# ==============================\n";
-	if (result.c2Unverified) {
-		if (result.pioneerVendorQuality) {
+	if (!result.CanAssessC2()) {
+		if (result.c2PointerDataRecorded) {
+			log << "# Recorded pointer readings; zero does not establish a clean-disc result.\n";
+			log << "Time,Second,LBA,C2_Reported,DetectionVerified\n";
+			const size_t count = std::min(result.perSecondC2.size(),
+				static_cast<size_t>(std::max(0, result.totalSeconds)));
+			for (size_t i = 0; i < count; ++i) {
+				const auto& sample = result.perSecondC2[i];
+				log << (i / 60) << ":" << std::setfill('0') << std::setw(2) << (i % 60)
+					<< std::setfill(' ') << "," << i << "," << sample.first
+					<< "," << sample.second << ",0\n";
+			}
+		}
+		else if (result.pioneerVendorQuality) {
 			log << "Time,Second,LBA,C1,PioneerE22\n";
 			size_t count = std::max(result.perSecondC1.size(), result.perSecondPioneerE22.size());
 			for (size_t i = 0; i < count; i++) {
@@ -383,7 +414,7 @@ bool OpticalDrive::SaveBlerLog(const BlerResult& result, const std::wstring& fil
 					<< std::setfill(' ') << "," << (lba / 75) << "," << lba << "," << c1 << "," << e22 << "\n";
 			}
 		}
-		else if (!result.perSecondC1.empty()) {
+		else if (result.HasC1Observations() && !result.perSecondC1.empty()) {
 			log << "Time,Second,LBA,C1\n";
 			for (size_t i = 0; i < result.perSecondC1.size(); i++)
 				log << (result.perSecondC1[i].first / 75 / 60) << ":" << std::setfill('0') << std::setw(2) << (result.perSecondC1[i].first / 75 % 60)

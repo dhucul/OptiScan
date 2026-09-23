@@ -19,14 +19,14 @@ inline ScanQuality::C1Rating C1Assessment(const ComprehensiveScanResult& result)
 
 inline bool IsIncomplete(const ComprehensiveScanResult& result) {
 	return !HasConfirmedFailure(result) &&
-		(C1Assessment(result) == ScanQuality::C1Rating::Unrated || result.bler.c2Unverified);
+		(C1Assessment(result) == ScanQuality::C1Rating::Unrated || !result.bler.CanAssessC2());
 }
 
 inline std::string MissingMeasurements(const ComprehensiveScanResult& result) {
 	const bool c1Missing = C1Assessment(result) == ScanQuality::C1Rating::Unrated;
-	if (c1Missing && result.bler.c2Unverified) return "C1 and C2 were unavailable or unverified";
+	if (c1Missing && !result.bler.CanAssessC2()) return "C1 and C2 were unavailable or unverified";
 	if (c1Missing) return "C1 was unavailable or unverified";
-	if (result.bler.c2Unverified) return "C2 was unavailable or unverified";
+	if (!result.bler.CanAssessC2()) return "C2 was unavailable or unverified";
 	return {};
 }
 
@@ -87,7 +87,7 @@ inline int CalculateScore(const ComprehensiveScanResult& result) {
 	case ScanQuality::C1Rating::Poor: score = std::min(score, 59); break;
 	case ScanQuality::C1Rating::Unrated: score = std::min(score, 79); break;
 	}
-	if (result.bler.c2Unverified) score = std::min(score, 79);
+	if (!result.bler.CanAssessC2()) score = std::min(score, 79);
 	// Missing channels cannot turn known failures into an incomplete/clean grade.
 	if (HasConfirmedFailure(result)) score = std::min(score, 59);
 
