@@ -752,7 +752,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 				}
 			}
 			else {
-				Console::Error("Failed to verify subchannel integrity.\n");
+				Console::Error("Subchannel integrity scan incomplete or cancelled; see coverage above.\n");
 				dispatchStatus = 1;
 			}
 			break;
@@ -764,7 +764,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 			SubchannelBurnResult burnResult;
 			Console::Info("\nVerifying subchannel burn status...\n");
 			if (!copier.VerifySubchannelBurnStatus(disc, burnResult, speed)) {
-				Console::Error("Failed to verify subchannel burn status.\n");
+				Console::Error("Subchannel assessment incomplete or cancelled; optional content remains unverified.\n");
 				dispatchStatus = 1;
 			}
 			break;
@@ -912,7 +912,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 				Console::Success("Seek time analysis complete.\n");
 			}
 			else {
-				Console::Error("Seek time analysis failed.\n");
+				Console::Error("Seek time analysis incomplete or cancelled; failed attempts are not valid timings.\n");
 				dispatchStatus = 1;
 			}
 			break;
@@ -940,7 +940,7 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 				Console::Success("Disc balance check complete.\n");
 			}
 			else {
-				Console::Error("Disc balance check failed.\n");
+				Console::Error("Disc balance check incomplete or cancelled; no valid balance score is available.\n");
 				dispatchStatus = 1;
 			}
 			break;

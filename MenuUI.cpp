@@ -192,7 +192,7 @@ void PrintHelpMenu() {
 		"Professional-grade disc quality analysis with C1/C2 breakdown." });
 
 	PrintEntry({ "10. Disc Rot Detection",
-		"Analyzes error patterns to detect physical degradation (disc rot/bronzing).\n"
+		"Checks read reliability and heuristic degradation patterns; cause unconfirmed.\n"
 		"   Checks for characteristic edge deterioration and oxidation patterns.",
 		"Evaluating older discs or checking storage conditions." });
 
@@ -231,7 +231,7 @@ void PrintHelpMenu() {
 
 	PrintEntry({ "14. Audio Content Analysis",
 		"Analyzes audio characteristics: silence detection, clipping, DC offset,\n"
-		"   and per-track RMS/peak levels.\n"
+		"   and sampled RMS levels. Failed samples remain unmeasured.\n"
 		"   (Pre-emphasis is verified separately by the Subchannel Integrity Check,\n"
 		"   option 16, from the Q control field.)",
 		"Understanding the audio mastering of the disc." });
@@ -246,10 +246,10 @@ void PrintHelpMenu() {
 		"Looking up album metadata or verifying disc identity." });
 
 	PrintEntry({ "16. Lead Area Check",
-		"Examines lead-in and lead-out areas for hidden data or damage.\n"
-		"   These areas contain TOC data and are critical for disc recognition.\n"
-		"   Can reveal hidden track zero audio (HTOA) or pre-gap content.",
-		"Diagnosing discs that fail to load or have TOC issues." });
+		"Samples accessible pre-program or inner program-area sectors and the\n"
+		"   final program-area sectors for boundary read problems. Actual lead-in\n"
+		"   TOC and lead-out areas remain unverified; clean proxies do not certify them.",
+		"Investigating read problems near the recorded audio boundaries." });
 
 	PrintEntry({ "17. Subchannel Integrity Check",
 		"Verifies the integrity of subchannel data (Q-channel timing, etc.).\n"
@@ -261,14 +261,11 @@ void PrintHelpMenu() {
 		"confirming whether a track needs de-emphasis for accurate audio." });
 
 	PrintEntry({ "18. Verify Subchannel Burn Status",
-		"Samples sectors across the disc and reads raw subchannel data to determine\n"
-		"   whether subchannel information was actually mastered/burned onto the disc.\n"
-		"   Checks Q-channel CRC validity, P-channel pause/play state, R-W channel\n"
-		"   content (CD-G graphics), and MSF timing consistency.\n"
-		"\n"
-		"   Pressed/mastered CDs always have valid subchannel data. Burned CD-Rs may\n"
-		"   or may not, depending on the burning software and settings used.",
-		"Deciding if subchannel extraction is useful before ripping, or identifying burned copies vs. originals." });
+		"Samples raw subchannels for Q CRC validity, timing and optional R-W content.\n"
+		"   Failed reads, zero-filled responses and formatted-Q-only support remain\n"
+		"   incomplete. They do not prove absent R-W content or justify skipping\n"
+		"   subchannel preservation. Even clean results describe sampled sectors only.",
+		"Checking whether optional subchannel content was observed and can be read reliably." });
 
 	PrintEntry({ "19. Copy-Protection Check",
 		"Scans the disc for common audio CD copy-protection mechanisms.\n"

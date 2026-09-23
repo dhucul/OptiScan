@@ -6,7 +6,7 @@ A Windows **GUI application** for high-quality audio CD ripping, writing, and ad
 
 OptiScan reads and writes audio CDs at the raw sector level using SCSI/MMC commands and provides multiple quality scanning modes to assess disc health before, during, or after extraction.
 
-**[Download OptiScan 3.38](https://github.com/dhucul/OptiScan/releases/latest)** — choose `OptiScan-3.38-Setup.exe`, the 64-bit installer for Windows 10 or later. It installs the Microsoft Visual C++ 2015–2022 runtime when needed, so setup requires administrator rights.
+**[Download OptiScan 3.39](https://github.com/dhucul/OptiScan/releases/latest)** — choose `OptiScan-3.39-Setup.exe`, the 64-bit installer for Windows 10 or later. It installs the Microsoft Visual C++ 2015–2022 runtime when needed, so setup requires administrator rights.
 
 > [!IMPORTANT]
 > **Drive compatibility is not universal.** OptiScan relies on low-level SCSI/MMC and vendor-specific optical-drive commands, so support depends on the exact drive model, firmware, chipset, USB bridge, and media type. A drive may work for normal ripping but still fail features such as pregap detection, subchannel reading/writing, CD-Text writing, C2/C1 reporting, or hardware quality scans.
@@ -378,56 +378,41 @@ The combined rating also includes the shared C1 band and cannot be better than i
 
 ### Disc Rot Detection
 
-**Question answered:** *"Is this disc physically degrading, and how urgently should I back it up?"*
+**Question answered:** *"What read problems and error patterns were observed, and how urgently should I back up?"*
 
-Disc rot is the chemical or physical deterioration of a CD's reflective aluminum layer. It produces **characteristic spatial error patterns** that are distinct from scratches, fingerprints, or manufacturing defects. A disc can have zero C2 errors on a single read pass and still be in early-stage rot, detectable only through read instability across multiple passes.
+This scan combines read evidence with a heuristic preservation-risk assessment. Error patterns cannot diagnose chemical disc rot, bronzing, pitting or remaining life. Scratches, dirt, manufacturing defects and drive behaviour can produce similar observations. A matching reread or zero error counter is not proof that the disc is healthy.
 
-OptiScan performs a two-phase scan:
+**Phase 0 — Optional vendor quality scan**
+Records C1 observations and, where supported, C2/CU counts. Pioneer E22 remains a separate diagnostic; it is not treated as C2/CU. Positive Plextor/LiteOn C2/CU observations remain in the final report even when the quality scan later fails or subsequent reads are clean. Partial scans do not establish clean coverage. A separate Pioneer CD Check measures uncorrectable errors when supported.
 
 **Phase 1 — C2 error distribution**
-Reads the entire disc and classifies every sector into three radial zones:
-
-| Zone | Disc position |
-|---|---|
-| **Inner** | 0–33% (near the center hub) |
-| **Middle** | 33–66% |
-| **Outer** | 66–100% (near the outer edge) |
-
-Error rates are computed per zone to reveal spatial concentration patterns.
+Reads the audio tracks and classifies sectors into thirds of the scanned LBA span: inner (0–33%), middle (33–66%) and outer (66–100%). These are logical positions within recorded audio, not calibrated physical radial thirds. Failed sector reads are counted separately from C2 observations. Positive C2 observations remain warning evidence even when a Pioneer verification read succeeds.
 
 **Phase 2 — Adaptive read consistency**
-Re-reads sampled sectors multiple times (3 passes per sample) to detect **read instability** — the same sector returning different audio data on different reads. The sampling density adapts per zone: zones with higher error rates from Phase 1 receive denser sampling (down to every 20th sector) while clean zones are sampled sparsely (every 200th sector).
+Reads each sampled sector three times. Sampling varies from every 200th sector in low-error zones to every 20th sector in higher-error zones. Before comparisons, the scan reads more unique audio bytes elsewhere than the drive's reported buffer capacity, avoiding the target and non-audio gaps. Accurate Stream does not exempt a drive from this cache-eviction step. This can substantially increase scan time. Unknown buffer capacity, insufficient audio to evict the buffer, or failed eviction reads leave reread confidence explicitly limited; cached matches cannot establish consistency. The method depends on the drive accurately reporting its buffer capacity.
 
-The scan then evaluates four degradation indicators:
+Four heuristic indicators describe observed distributions:
 
-| Indicator | Detection rule | What it means |
+| Indicator | Detection rule | Interpretation |
 |---|---|---|
-| **Edge concentration** | Outer error rate > 2× inner rate and > 1% | Rot typically starts at the disc edge where the protective lacquer is thinnest |
-| **Progressive pattern** | Error rate increases monotonically inner → middle → outer, outer > 0.5% | Classic inward-spreading rot progression |
-| **Pinhole pattern** | > 10 small clusters (≤ 3 sectors) comprising > 50% of all clusters | Microscopic holes in the reflective layer caused by oxidation |
-| **Read instability** | > 5% of re-read samples return different data | The reflective layer is intermittently unreadable — data is being lost |
+| **Edge concentration** | Either end-zone error rate > 2× the other and > 1% | Errors concentrated near an end of the scanned audio span; cause unconfirmed |
+| **Progressive pattern** | Rates increase inner → middle → outer, outer > 0.5% | Spatial increase, not proof of deterioration over time |
+| **Pinhole pattern** | > 10 small clusters (≤ 3 sectors), forming > 50% of clusters | Small scattered error clusters; physical pinholes are not assessed |
+| **Read instability** | > 5% of sampled rereads differ or fail | Sampled read problems; cause unconfirmed |
 
-A weighted scoring system produces the final risk level:
+The pattern score assigns +25 for edge concentration, +25 for a progressive pattern, +15 for small scattered clusters, +20 for instability, and another +15 above 10% inconsistency. The worst sector adds +10 at 50 C2 counts or +20 at 100. Scores map to NONE (<10), LOW (10–29), MODERATE (30–49), HIGH (50–74), or CRITICAL (75+). C1/E22 observations may raise the heuristic level.
 
-| Indicator | Weight |
-|---|---|
-| Edge concentration | +25 |
-| Progressive pattern | +25 |
-| Read instability | +20 |
-| Pinhole pattern | +15 |
-| Inconsistency rate > 10% | +15 |
+Read evidence then applies minimum warnings independently of these patterns:
 
-| Score | Risk level |
-|---|---|
-| 0–9 | **NONE** — Disc appears healthy |
-| 10–29 | **LOW** — Minor issues, consider backing up soon |
-| 30–49 | **MODERATE** — Early degradation, back up immediately |
-| 50–74 | **HIGH** — Significant degradation, back up NOW |
-| 75–100 | **CRITICAL** — Severe damage, extract whatever data is possible |
+- Primary reads still failing after retry, failed C2 verification reads, failed sampled reads, or observed vendor CU/Pioneer CD Check uncorrectable errors: at least **HIGH**; extract and verify immediately.
+- Observed Phase 1 or vendor C2 activity: at least **MODERATE**; make and verify a backup promptly.
+- Any differing sampled reread: at least **LOW**, even below the instability threshold.
+- Initial reads that succeed on retry remain recorded separately, with at least a **LOW** warning and a comprehensive score capped at 89; recovery is not classified as uncorrectable data loss.
+- Missing reread confidence or unavailable Pioneer CU remains an independent limitation even when C2 activity, differing rereads or recovered failures are also observed. The comprehensive grade stays **INCOMPLETE** unless a confirmed failure takes precedence as **F**; incomplete measurements cap the score at 79. **NONE** means no qualifying pattern was observed, not that the disc is healthy.
 
-**Output:** Zone error rates, cluster analysis, indicator flags, risk assessment, and a recommendation. Saved as a text report (`discrot_report.txt`).
+**Output:** The console and saved text report (`discrot_report.txt`) include read evidence, vendor measurement status, cache-eviction limitations, zone rates, clusters, heuristic indicators, preservation risk and a recommendation. The same failure evidence reaches the comprehensive assessment.
 
-**When to use:** When you suspect physical deterioration (visible bronzing, edge discoloration, age > 15 years) and need to know whether data loss is imminent.
+**When to use:** To investigate suspected deterioration or read problems and prioritize verified backups. Compare repeat measurements under consistent conditions and inspect visible damage separately.
 
 ---
 
@@ -435,18 +420,18 @@ A weighted scoring system produces the final risk level:
 
 | | C2 Scan | BLER Scan | Disc Rot Detection |
 |---|---|---|---|
-| **Question** | Are there uncorrectable errors? | What is the error rate over time? | Is the disc physically degrading? |
-| **C1 reporting** | No | Yes (auto-detected per drive) | No |
+| **Question** | Are there uncorrectable errors? | What is the error rate over time? | What read problems and spatial patterns are observed? |
+| **C1 reporting** | No | Yes (auto-detected per drive) | Yes, when vendor quality scanning is available |
 | **Read passes** | 1–3 (configurable) | 1 | Full disc + adaptive multi-pass sampling |
-| **Spatial analysis** | No | Zone distribution (inner/middle/outer) | Yes — three-zone radial classification |
+| **Spatial analysis** | No | Zone distribution (inner/middle/outer) | Yes — three-zone classification of the scanned LBA span |
 | **Read consistency** | Not tested | Not tested | Multi-pass re-read detects instability |
-| **Pattern analysis** | None | Per-second bucketing, per-track totals, error clustering | Edge concentration, progressive gradient, pinhole clusters |
-| **Typical cause detected** | Scratches, fingerprints, poor burns | Same as C2 but with temporal context + early wear via C1 | Chemical oxidation, delamination, bronzing |
+| **Pattern analysis** | None | Per-second bucketing, per-track totals, error clustering | Edge concentration, spatial gradient, small scattered clusters |
+| **Cause attribution** | Error observations; cause unconfirmed | Error-rate observations; cause unconfirmed | Heuristic patterns; does not diagnose chemical rot |
 | **Output format** | Console report + CSV | Console report + CSV + ASCII graph | Console report + text log |
-| **Actionable result** | "Use secure rip" or "clean the disc" | "Observed C1/C2 rates" or "use secure extraction" | "Back up NOW — data loss imminent" |
+| **Actionable result** | "Use secure rip" or "clean the disc" | "Observed C1/C2 rates" or "use secure extraction" | "Prioritize a verified backup based on observed read evidence" |
 | **Speed** | Fast (minutes) | Moderate (full disc read) | Slow (full disc read + re-read sampling) |
 
-**Key insight:** A disc can pass a C2 scan with zero errors yet still be in early-stage rot — Phase 2's read consistency check catches degradation that a single read pass cannot. The BLER scan's C1 data (when available) fills the gap between "zero C2" and "actual disc health" — elevated C1 rates reveal wear that hasn't yet progressed to uncorrectable errors. Conversely, a disc with high BLER from a surface scratch will show **no rot indicators** because the damage is mechanical, not chemical.
+**Interpretation:** A single clean C2 pass does not establish disc health. Independent rereads can reveal differing audio, and supported C1 measurements provide additional error observations. These tests cannot distinguish chemical deterioration from scratches or other causes on their own; both can produce the same spatial indicators.
 
 ---
 
@@ -463,15 +448,15 @@ Unbalanced or warped CDs vibrate at high rotation speeds, causing read instabili
 | **Stability ratio** | Per-sector read time consistency (higher = more wobble) |
 | **Speed scaling** | Whether actual throughput scales linearly with requested speed |
 
-Each metric produces a 0–100 sub-score. These are blended into a single **Balance Score**:
+If measurement coverage and speed differentiation are sufficient, each metric produces a 0–100 sub-score. These are blended into a single **Balance Score**:
 
 | Score | Assessment | Recommendation |
 |---|---|---|
-| 75–100 | **GOOD** — disc is well balanced | Any rip speed is safe |
+| 75–100 | **GOOD** within the qualified measured range | Use the verified suggested maximum |
 | 50–74 | **FAIR** — some wobble detected | Reduce rip speed |
 | 0–49 | **POOR** — significant balance problem | Use 4×–8× maximum |
 
-The scan also determines the **maximum safe rip speed** — the highest speed at which no wobble degradation was detected. On Pioneer drives, Disc Balance additionally runs the utility-compatible Quick CD Check at 0.05 mm radial intervals and reports genuine uncorrectable bytes separately. That sampled data-loss result never changes the mechanical balance score, and a failed or unsupported CD Check is shown as **unmeasured**, never as zero errors.
+The scan also reports a **suggested maximum rip speed**, bounded by the qualified measured speeds. Partial speed coverage is explicit, and unverified higher speeds are never treated as tested. This is a sampled advisory assessment, not a guarantee of extraction accuracy. On Pioneer drives, Disc Balance additionally runs the utility-compatible Quick CD Check at 0.05 mm radial intervals and reports genuine uncorrectable bytes separately. That sampled data-loss result never changes the mechanical balance score, and a failed or unsupported CD Check is shown as **unmeasured**, never as zero errors.
 
 **Output:** Per-speed error rates, jitter statistics, sub-scores, balance score, and safe speed recommendation.
 
@@ -496,6 +481,18 @@ The report includes the chipset family, detection confidence, interface type, US
 **When to use:** When setting up a new drive — understanding the chipset helps choose optimal extraction settings and explains drive-specific behavior (e.g., TSSTcorp drives may report inaccurate C2 data).
 
 ---
+
+## Diagnostic Coverage and Completion
+
+The diagnostic menu distinguishes a completed observation from unavailable or incomplete measurements:
+
+- **14 — Audio content analysis:** content counts and percentages use only successfully read samples. No readable samples means **NOT MEASURED**. Any sampled read failure leaves the analysis incomplete; zero counts do not certify silence, clipping, level or DC-offset absence.
+- **16 — Lead area check:** examines pre-program samples when accessible, or an inner program-area proxy, plus the final program-area sectors. It does not verify the actual lead-in TOC or lead-out. Successful proxy reads are reported only as boundary observations.
+- **17 — Subchannel integrity:** aborting after 200 consecutive errors returns an incomplete result. Cancellation during the final control-field check also propagates to the caller.
+- **18 — Subchannel burn status:** failed reads, zero-filled raw responses and formatted-Q-only support leave optional R-W content unknown. They never establish an empty subchannel or justify skipping extraction. A completed raw assessment requires no failed/empty sampled responses and at least 90% valid Q CRCs; even then, lack of R-W activity is only a statement about the sampled program-area sectors.
+- **19 — Copy-protection check:** informational observations do not count as weak evidence. A likely-protection verdict requires two strong indicators, or one strong indicator plus two warning-level indicators.
+- **24 — Seek time analysis:** failed origin/seek attempts are reported separately and never enter timing medians or averages. Every tested pair remains in the result, including pairs with no successful attempts, marked as unmeasured. Only measured pairs enter timing statistics; failed and unmeasured pairs remain in the final abnormal-seek summary. Partial measurements return incomplete, and failed commands cannot be classified as fast/normal seeks.
+- **26 — Disc balance:** requires sufficient readable samples at two distinct drive-reported speeds. Unverified speed rows are excluded from comparisons and recommendations, and fewer than two distinct verified speeds produce no score. Qualified rows are compared in actual-speed order; equal or worsening timings at distinct speeds remain plateau/regression evidence. Recommendations never exceed the qualified measured speed. Known-speed read failures still constrain coverage.
 
 ## Subchannel Data Extraction
 
@@ -839,7 +836,7 @@ OptiScan performs an 8-step heuristic scan that combines structural analysis (no
 | 1 | **Illegal TOC** | No | Strong | Track numbers outside 1–99, impossibly high start LBAs (> 85 min), overlapping tracks |
 | 2 | **Multi-session abuse** | No | Strong | Session count > 2 (used by MediaMax/XCP to confuse rippers) |
 | 3 | **Data track presence** | No | Strong | Non-audio track in last session (rootkit installer, autorun) |
-| 4 | **Pre-emphasis anomaly** | No | Weak | Pre-emphasis flag set inconsistently across tracks |
+| 4 | **Pre-emphasis anomaly** | No | Informational | Pre-emphasis flag set inconsistently across tracks |
 | 5 | **Track gap anomalies** | No | Weak | Non-standard gap sizes between tracks |
 | 6 | **Intentional errors** | Yes | Strong | Clusters of C2 / read errors deliberately mastered onto the disc (CDS, MediaClyS) |
 | 7 | **Subchannel manipulation** | Yes | Strong | Corrupted or manipulated subchannel data patterns |
@@ -847,7 +844,7 @@ OptiScan performs an 8-step heuristic scan that combines structural analysis (no
 
 ### Verdict Logic
 
-The scan classifies each indicator as **strong** (severity ≥ 2) or **weak** (severity < 2) and applies the following rules:
+The scan classifies each indicator as **strong** (severity ≥ 2), **weak** (severity = 1), or **informational** (severity = 0). Informational observations are excluded from corroboration. The following rules apply:
 
 | Condition | Verdict |
 |---|---|

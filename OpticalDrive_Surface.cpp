@@ -11,7 +11,8 @@
 // ============================================================================
 
 bool OpticalDrive::CheckLeadAreas(DiscInfo& disc, int scanSpeed) {
-	std::cout << "\n=== Lead-in/Lead-out Area Check ===\n";
+	std::cout << "\n=== Lead Boundary Sample Check ===\n";
+	ScopedDriveSpeed restoreSpeed(m_drive);
 	if (!m_drive.CheckC2Support()) return false;
 
 	// Validate disc structure
@@ -28,15 +29,13 @@ bool OpticalDrive::CheckLeadAreas(DiscInfo& disc, int scanSpeed) {
 	std::vector<BYTE> buf(AUDIO_SECTOR_SIZE);
 
 	// ── Lead-in check ───────────────────────────────────────────────────────
-	// The true lead-in zone lives at negative LBAs (before LBA 0).  If the
-	// drive supports lead-in overread we scan LBA −150 to −1.  Otherwise we
-	// fall back to scanning the first 150 sectors of the program area
-	// (LBA 0–149, i.e. the Track 1 pregap) which is the next-best indicator
-	// of inner-edge disc health.
+	// Sample the accessible pre-program audio boundary at negative LBAs.
+	// If overread is unavailable, use the first 150 program-area sectors as
+	// a proxy. Neither path validates the actual lead-in TOC.
 	bool canOverreadLeadIn = m_drive.TestOverread(/*leadIn=*/true);
 
 	if (canOverreadLeadIn) {
-		std::cout << "  Scanning true lead-in (LBA -150 to -1)...\n";
+		std::cout << "  Scanning pre-program boundary samples (LBA -150 to -1)...\n";
 		for (int lba = -150; lba < 0; lba++) {
 			if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
 				m_drive.SetSpeed(0);
@@ -74,7 +73,7 @@ bool OpticalDrive::CheckLeadAreas(DiscInfo& disc, int scanSpeed) {
 	if (leadOutStart < minLeadOut) leadOutStart = minLeadOut;
 	DWORD leadOutEnd = disc.leadOutLBA;
 
-	std::cout << "  Scanning lead-out area (LBA " << leadOutStart << "-" << (leadOutEnd - 1) << ")...\n";
+	std::cout << "  Scanning program-area end proxy (LBA " << leadOutStart << "-" << (leadOutEnd - 1) << ")...\n";
 	for (DWORD lba = leadOutStart; lba < leadOutEnd; lba++) {
 		if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
 			m_drive.SetSpeed(0);
@@ -89,10 +88,11 @@ bool OpticalDrive::CheckLeadAreas(DiscInfo& disc, int scanSpeed) {
 
 	m_drive.SetSpeed(0);
 
+	std::cout << "\n  Scope: boundary samples only. Actual lead-in TOC and lead-out areas were NOT VERIFIED.\n";
 	// ── Results ─────────────────────────────────────────────────────────────
 	std::cout << "\n--- Lead Area Results ---\n";
 
-	std::cout << "  Lead-in  ";
+	std::cout << "  Inner boundary  ";
 	if (canOverreadLeadIn)
 		std::cout << "(LBA -150 to -1):        ";
 	else
@@ -100,14 +100,14 @@ bool OpticalDrive::CheckLeadAreas(DiscInfo& disc, int scanSpeed) {
 	std::cout << leadInScanned << " sectors read, " << leadInErrors << " errors";
 	if (leadInScanned == 0) std::cout << "  [SKIP - no sectors readable]";
 	else if (leadInErrors == 0 && leadInFailed == 0) std::cout << "  [OK]";
-	else std::cout << "  [WARN - TOC area may be degraded]";
+	else std::cout << "  [WARN - sample read errors; cause unconfirmed]";
 	std::cout << "\n";
 
-	std::cout << "  Lead-out (last 150 sectors):   "
+	std::cout << "  Program-area end proxy:       "
 		<< leadOutScanned << " sectors read, " << leadOutErrors << " errors";
 	if (leadOutScanned == 0) std::cout << "  [SKIP - no sectors readable]";
 	else if (leadOutErrors == 0 && leadOutFailed == 0) std::cout << "  [OK]";
-	else std::cout << "  [WARN - outer edge damage]";
+	else std::cout << "  [WARN - sample read errors; cause unconfirmed]";
 	std::cout << "\n";
 
     if (leadInFailed > 0 || leadOutFailed > 0 || leadInScanned == 0 || leadOutScanned == 0) {
@@ -116,12 +116,11 @@ bool OpticalDrive::CheckLeadAreas(DiscInfo& disc, int scanSpeed) {
         return false;
     }
 	if (leadInErrors > 0 || leadOutErrors > 0) {
-		std::cout << "\n  Note: Lead area errors can cause disc recognition problems\n";
-		std::cout << "        and indicate edge-region physical damage.\n";
+		std::cout << "\n  Errors were observed in boundary samples; their physical cause is unconfirmed.\n";
 		return true;
 	}
 	else {
-		std::cout << "\n  Lead areas are intact. Disc structure is healthy.\n";
+		std::cout << "\n  No C2 activity reported in the boundary samples. Unmeasured lead areas remain unknown.\n";
 		return true;
 	}
 }

@@ -1,5 +1,6 @@
 #pragma once
 #include "ScanResults.h"
+#include "DiscRotQuality.h"
 #include <algorithm>
 
 // Pure final-assessment policy, shared by the scan workflow and regression tests.
@@ -10,7 +11,8 @@ inline bool HasConfirmedPioneerLoss(const ComprehensiveScanResult& result) {
 }
 
 inline bool HasConfirmedFailure(const ComprehensiveScanResult& result) {
-	return result.bler.HasConfirmedFailure() || HasConfirmedPioneerLoss(result);
+	return result.bler.HasConfirmedFailure() || HasConfirmedPioneerLoss(result) ||
+		DiscRot::HasConfirmedFailure(result.rot);
 }
 
 inline ScanQuality::C1Rating C1Assessment(const ComprehensiveScanResult& result) {
@@ -19,15 +21,21 @@ inline ScanQuality::C1Rating C1Assessment(const ComprehensiveScanResult& result)
 
 inline bool IsIncomplete(const ComprehensiveScanResult& result) {
 	return !HasConfirmedFailure(result) &&
-		(C1Assessment(result) == ScanQuality::C1Rating::Unrated || !result.bler.CanAssessC2());
+		(C1Assessment(result) == ScanQuality::C1Rating::Unrated || !result.bler.CanAssessC2() ||
+			DiscRot::HasLimitedReadConfidence(result.rot));
 }
 
 inline std::string MissingMeasurements(const ComprehensiveScanResult& result) {
 	const bool c1Missing = C1Assessment(result) == ScanQuality::C1Rating::Unrated;
-	if (c1Missing && !result.bler.CanAssessC2()) return "C1 and C2 were unavailable or unverified";
-	if (c1Missing) return "C1 was unavailable or unverified";
-	if (!result.bler.CanAssessC2()) return "C2 was unavailable or unverified";
-	return {};
+	std::string missing;
+	if (c1Missing && !result.bler.CanAssessC2()) missing = "C1 and C2 were unavailable or unverified";
+	else if (c1Missing) missing = "C1 was unavailable or unverified";
+	else if (!result.bler.CanAssessC2()) missing = "C2 was unavailable or unverified";
+	if (DiscRot::HasLimitedReadConfidence(result.rot)) {
+		if (!missing.empty()) missing += "; ";
+		missing += "disc rot scan read confidence was limited";
+	}
+	return missing;
 }
 
 inline int CalculateScore(const ComprehensiveScanResult& result) {
@@ -87,7 +95,9 @@ inline int CalculateScore(const ComprehensiveScanResult& result) {
 	case ScanQuality::C1Rating::Poor: score = std::min(score, 59); break;
 	case ScanQuality::C1Rating::Unrated: score = std::min(score, 79); break;
 	}
-	if (!result.bler.CanAssessC2()) score = std::min(score, 79);
+	if (!result.bler.CanAssessC2() || DiscRot::HasLimitedReadConfidence(result.rot)) score = std::min(score, 79);
+	// A recovered failure remains a warning, without claiming uncorrectable loss.
+	if (result.rot.recoveredReadFailures > 0) score = std::min(score, 89);
 	// Missing channels cannot turn known failures into an incomplete/clean grade.
 	if (HasConfirmedFailure(result)) score = std::min(score, 59);
 

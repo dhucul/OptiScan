@@ -102,6 +102,8 @@ bool OpticalDrive::RunSeekTimeAnalysis(DiscInfo& disc, std::vector<SeekTimeResul
 	timings.reserve(REPEATS_PER_PAIR);
 
 	int tested = 0;
+	int failedAttempts = 0;
+	int unmeasuredPairs = 0;
 	// Iterate every ordered pair (i→j, i≠j) of test positions.
 	for (size_t i = 0; i < testPositions.size(); i++) {
 		for (size_t j = 0; j < testPositions.size(); j++) {
@@ -122,6 +124,7 @@ bool OpticalDrive::RunSeekTimeAnalysis(DiscInfo& disc, std::vector<SeekTimeResul
 			bool anyReadFailed = false;
 
 			for (int rep = 0; rep < REPEATS_PER_PAIR; rep++) {
+				if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) { progress.Finish(false); return false; }
 				// Force the head to physically move to fromLBA by defeating
 				// the drive's read-ahead cache, then read that sector so
 				// the head is genuinely positioned there.
@@ -130,6 +133,7 @@ bool OpticalDrive::RunSeekTimeAnalysis(DiscInfo& disc, std::vector<SeekTimeResul
                 if (!m_drive.ReadSectorAudioOnly(fromLBA, buf.data()) ||
                     !m_drive.SeekToLBA(fromLBA)) {
                     anyReadFailed = true;
+                    ++failedAttempts;
                     continue;
                 }
 
@@ -139,25 +143,25 @@ bool OpticalDrive::RunSeekTimeAnalysis(DiscInfo& disc, std::vector<SeekTimeResul
 				auto endTime = std::chrono::high_resolution_clock::now();
 
 				double seekMs = std::chrono::duration<double, std::milli>(endTime - startTime).count();
-				timings.push_back(seekMs);
-				if (!readOk) anyReadFailed = true;
+				if (readOk) timings.push_back(seekMs);
+				else { anyReadFailed = true; ++failedAttempts; }
 			}
 
 			// Take the median of 5 repeats — robust against outliers caused
 			// by occasional OS scheduling jitter or drive retries.
 			std::sort(timings.begin(), timings.end());
-			if (timings.empty()) {
-                    Console::Error("Could not position the head at the requested origin; seek timing is incomplete.\n");
-                    progress.Finish(false);
-                    return false;
-                }
-                double medianSeekMs = timings[timings.size() / 2];
+			const bool timingAvailable = !timings.empty();
+			if (!timingAvailable) ++unmeasuredPairs;
+			const double medianSeekMs = timingAvailable ? timings[timings.size() / 2] : 0.0;
 
 			// Record the result for this directed pair.
 			SeekTimeResult r;
 			r.fromLBA = fromLBA;
 			r.toLBA = toLBA;
 			r.seekTimeMs = medianSeekMs;
+			r.successfulAttempts = static_cast<int>(timings.size());
+			r.failedAttempts = REPEATS_PER_PAIR - r.successfulAttempts;
+			r.timingAvailable = timingAvailable;
 			r.abnormal = anyReadFailed;  // Mark if any seek outright failed
 			results.push_back(r);
 
@@ -166,31 +170,37 @@ bool OpticalDrive::RunSeekTimeAnalysis(DiscInfo& disc, std::vector<SeekTimeResul
 		}
 	}
 
-	progress.Finish(true);
+	if (g_interrupt.IsInterrupted()) { progress.Finish(false); return false; }
+	progress.Finish(failedAttempts == 0);
 	m_drive.SetSpeed(0);   // Reset to maximum speed for subsequent operations
 	m_drive.SpinDown();    // Let the disc stop spinning to reduce wear
 
-	if (results.empty()) {
-		std::cout << "No seek tests completed.\n";
+	const size_t measuredPairs = static_cast<size_t>(std::count_if(results.begin(), results.end(),
+		[](const SeekTimeResult& r) { return r.timingAvailable; }));
+	if (measuredPairs == 0) {
+		std::cout << "INCOMPLETE: No successful seek measurements; " << failedAttempts
+			<< " failed attempts across " << unmeasuredPairs << " pairs.\n";
 		return false;
 	}
 
 	// Compute descriptive statistics across all measured seek times.
 	double sum = 0, maxSeek = 0;
 	for (const auto& r : results) {
+		if (!r.timingAvailable) continue;
 		sum += r.seekTimeMs;
 		if (r.seekTimeMs > maxSeek) maxSeek = r.seekTimeMs;
 	}
-	double avgSeek = sum / results.size();
+	double avgSeek = sum / measuredPairs;
 
 	// Sample standard deviation (Bessel-corrected, N-1 denominator).
 	double varianceSum = 0;
 	for (const auto& r : results) {
+		if (!r.timingAvailable) continue;
 		double diff = r.seekTimeMs - avgSeek;
 		varianceSum += diff * diff;
 	}
-	double stddev = results.size() > 1
-		? std::sqrt(varianceSum / (results.size() - 1)) : 0.0;
+	double stddev = measuredPairs > 1
+		? std::sqrt(varianceSum / (measuredPairs - 1)) : 0.0;
 
 	// Flag seeks that are more than 3 standard deviations above the mean.
 	// These outliers typically indicate a region where the head had to
@@ -198,7 +208,7 @@ bool OpticalDrive::RunSeekTimeAnalysis(DiscInfo& disc, std::vector<SeekTimeResul
 	double abnormalThreshold = avgSeek + 3.0 * stddev;
 	int abnormalCount = 0;
 	for (auto& r : results) {
-		if (r.seekTimeMs > abnormalThreshold || r.abnormal) {
+		if (!r.timingAvailable || r.failedAttempts > 0 || r.seekTimeMs > abnormalThreshold || r.abnormal) {
 			r.abnormal = true;
 			abnormalCount++;
 		}
@@ -215,9 +225,13 @@ bool OpticalDrive::RunSeekTimeAnalysis(DiscInfo& disc, std::vector<SeekTimeResul
 	//   80–150 ms = slow (possible surface degradation)
 	//   > 150 ms  = very slow (likely mechanical fault)
 	std::cout << "--- Timing Statistics ---\n";
-	std::cout << "  Tests performed:  " << results.size() << "\n";
+	std::cout << "  Measured pairs:   " << measuredPairs << " / " << totalTests << "\n";
+	std::cout << "  Failed attempts:  " << failedAttempts << "\n";
+	std::cout << "  Unmeasured pairs: " << unmeasuredPairs << "\n";
+	if (failedAttempts > 0) std::cout << "  INCOMPLETE - timing statistics include successful seeks only.\n";
 	std::cout << "  Average seek:     " << std::fixed << std::setprecision(1) << avgSeek << " ms";
-	if (avgSeek < 80) std::cout << "  (normal)";
+	if (failedAttempts > 0) std::cout << "  (successful attempts only; incomplete)";
+	else if (avgSeek < 80) std::cout << "  (normal)";
 	else if (avgSeek < 150) std::cout << "  (slow - may indicate surface issues)";
 	else std::cout << "  (very slow - possible mechanical problem)";
 	std::cout << "\n";
@@ -232,12 +246,12 @@ bool OpticalDrive::RunSeekTimeAnalysis(DiscInfo& disc, std::vector<SeekTimeResul
 	if (abnormalCount > 0) {
 		std::cout << "  Abnormal seeks:   " << abnormalCount;
 		std::cout << " (" << std::setprecision(1) << (abnormalCount * 100.0 / results.size()) << "%)";
-		std::cout << "  ** regions where head struggled to read **\n";
+		std::cout << "  (failed attempts, unmeasured pairs, or unusually slow successful seeks)\n";
 	}
 	else {
 		std::cout << "  Abnormal seeks:   None - consistent mechanical performance\n";
 	}
 	std::cout << std::string(60, '=') << "\n";
 
-	return true;
+	return failedAttempts == 0 && unmeasuredPairs == 0;
 }

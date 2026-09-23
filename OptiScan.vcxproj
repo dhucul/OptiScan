@@ -148,6 +148,10 @@
     <ClInclude Include="CdScanInterval.h" />
     <ClInclude Include="ComprehensiveQuality.h" />
     <ClInclude Include="ScanResults.h" />
+    <ClInclude Include="DiagnosticAssessment.h" />
+    <ClInclude Include="DiscBalanceAssessment.h" />
+    <ClInclude Include="DiscRotQuality.h" />
+    <ClInclude Include="DiscRotReadConsistency.h" />
     <ClInclude Include="ScsiDrive.h" />
     <ClInclude Include="ScsiTypes.h" />
     <ClInclude Include="SecureRipTypes.h" />

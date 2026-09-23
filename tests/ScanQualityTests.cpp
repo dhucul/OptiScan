@@ -179,6 +179,7 @@ int RunScanQualityTests() {
 	check(!cleanup, "CSV regression output removed");
 
 	ComprehensiveScanResult composite;
+	composite.rot.totalRereadTests = 3; // Completed independent rereads in this grading fixture.
 	composite.bler.hasC1Data = true;
 	composite.bler.c2PointerDataRecorded = true;
 	composite.bler.perSecondC1 = {{0, 1}, {75, 1}, {150, 1}};
@@ -673,6 +674,7 @@ int RunScanQualityTests() {
 		"Unknown C1 duration is not mislabeled as missing or unverified counter data");
 
 	ComprehensiveScanResult statusTransition;
+	statusTransition.rot.totalRereadTests = 3; // Completed independent rereads in this grading fixture.
 	statusTransition.bler.hasC1Data=true;
 	statusTransition.bler.c1=SummarizeC1({{0,75,1}});
 	ComprehensiveQuality::Finalize(statusTransition);

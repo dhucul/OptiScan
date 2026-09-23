@@ -486,9 +486,22 @@ struct BlerResult {
 // Output of the disc rot detection scan.  Combines zone statistics, error
 // cluster data, and heuristic indicators for various rot patterns.
 struct DiscRotAnalysis {
+	int totalReadFailures = 0;                  // Phase 1 primary reads still failed after retry
+	int recoveredReadFailures = 0;             // Initial Phase 1 failure, then successful retry
+	int verificationReadFailures = 0;          // C2-positive sector's verification read failed
+	int phase1C2Sectors = 0;                    // Positive C2 observations, retained across retries
+	int consistencyReadFailures = 0;           // Failed sampled reads, not byte mismatches
+	int consistencyUnverifiedSamples = 0;      // Cache eviction could not be established
+	int qualityC2Count = 0;                    // Non-Pioneer Phase 0 observations
+	int qualityCUCount = 0;
+	bool qualityCountersRecorded = false;
+	bool qualityCuMeasured = false;
+	bool qualityScanComplete = false;
+	std::string qualityScanMethod;
+	std::string readabilityStatus;
 	DiscZoneStats zones;                        // Error distribution by radial zone
 	std::vector<ErrorCluster> clusters;          // Contiguous error regions
-	int inconsistentSectors = 0;                // Sectors that read differently on re-read
+	int inconsistentSectors = 0;                // Samples with differing data or failed reads
 	int totalRereadTests = 0;                   // Number of re-read comparison tests run
 	double inconsistencyRate = 0.0;             // inconsistentSectors / totalRereadTests
 	int maxC2InSingleSector = 0;                // Worst C2 count in a single sector
@@ -522,7 +535,7 @@ struct DiscRotAnalysis {
 	// Heuristic disc-rot pattern flags
 	bool edgeConcentration = false;             // Errors concentrated at inner/outer edges
 	bool progressivePattern = false;            // Error rate increases toward the outer edge
-	bool pinholePattern = false;                // Many small scattered clusters (pinhole corrosion)
+	bool pinholePattern = false;                // Many small scattered clusters; physical cause unconfirmed
 	bool readInstability = false;               // High re-read inconsistency rate
 
 	std::string rotRiskLevel;                   // "NONE", "LOW", "MODERATE", "HIGH", "CRITICAL"
@@ -550,6 +563,8 @@ struct ComprehensiveScanResult {
 // disc, or is empty filler.  Useful for deciding if subchannel extraction
 // during ripping is worthwhile.
 struct SubchannelBurnResult {
+	bool complete = false; // Raw sample coverage and CRC validity sufficient for assessment
+	bool formattedQVerified = false; // Timing fallback does not measure optional R-W content
 	int totalSampled = 0;           // Total sectors sampled
 	int readFailures = 0;           // Sectors where ReadSector failed entirely
 	int validQCrc = 0;              // Sectors with valid Q-channel CRC-16
@@ -560,7 +575,7 @@ struct SubchannelBurnResult {
 	int validMsfTiming = 0;         // Sectors with correctly incrementing MSF addresses
 	int pChannelCorrect = 0;        // Sectors with expected P-channel state (pause/play)
 	double qCrcValidPercent = 0.0;  // Percentage of CRC-tested sectors with valid Q CRC
-	bool subchannelBurned = false;  // Overall verdict: true = subchannel data is present
+	bool subchannelBurned = false;  // Substantial R-W content observed in a completed sample assessment
 	std::string verdict;            // Human-readable summary of the result
 	WORD mediaProfile = 0;          // SCSI media profile code (0x0008=CD-ROM, 0x0009=CD-R, etc.)
 	std::string mediaTypeName;      // Human-readable media type ("CD-ROM", "CD-R", "CD-RW")

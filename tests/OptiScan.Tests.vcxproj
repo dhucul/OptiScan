@@ -43,6 +43,7 @@
   <ItemDefinitionGroup>
     <ClCompile>
       <WarningLevel>Level4</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
@@ -52,6 +53,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
+      <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
@@ -61,6 +63,13 @@
     <ClCompile Include="AuditRegressionTests.cpp" />
     <ClCompile Include="WriteRetryTests.cpp" />
     <ClCompile Include="ScanQualityTests.cpp" />
+    <ClCompile Include="DiscRotTests.cpp" />
+    <ClCompile Include="MenuDiagnosticTests.cpp" />
+    <ClCompile Include="BalanceAssessmentTests.cpp" />
+    <ClCompile Include="..\OpticalDrive_AudioAnalysis.cpp" />
+    <ClCompile Include="..\OpticalDrive_Surface.cpp" />
+    <ClCompile Include="..\OpticalDrive_Verification.cpp" />
+    <ClCompile Include="..\OpticalDrive_SeekAnalysis.cpp" />
     <ClCompile Include="..\ScanQualityRating.cpp" />
     <ClCompile Include="..\AccessibleAnnounce.cpp" />
     <ClCompile Include="..\OpticalDrive_BlerAnalysis.cpp" />

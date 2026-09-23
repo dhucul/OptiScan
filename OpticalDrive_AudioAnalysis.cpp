@@ -43,8 +43,8 @@ bool OpticalDrive::AnalyzeAudioContent(DiscInfo& disc, AudioAnalysisResult& resu
 	progress.Start();
 
 	std::vector<BYTE> buf(AUDIO_SECTOR_SIZE);
-	int tested = 0;
-	int readFailures = 0;
+	int& tested = result.sampledSectors;
+	int& readFailures = result.readFailures;
 
 	for (const auto& t : disc.tracks) {
 		if (!t.isAudio) continue;
@@ -65,6 +65,7 @@ bool OpticalDrive::AnalyzeAudioContent(DiscInfo& disc, AudioAnalysisResult& resu
 				continue;
 			}
 
+			++result.analyzedSectors;
 			bool suspicious = false;
 			bool silent = IsSectorSilent(buf.data());
 
@@ -116,7 +117,8 @@ bool OpticalDrive::AnalyzeAudioContent(DiscInfo& disc, AudioAnalysisResult& resu
 		}
 	}
 
-	progress.Finish(true);
+	result.complete = tested == totalSamples && result.analyzedSectors > 0 && readFailures == 0 && !g_interrupt.IsInterrupted();
+	progress.Finish(result.complete);
 	m_drive.SetSpeed(0);
 
 	std::cout << "\n" << std::string(60, '=') << "\n";
@@ -131,31 +133,37 @@ bool OpticalDrive::AnalyzeAudioContent(DiscInfo& disc, AudioAnalysisResult& resu
 		<< (readFailures * 100.0 / tested) << "%)";
 	std::cout << "\n";
 
-	std::cout << "\n--- Content Analysis ---\n";
+	std::cout << "  Successfully analyzed: " << result.analyzedSectors << "\n";
+	if (!result.complete) std::cout << "  INCOMPLETE - content statistics cover readable samples only.\n";
+	std::cout << "\n--- Content Analysis (readable samples only) ---\n";
 
 	auto printMetric = [&](const char* label, int count, const char* explanation, const char* concern) {
+		if (result.analyzedSectors == 0) {
+			std::cout << "  " << label << "NOT MEASURED - no readable audio samples\n";
+			return;
+		}
 		std::cout << "  " << label << count;
 		if (tested > 0)
 			std::cout << " (" << std::fixed << std::setprecision(1)
-			<< (count * 100.0 / tested) << "%)";
+			<< (count * 100.0 / result.analyzedSectors) << "%)";
 		std::cout << "\n";
 		if (count > 0)
-			std::cout << "    " << (count > tested / 10 ? ">> " : "   ") << concern << "\n";
+			std::cout << "    " << (count > result.analyzedSectors / 10 ? ">> " : "   ") << concern << "\n";
 		else
 			std::cout << "    " << explanation << "\n";
 		};
 
 	printMetric("Silent sectors:    ", result.silentSectors,
-		"No silence anomalies detected.",
+		"No near-zero audio found in readable samples.",
 		"Sectors with near-zero audio. Usually track gaps or intentional silence.");
 	printMetric("Clipped sectors:   ", result.clippedSectors,
-		"No digital clipping detected.",
+		"No digital clipping detected in readable samples.",
 		"Audio peaks hit max value. May indicate mastering choices or read errors.");
 	printMetric("Low-level sectors: ", result.lowLevelSectors,
-		"Normal signal levels throughout.",
+		"No low-level audio detected in readable samples.",
 		"Very quiet non-silent audio. Often fade-ins/outs or soft passages.");
 	printMetric("DC offset sectors: ", result.dcOffsetSectors,
-		"No DC offset detected.",
+		"No DC offset detected in readable samples.",
 		"Waveform bias detected. Common from mastering equipment or asymmetric audio.");
 
 	if (!result.suspiciousLBAs.empty()) {
@@ -188,7 +196,7 @@ bool OpticalDrive::AnalyzeAudioContent(DiscInfo& disc, AudioAnalysisResult& resu
 		<< "  Cross-reference with C2, disc rot, and multi-pass scans.\n";
 
 	std::cout << std::string(60, '=') << "\n";
-	return true;
+	return result.complete;
 }
 
 bool OpticalDrive::IsSectorSilent(const BYTE* data) {

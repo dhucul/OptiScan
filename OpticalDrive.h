@@ -143,7 +143,8 @@ public:
 
 	// Enhanced disc rot detection
 	bool RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int scanSpeed);
-	bool TestReadConsistency(DWORD lba, int passes, int& inconsistentCount, int readSpeed = 8);
+	bool TestReadConsistency(DWORD lba, int passes, int& inconsistentCount,
+		const std::vector<std::pair<DWORD, DWORD>>& audioRanges, int bufferSizeKB, bool& cacheCleared);
 	void AnalyzeErrorPatterns(const std::vector<DWORD>& errorLBAs, DiscRotAnalysis& result);
 	void PrintDiscRotReport(const DiscRotAnalysis& result);
 	bool SaveDiscRotLog(const DiscRotAnalysis& result, const std::wstring& filename);

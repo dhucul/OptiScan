@@ -96,6 +96,7 @@ void OpticalDrive::PrintComprehensiveReport(const ComprehensiveScanResult& resul
 
 	// Disc Rot Summary
 	std::cout << "\n--- Disc Rot Analysis ---\n";
+	DiscRot::PrintReadEvidence(std::cout, result.rot, "  ");
 	std::cout << "  Risk Level:        " << result.rot.rotRiskLevel << "\n";
 	std::cout << "  Edge conc.:        " << (result.rot.edgeConcentration ? "YES" : "NO") << "\n";
 	std::cout << "  Progressive:       " << (result.rot.progressivePattern ? "YES" : "NO") << "\n";
@@ -240,6 +241,7 @@ bool OpticalDrive::SaveComprehensiveReport(const ComprehensiveScanResult& result
 	file << "\n";
 
 	file << "Disc Rot Analysis\n";
+	DiscRot::PrintReadEvidence(file, result.rot);
 	file << "-----------------\n";
 	file << "Risk Level:      " << result.rot.rotRiskLevel << "\n";
 	file << "Edge conc.:      " << (result.rot.edgeConcentration ? "YES" : "NO") << "\n";

@@ -32,12 +32,19 @@ struct SeekTimeResult {
 	DWORD fromLBA = 0;           // Source sector
 	DWORD toLBA = 0;             // Destination sector
 	double seekTimeMs = 0;       // Measured seek time in milliseconds
+	int successfulAttempts = 0;
+	int failedAttempts = 0;
+	bool timingAvailable = false;
 	bool abnormal = false;       // true if latency exceeds expected range
 };
 
 // ── Audio content analysis result ───────────────────────────────────────────
 // Flags sectors with anomalous audio content (silence, clipping, DC offset).
 struct AudioAnalysisResult {
+	int sampledSectors = 0;
+	int analyzedSectors = 0;
+	int readFailures = 0;
+	bool complete = false;
 	int silentSectors = 0;          // Sectors containing all zeros
 	int clippedSectors = 0;         // Sectors with samples at max amplitude (0x7FFF / 0x8000)
 	int lowLevelSectors = 0;        // Suspiciously quiet sectors (below a threshold)

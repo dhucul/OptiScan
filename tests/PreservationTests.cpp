@@ -19,6 +19,9 @@ int RunCueSheetImportTests();
 int RunAuditRegressionTests();
 int RunWriteRetryTests();
 int RunScanQualityTests();
+int RunDiscRotTests();
+int RunMenuDiagnosticTests();
+int RunBalanceAssessmentTests();
 
 namespace {
 
@@ -916,6 +919,9 @@ int main() {
     failures += RunAuditRegressionTests();
     failures += RunWriteRetryTests();
     failures += RunScanQualityTests();
+    failures += RunDiscRotTests();
+    failures += RunMenuDiagnosticTests();
+    failures += RunBalanceAssessmentTests();
 
 	manifestInput.close();
 	std::error_code cleanupError;

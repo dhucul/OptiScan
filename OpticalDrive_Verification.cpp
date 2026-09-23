@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "OpticalDrive.h"
+#include "DiagnosticAssessment.h"
 #include "DiscCrcComparison.h"
 #include "InterruptHandler.h"
 #include "MenuHelpers.h"
@@ -103,7 +104,6 @@ bool OpticalDrive::RunMultiPassVerification(DiscInfo& disc, std::vector<MultiPas
 				counts[hashes[i]]++;
 			}
 
-			int distinctCount = static_cast<int>(counts.size());
 			uint32_t majorityHash = 0;
 			int maxCount = 0;
 			for (const auto& kv : counts) {
@@ -218,6 +218,7 @@ bool OpticalDrive::FlushDriveCache() {
 bool OpticalDrive::VerifySubchannelIntegrity(DiscInfo& disc, int& errorCount, int scanSpeed) {
 	std::cout << "\n=== Subchannel Integrity Verification ===\n";
 	errorCount = 0;
+	ScopedDriveSpeed restoreSpeed(m_drive);
 
 	DWORD totalSectors = CalculateTotalAudioSectors(disc);
 
@@ -447,6 +448,11 @@ bool OpticalDrive::VerifySubchannelIntegrity(DiscInfo& disc, int& errorCount, in
 	else if (errorRate <= 10.0) Console::Warning("HIGH\n");
 	else                        Console::Error("SEVERE\n");
 
+	if (!Diagnostics::IntegrityComplete(abortedEarly, g_interrupt.IsInterrupted(), scannedSectors, totalSectors)) {
+		Console::Warning("Subchannel integrity scan INCOMPLETE; remaining sectors were not verified.\n");
+		return false;
+	}
+
 	// ── Q Control Field Cross-Check (pre-emphasis / channel mode) ───────
 	// The Q-subchannel CONTROL nibble carries the authoritative *in-track*
 	// pre-emphasis, 4-channel, and copy-permit flags. The TOC keeps its own copy
@@ -535,7 +541,7 @@ bool OpticalDrive::VerifySubchannelIntegrity(DiscInfo& disc, int& errorCount, in
 		}
 	}
 
-	return true;
+	return Diagnostics::IntegrityComplete(abortedEarly, g_interrupt.IsInterrupted(), scannedSectors, totalSectors);
 }
 
 // ============================================================================
@@ -557,6 +563,7 @@ static bool IsQCrcValid(uint16_t calcCrc, uint16_t storedCrc) {
 bool OpticalDrive::VerifySubchannelBurnStatus(DiscInfo& disc, SubchannelBurnResult& result, int scanSpeed) {
 	std::cout << "\n=== Subchannel Burn Status Verification ===\n";
 	result = {};
+	ScopedDriveSpeed restoreSpeed(m_drive);
 
 	m_drive.GetMediaProfile(result.mediaProfile, result.mediaTypeName);
 	if (!result.mediaTypeName.empty()) {
@@ -689,125 +696,26 @@ bool OpticalDrive::VerifySubchannelBurnStatus(DiscInfo& disc, SubchannelBurnResu
 		}
 	}
 
-	progress.Finish(true);
+	progress.Finish(result.readFailures == 0 && result.emptySubchannel == 0);
 	m_drive.SetSpeed(0);
 
-	int successfulReads = result.totalSampled - result.readFailures;
-	int crcTestedSectors = result.validQCrc + result.invalidQCrc;
-
-	if (crcTestedSectors > 0) {
-		result.qCrcValidPercent =
-			(static_cast<double>(result.validQCrc) / crcTestedSectors) * 100.0;
-	}
-
-	double emptyPercent = (successfulReads > 0)
-		? (static_cast<double>(result.emptySubchannel) / successfulReads) * 100.0
-		: 100.0;
-
-	if (emptyPercent > 50.0 || successfulReads == 0) {
-		int probeOk = 0, probeAttempts = 0;
+	const int successfulReads = result.totalSampled - result.readFailures;
+	// Formatted Q can establish timing support, never raw R-W absence.
+	if (successfulReads == 0 || result.emptySubchannel > successfulReads / 2) {
+		int attempts = 0;
 		for (const auto& t : disc.tracks) {
-			if (probeAttempts >= 5) break;
-			if (!t.isAudio) continue;
-			DWORD mid = t.startLBA + (t.endLBA - t.startLBA) / 2;
+			if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) return false;
+			if (!t.isAudio || t.endLBA < t.startLBA) continue;
+			if (attempts++ >= 5) break;
 			int qTrack = 0, qIndex = 0;
-			probeAttempts++;
-			if (m_drive.ReadSectorQSingle(mid, qTrack, qIndex))
-				probeOk++;
-		}
-
-		if (probeOk > 0) {
-			bool isBurnedMedia = (result.mediaProfile == 0x0009 || result.mediaProfile == 0x000A);
-			result.subchannelBurned = false;
-
-			if (isBurnedMedia) {
-				result.verdict =
-					"STANDARD BURNED CD - Q-channel timing data verified via formatted mode.\n"
-					"           This drive does not support raw subchannel reading, so R-W content\n"
-					"           (CD-G, CD-TEXT) cannot be verified.\n"
-					"           P+Q timing data is always written by the drive automatically.";
-			}
-			else {
-				result.verdict =
-					"STANDARD PRESSED CD - Q-channel timing data verified via formatted mode.\n"
-					"           This drive does not support raw subchannel reading, so R-W content\n"
-					"           (CD-G, CD-TEXT) cannot be verified.";
-			}
-
-			PrintSubchannelBurnReport(result);
-			return true;
+			const DWORD mid = t.startLBA + (t.endLBA - t.startLBA) / 2;
+			if (m_drive.ReadSectorQSingle(mid, qTrack, qIndex)) result.formattedQVerified = true;
 		}
 	}
-
-	int nonEmpty = successfulReads - result.emptySubchannel;
-	double rwPercent = (nonEmpty > 0)
-		? (static_cast<double>(result.rwDataPresent) / nonEmpty) * 100.0
-		: 0.0;
-	bool hasRWContent = (rwPercent >= 25.0);
-	bool isBurnedMedia = (result.mediaProfile == 0x0009 || result.mediaProfile == 0x000A);
-
-	if (result.qCrcValidPercent >= 90.0 && emptyPercent < 5.0) {
-		if (hasRWContent) {
-			result.subchannelBurned = true;
-			result.verdict =
-				"CONFIRMED - Full subchannel data was burned to disc.\n"
-				"           Includes R-W content (CD-G graphics, CD-TEXT, or similar).";
-		}
-		else if (isBurnedMedia) {
-			result.subchannelBurned = false;
-			result.verdict =
-				"STANDARD BURNED CD - Basic timing data (P+Q) is healthy.\n"
-				"           No CD-G or CD-TEXT content was found in the R-W channels.\n"
-				"           The \"burn with subchannel\" option only copies what exists on the source.";
-		}
-		else {
-			result.subchannelBurned = false;
-			result.verdict =
-				"STANDARD PRESSED CD - Basic timing data (P+Q) is healthy.\n"
-				"           No CD-G or CD-TEXT content was found in the R-W channels.\n"
-				"           This is normal for most factory-pressed audio CDs.";
-		}
-	}
-	else if (result.qCrcValidPercent >= 50.0 && emptyPercent < 30.0) {
-		if (hasRWContent) {
-			result.subchannelBurned = true;
-			result.verdict =
-				"CONFIRMED - Full subchannel data was burned to disc.\n"
-				"           Includes R-W content (CD-G graphics, CD-TEXT, or similar).\n"
-				"           Some timing errors were detected, which is normal for burned (CD-R) media.";
-		}
-		else if (isBurnedMedia) {
-			result.subchannelBurned = false;
-			result.verdict =
-				"STANDARD BURNED CD - Basic timing data (P+Q) is present with some CRC errors.\n"
-				"           This is normal for CD-R media and does not affect audio quality.\n"
-				"           No CD-G or CD-TEXT content was found in the R-W channels.\n"
-				"           The \"burn with subchannel\" option only copies what exists on the source.";
-		}
-		else {
-			result.subchannelBurned = false;
-			result.verdict =
-				"STANDARD PRESSED CD - Basic timing data (P+Q) is present with some CRC errors.\n"
-				"           This may indicate minor disc wear but does not affect audio quality.\n"
-				"           No CD-G or CD-TEXT content was found in the R-W channels.";
-		}
-	}
-	else if (emptyPercent >= 80.0) {
-		result.subchannelBurned = false;
-		result.verdict =
-			"EMPTY - No subchannel data found on this disc.\n"
-			"           The disc was burned without any subchannel writing.";
-	}
-	else {
-		result.subchannelBurned = false;
-		result.verdict =
-			"INCONCLUSIVE - Subchannel data could not be reliably read.\n"
-			"           This may indicate a low-quality burn, disc damage, or a drive\n"
-			"           that does not support raw subchannel reading.";
-	}
-
+	if (g_interrupt.IsInterrupted()) return false;
+	Diagnostics::AssessSubchannel(result);
 	PrintSubchannelBurnReport(result);
-	return true;
+	return result.complete;
 }
 
 void OpticalDrive::PrintSubchannelBurnReport(const SubchannelBurnResult& result) {
@@ -818,8 +726,8 @@ void OpticalDrive::PrintSubchannelBurnReport(const SubchannelBurnResult& result)
 	std::cout << "  P+Q channels  - Track numbers, timing, and pause markers.\n";
 	std::cout << "                  These are ALWAYS written by the drive automatically.\n";
 	std::cout << "  R-W channels  - Optional extra data such as CD-G karaoke graphics\n";
-	std::cout << "                  or CD-TEXT (artist/title info). Only present if the\n";
-	std::cout << "                  source disc contained them AND they were burned.\n";
+	std::cout << "                  or CD-TEXT (artist/title info). Sampling describes\n";
+	std::cout << "                  observed content, not how the disc was manufactured.\n";
 
 	std::cout << "\n=== Subchannel Burn Status Report ===\n";
 	if (!result.mediaTypeName.empty()) {
@@ -831,7 +739,7 @@ void OpticalDrive::PrintSubchannelBurnReport(const SubchannelBurnResult& result)
 	}
 	std::cout << "Sectors sampled:       " << result.totalSampled << "\n";
 	std::cout << "Read failures:         " << result.readFailures << "\n";
-	std::cout << "Empty subchannel:      " << result.emptySubchannel << "\n";
+	std::cout << "Zero-filled responses: " << result.emptySubchannel << "\n";
 	std::cout << "Valid Q-channel CRC:   " << result.validQCrc
 		<< " (" << std::fixed << std::setprecision(1) << result.qCrcValidPercent << "%)\n";
 	std::cout << "Invalid Q-channel CRC: " << result.invalidQCrc << "\n";
@@ -849,7 +757,7 @@ void OpticalDrive::PrintSubchannelBurnReport(const SubchannelBurnResult& result)
 
 	std::cout << "R-W data present:      " << result.rwDataPresent;
 	if (result.rwDataPresent == 0) {
-		std::cout << " (none - standard audio CD)";
+		std::cout << " (none observed in readable samples)";
 	}
 	else if (cdgPercent >= 50.0) {
 		std::cout << " (" << std::fixed << std::setprecision(1) << cdgPercent
@@ -876,38 +784,20 @@ void OpticalDrive::PrintSubchannelBurnReport(const SubchannelBurnResult& result)
 	}
 	std::cout << result.verdict << "\n";
 
-	// ── Recommendations ─────────────────────────────────────────────────
-	bool isBurnedMedia = (result.mediaProfile == 0x0009 || result.mediaProfile == 0x000A);
-
 	std::cout << "\n=== Recommendations ===\n";
-	if (result.subchannelBurned && result.qCrcValidPercent >= 90.0) {
-		Console::Success("This disc has subchannel data worth preserving.\n");
-		Console::Info("  - Enable subchannel extraction when ripping this disc.\n");
-		Console::Info("  - Q-channel timing provides accurate track index positions.\n");
-		if (result.cdgPacketsFound > 0) {
-			Console::Info("  - CD-G graphics detected: extract R-W channels to preserve them.\n");
-		}
+	if (!result.complete) {
+		Console::Warning("Optional R-W content is unverified. Do not skip subchannel extraction based on this result.\n");
+		Console::Info("Use a drive that can read raw subchannels reliably if preservation is required.\n");
 	}
 	else if (result.subchannelBurned) {
-		Console::Success("This disc has subchannel data, but quality is reduced (normal for CD-R).\n");
-		Console::Info("  - Subchannel extraction is still recommended to preserve R-W content.\n");
-		Console::Info("  - For track boundaries, TOC-based indexing may be more reliable than\n");
-		Console::Info("    raw Q-channel timing on this disc.\n");
+		Console::Info("R-W content was observed; preserve raw subchannels when ripping.\n");
 	}
 	else {
-		Console::Info("This disc has no extra subchannel content to extract.\n");
-		Console::Info("  - Subchannel extraction can be skipped when ripping.\n");
-		Console::Info("  - Track boundaries will be read from the disc's table of contents (TOC).\n");
-		if (isBurnedMedia) {
-			Console::Info("\n");
-			Console::Info("  Note: If you burned this disc with subchannel writing enabled but see\n");
-			Console::Info("  no R-W content, the source disc did not have CD-G or CD-TEXT data.\n");
-			Console::Info("  For standard audio CDs, \"burn with subchannel\" and \"burn without\n");
-			Console::Info("  subchannel\" produce the same result because the R-W channels are empty\n");
-			Console::Info("  on the source. The P+Q timing data is always written by the drive.\n");
-		}
+		Console::Info("No substantial R-W content was observed in these samples.\n");
+		Console::Info("Keep raw subchannels when preserving the complete disc; sparse sampling does not prove absence.\n");
 	}
 }
+
 
 bool OpticalDrive::CompareDiscCRCs(const std::vector<std::pair<int, uint32_t>>& originalCRCs,
 	const std::vector<std::pair<int, uint32_t>>& copyCRCs) {
