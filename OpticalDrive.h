@@ -301,7 +301,7 @@ public:
 		DWORD totalSectors, int speed);
 
 	// Disc balance / wobble detection
-	bool CheckDiscBalance(DiscInfo& disc, int& balanceScore);
+	bool CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::string* savedReport = nullptr);
 
 private:
 	ScsiDrive m_drive;

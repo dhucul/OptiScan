@@ -17,6 +17,8 @@
 #include "WriteFromCueWorkflow.h"
 #include "WriteTracksWorkflow.h"
 #include <algorithm>
+#include <fstream>
+#include <filesystem>
 #include <iostream>
 #include <thread>
 #include <vector>
@@ -936,8 +938,16 @@ int DispatchMenuChoice(OpticalDrive& copier, DiscInfo& disc,
 		case 24: {
 			int balanceScore = 0;
 			Console::Info("\nRunning disc balance check...\n");
-			if (copier.CheckDiscBalance(disc, balanceScore)) {
-				Console::Success("Disc balance check complete.\n");
+			std::string balanceReport;
+			if (copier.CheckDiscBalance(disc, balanceScore, &balanceReport)) {
+                Console::Success("Disc balance check complete.\n");
+                const auto logPath=std::filesystem::path(workDir)/L"disc_balance_report.txt";
+                std::ofstream log(logPath,std::ios::binary);
+                log << balanceReport;log.flush();
+                if (log.good()) {
+                    Console::Success("Disc Balance report saved to: ");
+                    std::wcout << logPath.wstring() << "\n";
+                } else Console::Warning("Disc Balance completed, but its report could not be saved.\n");
 			}
 			else {
 				Console::Error("Disc balance check incomplete or cancelled; no valid balance score is available.\n");

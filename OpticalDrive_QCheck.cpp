@@ -133,6 +133,11 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 	// Callers may reuse a result object. Never mix a new measurement with stale
 	// samples, totals, or backend flags from an earlier scan.
 	result = QCheckResult{};
+	result.discIdentity = Diagnostics::ScanDiscIdentity(disc);
+	result.requestedSpeed = scanSpeed;
+    const auto scanCancelled=[] {
+        return InterruptHandler::Instance().IsInterrupted() || InterruptHandler::Instance().CheckEscapeKey();
+    };
 
 	// Lock the tray for the scan so an accidental eject can't abort it. Ref-counted,
 	// so the C2/BLER scans that delegate here on Pioneer nest correctly.
@@ -254,9 +259,9 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 	if (useLiteOn) {
 		m_drive.SetSpeed(scanSpeed);
 		if (scanSpeed == 0)
-			std::cout << "Scan speed: Max\n";
+			std::cout << "Requested scan speed: Max\n";
 		else
-			std::cout << "Scan speed: " << scanSpeed << "x\n";
+			std::cout << "Requested scan speed: " << scanSpeed << "x\n";
 	}
 
 	// Send the vendor-specific "start scan" command.  The drive begins
@@ -270,19 +275,32 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		: m_drive.LiteOnScanStart(firstLBA, lastLBA);
 
 	if (!started) {
-		if (!primarySession.Stop()) m_drive.Close();
+		primarySession.StopOrClose([&] {m_drive.Close();});
 		std::cout << "ERROR: Failed to start quality scan.\n";
 		return false;
 	}
 
-	auto stopPrimaryScan = [&]() { return primarySession.Stop(); };
+    auto stopPrimaryScan = [&]() {
+        result.throughput.Finish(Diagnostics::ScanNowMs());
+        return primarySession.StopOrClose([&] {
+            m_drive.Close();
+            std::cout << "\nERROR: Quality scan cleanup failed; drive closed. Reopen it before continuing.\n";
+        });
+    };
+    auto cancelPrimaryScan = [&]() {
+        stopPrimaryScan();
+        std::cout << "\n*** Quality scan cancelled; no completed result published ***\n";
+        return false;
+    };
 
 	// ── Poll for results ─────────────────────────────────────
 	// The drive scans asynchronously.  We poll periodically to retrieve
 	// C1/C2/CU counts and the current LBA position.  Each successful
 	// poll returns one time-slice of aggregated error statistics.
+	result.throughput.Begin(Diagnostics::ScanNowMs());
+	if (!Diagnostics::CaptureScanSpeedChecked(m_drive,result.speed,scanCancelled)) return cancelPrimaryScan();
+	Diagnostics::QualitySampleSequence primarySequence(firstLBA,lastLBA);
 	bool scanDone = false;
-	int sampleIndex = 0;
 	DWORD lastReportedLBA = DWORD(-1);   // Tracks duplicate reports from the same position
 
 	// ── Timer state for elapsed / ETA display ────────────────
@@ -300,11 +318,7 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		// ── Check for user cancellation ──────────────────────
 		// Stop the hardware scan gracefully before returning so the drive
 		// doesn't continue spinning in measurement mode indefinitely.
-		if (InterruptHandler::Instance().IsInterrupted() || InterruptHandler::Instance().CheckEscapeKey()) {
-			stopPrimaryScan();
-			std::cout << "\n*** Quality scan cancelled by user ***\n";
-			return false;
-		}
+		if (scanCancelled()) return cancelPrimaryScan();
 
 		// Plextor Q-Check is asynchronous — the drive scans internally and
 		// we poll for updates.  Pioneer and LiteOn block on their SCSI
@@ -327,12 +341,14 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 				&sampleValid, &measuredSectors)
 				: m_drive.LiteOnScanPoll(c1, c2, cu, currentLBA, scanDone, &measuredSectors, &sampleValid));
 
+		if (scanCancelled()) return cancelPrimaryScan();
 		if (!pollOk) {
 			// One retry for asynchronous scans (Plextor / Pioneer) —
 			// transient SCSI timeouts are common when the drive is busy
 			// with its internal scan loop.
 			if (usePlextor || usePioneer) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                if (scanCancelled()) return cancelPrimaryScan();
 				pollOk = usePlextor
 					? m_drive.PlextorQCheckPoll(c1, c2, cu, currentLBA, scanDone)
 					: m_drive.PioneerScanPoll(c1, c2, cu, currentLBA, scanDone,
@@ -386,38 +402,25 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 			std::cout << "\nERROR: Quality scan exceeded its 90-minute budget.\n";
 			return false;
 		}
-		if (!sampleValid) {
-			if (scanDone) break;
-			continue;
-		}
-
-		// Skip empty responses — the drive hasn't produced data yet
-		// (still seeking to the start position or spinning up).
-		// Pioneer tracks LBA in software starting at firstLBA, so LBA 0
-		// is a valid position — don't apply this filter for Pioneer scans.
-		if (!usePioneer && measuredSectors == 0 && currentLBA == 0 && c1 == 0 && c2 == 0 && cu == 0 && !scanDone)
-			continue;
-
-		// Skip duplicate LBA reports — the drive sometimes returns the
-		// same position twice before advancing to the next time slice.
-		if (currentLBA == lastReportedLBA && !scanDone)
-			continue;
-		lastReportedLBA = currentLBA;
-
-		// Discard the first 3 samples — the drive is still seeking/spinning
-		// up and reports accumulated startup errors in the initial responses.
-		// QPXTool does the same; without this the first sample creates a
-		// massive spike that dominates the entire graph and skews statistics.
-		// Applies to all scan paths (Plextor, Pioneer, LiteOn).
-		if (measuredSectors == 0 && sampleIndex < 3 && !scanDone) {
-			sampleIndex++;
-			continue;
-		}
+        if (!Diagnostics::CaptureScanSpeedChecked(m_drive,result.speed,scanCancelled)) return cancelPrimaryScan();
+        // Legacy Plextor has no sample-valid flag for its empty startup response.
+        if (usePlextor && measuredSectors==0 && currentLBA==0 && c1==0 && c2==0 && cu==0 && !scanDone)
+            continue;
+        const auto decision=primarySequence.Observe(currentLBA,measuredSectors,c1,c2,cu,sampleValid);
+        if (decision==Diagnostics::QualitySampleDecision::Invalid) {
+            stopPrimaryScan();
+            std::cout << "\nERROR: Invalid quality sample range, order or counter; pass incomplete.\n";
+            return false;
+        }
+        if (decision==Diagnostics::QualitySampleDecision::Ignore) { if(scanDone) break;continue; }
+        lastReportedLBA=currentLBA;
+        result.throughput.Observe(measuredSectors,Diagnostics::ScanNowMs());
 
 		// ── Record the sample ────────────────────────────────
 		QCheckSample sample;
 		sample.lba = currentLBA;
 		sample.measuredSectors = measuredSectors;
+		sample.elapsedMs = result.throughput.endMs-result.throughput.startMs;
 		sample.c1 = c1;    // C1 corrections this time slice (first-level Reed-Solomon)
 		// Pioneer's response field is E22: correctable second-decoder activity,
 		// not verified E32/CU or a READ CD C2-pointer result. Keep it separate so
@@ -453,7 +456,6 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		if (cu > result.maxCUPerSecond)
 			result.maxCUPerSecond = cu;
 
-		sampleIndex++;
 
 		// ── Compute progress, elapsed, and ETA ───────────────
 		// Progress is calculated from the LBA position relative to the
@@ -515,6 +517,8 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 
 		// Show live error counts so the user can spot problems immediately
 		// without waiting for the full report.
+		line << "  scan " << Diagnostics::ScanSpeedText(result.throughput.CurrentX())
+			<< " (avg " << Diagnostics::ScanSpeedText(result.throughput.AverageX()) << ")";
 		line << "  C1=" << c1;
 		if (usePioneer)
 			line << " E22=" << c2 << " CU=N/A";
@@ -531,11 +535,12 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		std::cout << output << std::flush;
 	}
 
+	result.throughput.Finish(Diagnostics::ScanNowMs());
 	if (!stopPrimaryScan()) {
 		std::cout << "\nERROR: Could not stop the quality scan; drive closed. Reopen it before continuing.\n";
-		m_drive.Close();
 		return false;
 	}
+	if (scanCancelled()) return cancelPrimaryScan();
 	if (result.samples.empty()) {
 		std::cout << "\nERROR: Quality scan completed without any usable measurement samples.\n";
 		std::cout << "       The result cannot be rated.\n";
@@ -588,11 +593,16 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		// before starting a fresh scan.
 		stopPrimaryScan();
 		std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        if (scanCancelled()) return cancelPrimaryScan();
 
 		// Start a second complete scan over the same LBA range.
 		QualityScanSession recheckSession([&]() {
 			return usePlextor ? m_drive.PlextorQCheckStop() : m_drive.LiteOnScanStop();
 		});
+        auto stopRecheckScan=[&] {
+            result.recheckThroughput.Finish(Diagnostics::ScanNowMs());
+            return recheckSession.StopOrClose([&] {m_drive.Close();});
+        };
 		bool recheckStarted = usePlextor
 			? m_drive.PlextorQCheckStart(firstLBA, lastLBA)
 			: m_drive.LiteOnScanStart(firstLBA, lastLBA);
@@ -600,8 +610,10 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		if (recheckStarted) {
 			bool recheckDone = false;
 			bool recheckFailed = false;
-			int recheckSampleIdx = 0;
-			DWORD recheckLastLBA = DWORD(-1);
+			bool recheckCancelled = false;
+			result.recheckThroughput.Begin(Diagnostics::ScanNowMs());
+			recheckCancelled = !Diagnostics::CaptureScanSpeedChecked(m_drive,result.recheckSpeed,scanCancelled);
+			Diagnostics::QualitySampleSequence recheckSequence(firstLBA,lastLBA);
 			int recheckLastLine = 0;
 			auto recheckStart = std::chrono::steady_clock::now();
 			auto lastRecheckProgressPaint = recheckStart - std::chrono::milliseconds(250);
@@ -610,8 +622,9 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 
 			// Same polling loop as the primary scan. C2 drives the repeatability
 			// verdict, but retain C1/CU too so the second pass is complete evidence.
-			while (!recheckDone) {
-				if (InterruptHandler::Instance().IsInterrupted() || InterruptHandler::Instance().CheckEscapeKey()) {
+			while (!recheckDone && !recheckCancelled) {
+				if (scanCancelled()) {
+                    recheckCancelled = true;
 					recheckFailed = true;
 					std::cout << "\n  *** Recheck cancelled - keeping original C2 results ***\n";
 					break;
@@ -631,11 +644,13 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 					? m_drive.PlextorQCheckPoll(rc1, rc2, rcu, rLBA, recheckDone)
 					: m_drive.LiteOnScanPoll(rc1, rc2, rcu, rLBA, recheckDone, &recheckSectors, &recheckSampleValid);
 
+				if (scanCancelled()) {recheckCancelled=true;break;}
 				if (!rpoll) {
 					// Same retry logic as the primary scan — async scans
 					// Plextor's asynchronous poll gets one retry on transient failure.
 					if (usePlextor) {
 						std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                        if (scanCancelled()) {recheckCancelled=true;break;}
 						rpoll = m_drive.PlextorQCheckPoll(
 							rc1, rc2, rcu, rLBA, recheckDone);
 					}
@@ -666,29 +681,18 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 					break;
 				}
 
-				if (!recheckSampleValid) {
-					if (recheckDone) break;
-					continue;
-				}
-
-				// Same filtering as primary scan: skip empty / duplicate / startup samples.
-				// Pioneer tracks LBA in software starting at firstLBA, so LBA 0
-				// is a valid position — don't apply this filter for Pioneer scans.
-				if (!usePioneer && recheckSectors == 0 && rLBA == 0 && rc1 == 0 && rc2 == 0 && rcu == 0 && !recheckDone)
-					continue;
-				if (rLBA == recheckLastLBA && !recheckDone)
-					continue;
-				recheckLastLBA = rLBA;
-
-				// Discard first 3 samples (startup artefacts).
-				if (recheckSectors == 0 && recheckSampleIdx < 3 && !recheckDone) {
-					recheckSampleIdx++;
-					continue;
-				}
+                if (!Diagnostics::CaptureScanSpeedChecked(m_drive,result.recheckSpeed,scanCancelled)) {recheckCancelled=true;break;}
+                if (usePlextor && recheckSectors==0 && rLBA==0 && rc1==0 && rc2==0 && rcu==0 && !recheckDone)
+                    continue;
+                const auto decision=recheckSequence.Observe(rLBA,recheckSectors,rc1,rc2,rcu,recheckSampleValid);
+                if (decision==Diagnostics::QualitySampleDecision::Invalid) {recheckFailed=true;break;}
+                if (decision==Diagnostics::QualitySampleDecision::Ignore) {if(recheckDone) break;continue;}
+                result.recheckThroughput.Observe(recheckSectors,Diagnostics::ScanNowMs());
 
 				QCheckSample recheckSample;
 				recheckSample.lba = rLBA;
 				recheckSample.measuredSectors = recheckSectors;
+				recheckSample.elapsedMs = result.recheckThroughput.endMs-result.recheckThroughput.startMs;
 				recheckSample.c1 = rc1;
 				recheckSample.c2 = rc2;
 				recheckSample.cu = rcu;
@@ -701,7 +705,6 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 					result.c2RecheckMaxSecondIndex =
 						static_cast<int>(result.c2RecheckSamples.size()) - 1;
 				}
-				recheckSampleIdx++;
 
 				// ── Recheck progress bar ─────────────────────
 				double rpct = 0.0;
@@ -729,6 +732,7 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 				rline << "] " << std::fixed << std::setprecision(1) << rpct << "%"
 					<< "  " << (rElapsed / 60) << ":"
 					<< std::setfill('0') << std::setw(2) << (rElapsed % 60)
+					<< "  scan " << Diagnostics::ScanSpeedText(result.recheckThroughput.CurrentX())
 					<< "  C2=" << result.c2RecheckTotal;
 
 				std::string routput = rline.str();
@@ -738,11 +742,15 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 				std::cout << routput << std::flush;
 			}
 
-			if (!recheckSession.Stop()) {
+			result.recheckThroughput.Finish(Diagnostics::ScanNowMs());
+			if (!stopRecheckScan()) {
 				std::cout << "\nERROR: Could not stop verification; drive closed. Reopen it before continuing.\n";
-				m_drive.Close();
 				return false;
 			}
+            if (recheckCancelled || scanCancelled()) {
+                std::cout << "\n*** Quality verification cancelled; recorded error evidence retained, pass incomplete ***\n";
+                return false;
+            }
 			const bool coverageVerified = HasCompleteQCheckCoverage(result.c2RecheckSamples,
 				result.graphStartLba, result.graphSectors);
 			if (recheckDone && !recheckFailed && !coverageVerified && !result.c2RecheckSamples.empty())
@@ -788,9 +796,9 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 
 		}
 		else {
-			if (!recheckSession.Stop()) {
+			result.recheckThroughput.Finish(Diagnostics::ScanNowMs());
+			if (!stopRecheckScan()) {
 				std::cout << "  ERROR: Verification cleanup failed; drive closed.\n";
-				m_drive.Close();
 				return false;
 			}
 			std::cout << "  WARNING: Could not start recheck scan - keeping original C2 results.\n";
@@ -813,7 +821,7 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 
 	// ── Sustained-level statistics ───────────────────────────
 	// Compute the shared three-sample persistence diagnostic before rating.
-	ComputeScanPeakContext(result.samples, scanSpeed, result.peaks);
+	ComputeScanPeakContext(result.samples, result.speed.ActualSpeed(), result.peaks);
 	ComputeTimedC1(result);
 
 	// All C1 labels use the shared observed-rate policy. C2/CU evidence may
@@ -887,6 +895,10 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		}
 	}
 
+    if (scanCancelled()) {
+        std::cout << "\n*** Quality scan cancelled; no completed result published ***\n";
+        return false;
+    }
 	PrintQCheckReport(result);
 	return true;
 }
@@ -1356,8 +1368,13 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 		<< std::setfill('0') << std::setw(2) << (result.totalSeconds % 60)
 		<< std::setfill(' ') << " (mm:ss)\n";
 	std::cout << "  Requested sectors: " << result.totalSectors << "\n";
-	if (result.peaks.scanSpeedX > 0)
-		std::cout << "  Scan speed:        " << result.peaks.scanSpeedX << "x\n";
+    std::cout << "  Disc layout: " << result.discIdentity << "\n";
+    std::cout << "  Requested speed: " << (result.requestedSpeed>0 ? std::to_string(result.requestedSpeed)+"x" : "maximum") << "\n";
+    Diagnostics::PrintScanTelemetry(std::cout,result.speed,result.throughput);
+    if (result.c2RecheckAttempted) {
+        std::cout << "  Verification pass speed measurements:\n";
+        Diagnostics::PrintScanTelemetry(std::cout,result.recheckSpeed,result.recheckThroughput,"    ");
+    }
 	std::cout << "  Peak confidence:   "
 		<< ScanQuality::ConfidenceLabel(result.peaks.PeakConfidence()) << "\n";
 	ScanQuality::PrintConfidenceCaveat(std::cout, result.peaks.PeakConfidence(), "    ");
@@ -1463,7 +1480,7 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 		else if (result.c1Unverified || result.samples.empty())
 			std::cout << "  C2 Assessment: UNVERIFIED - counter reporting was not confirmed\n";
 		else if (result.totalC2 == 0)
-			std::cout << "  C2 Assessment: PERFECT - no C2 correction needed\n";
+			std::cout << "  C2 Assessment: No C2 activity observed in this pass\n";
 		else if (!c2Graph.RateAvailable())
 			std::cout << "  C2 Assessment: CAUTION - C2 observed; rate unavailable\n";
 		else if (c2Graph.average < 1.0)
@@ -1979,7 +1996,13 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 	log << "# --- C1 Observations ---\n";
 	ScanQuality::PrintC1Summary(log, result.c1, result.totalSectors, "# ");
 	ScanQuality::PrintC1Policy(log, "# ");
-	log << "# Scan speed: " << result.peaks.scanSpeedX << "x\n";
+    log << "# Disc layout: " << result.discIdentity << "\n";
+    log << "# Requested speed: " << (result.requestedSpeed>0 ? std::to_string(result.requestedSpeed)+"x" : "maximum") << "\n";
+    Diagnostics::PrintScanTelemetry(log,result.speed,result.throughput,"# ");
+    if (result.c2RecheckAttempted) {
+        log << "# Verification pass speed measurements:\n";
+        Diagnostics::PrintScanTelemetry(log,result.recheckSpeed,result.recheckThroughput,"# ");
+    }
 	log << "#\n";
 	log << "# --- C2 Statistics ---\n";
 	if (pioneerScan) {
@@ -2126,9 +2149,9 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 	log << "# ==============================\n";
 	log << (pioneerScan ? "# Per-Sample Pioneer C1/E22 Counts\n" : result.cuMeasured ? "# Per-Sample C1/C2/CU Counts\n" : "# Per-Sample C1/C2 Counts (CU not measured)\n");
 	log << "# ==============================\n";
-	log << (pioneerScan ? "Time,Second,LBA,C1,PioneerE22,C1CoveredSectors,C1PerSecond\n"
-		: result.cuMeasured ? "Pass,Time,Second,LBA,C1,C2,CU,C1CoveredSectors,C1PerSecond\n"
-		: "Pass,Time,Second,LBA,C1,C2,C1CoveredSectors,C1PerSecond\n");
+	log << (pioneerScan ? "Time,Second,LBA,C1,PioneerE22,C1CoveredSectors,C1PerSecond,ElapsedMilliseconds\n"
+		: result.cuMeasured ? "Pass,Time,Second,LBA,C1,C2,CU,C1CoveredSectors,C1PerSecond,ElapsedMilliseconds\n"
+		: "Pass,Time,Second,LBA,C1,C2,C1CoveredSectors,C1PerSecond,ElapsedMilliseconds\n");
 
 	for (size_t i = 0; i < result.samples.size(); i++) {
 		const auto& s = result.samples[i];
@@ -2154,7 +2177,7 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 		log << ",";
 		if (result.c1.RateAvailable() && s.measuredSectors > 0)
 			log << std::fixed << std::setprecision(4) << s.c1 * 75.0 / s.measuredSectors;
-		log << "\n";
+		log << "," << s.elapsedMs << "\n";
 	}
 
 	if (!pioneerScan) {
@@ -2172,7 +2195,7 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 			if (s.measuredSectors > 0) log << s.measuredSectors;
 			log << ",";
 			if (s.measuredSectors > 0) log << s.c1 * 75.0 / s.measuredSectors;
-			log << "\n";
+			log << "," << s.elapsedMs << "\n";
 		}
 	}
 

@@ -1,6 +1,7 @@
 #pragma once
 #include "DiagnosticAssessment.h"
 #include <numeric>
+#include <ostream>
 
 namespace Diagnostics {
 struct BalanceSpeedSample {
@@ -15,18 +16,29 @@ struct BalanceSpeedSample {
     double c1Rate = 0;
     double secondStageRate = 0;
     int hardwareSamples = 0;
+    int hardwareActualSpeed = 0;
+    bool hardwareVerified = false;
+};
+
+struct BalanceReadEvidence {
+    long long hardwareCuTotal = 0;
+    int pioneerUncorrectableBytes = 0;
+    bool HasUncorrectable() const { return hardwareCuTotal>0 || pioneerUncorrectableBytes>0; }
 };
 
 struct BalanceAssessment {
+    BalanceReadEvidence readEvidence;
     bool available = false;
     bool partial = false;
     bool usingHwEcc = false;
     bool stabilityAvailable = false;
     bool haveFullScore = false;
+    bool recommendationAvailable = false;
     int score = 0, fullScore = 0;
     int errorScore = 0, fullErrorScore = 0;
     int jitterScore = 0, stabilityScore = 0, scalingScore = 0;
-    int suggestedSpeed = 0, maximumMeasuredSpeed = 0, primaryMaximumSpeed = 0;
+    int suggestedSpeed = 0, suggestedActualSpeed = 0, maximumMeasuredSpeed = 0, primaryMaximumSpeed = 0;
+    int firstC2WarningSpeed = 0;
     std::vector<bool> compared, primaryCompared, speedFellBack, eccFellBack;
     std::vector<int> previousRow, timingPenalty;
 };
@@ -35,8 +47,10 @@ struct BalanceAssessment {
 // speed rows never enter a comparison or recommendation. Known-speed failures
 // still constrain coverage even if they supplied too few timings to compare.
 inline BalanceAssessment AssessBalance(const std::vector<BalanceSpeedSample>& input,
-    int requestedSamples, int minValidSamples, bool hasHwC1, bool hasPioneerHwC1) {
+    int requestedSamples, int minValidSamples, bool hasHwC1, bool hasPioneerHwC1,
+    const BalanceReadEvidence& readEvidence = {}) {
     BalanceAssessment result;
+    result.readEvidence = readEvidence;
     result.compared.assign(input.size(), false);
     result.primaryCompared.assign(input.size(), false);
     result.speedFellBack.assign(input.size(), false);
@@ -44,6 +58,17 @@ inline BalanceAssessment AssessBalance(const std::vector<BalanceSpeedSample>& in
     result.previousRow.assign(input.size(), -1);
     result.timingPenalty.assign(input.size(), 0);
     if (requestedSamples <= 0 || minValidSamples <= 0) return result;
+    // Absolute, independently verified C2 warnings do not require a relative
+    // C1 baseline or usable timing at the same request. They retain their own
+    // hardware-phase speed. Pioneer E22 remains diagnostic-only.
+    if (!hasPioneerHwC1) {
+        for (const auto& r : input) {
+            if (!r.hardwareVerified || r.hardwareActualSpeed <= 0 || r.hardwareSamples <= 0 ||
+                !std::isfinite(r.secondStageRate) || r.secondStageRate <= 0.5) continue;
+            if (result.firstC2WarningSpeed == 0 || r.hardwareActualSpeed < result.firstC2WarningSpeed)
+                result.firstC2WarningSpeed = r.hardwareActualSpeed;
+        }
+    }
     std::vector<size_t> rows;
     std::set<int> distinct;
     for (size_t i=0; i<input.size(); ++i) {
@@ -51,8 +76,7 @@ inline BalanceAssessment AssessBalance(const std::vector<BalanceSpeedSample>& in
         if (r.actualSpeed <= 0 || r.validReads < minValidSamples ||
             !std::isfinite(r.readTimeMs) || r.readTimeMs <= 0.001 ||
             !std::isfinite(r.jitterCV) || !std::isfinite(r.stabilityRatio) ||
-            !std::isfinite(r.readErrorSignal) || !std::isfinite(r.c1Rate) ||
-            !std::isfinite(r.secondStageRate)) continue;
+            !std::isfinite(r.readErrorSignal)) continue;
         rows.push_back(i);
         distinct.insert(r.actualSpeed);
     }
@@ -73,15 +97,17 @@ inline BalanceAssessment AssessBalance(const std::vector<BalanceSpeedSample>& in
         result.compared[i]=true;
         speeds.push_back(r.actualSpeed);
         validReadSamplesPerSpeed.push_back(r.validReads);
-        hwSamplesPerSpeed.push_back(r.hardwareSamples);
+        const bool hwUsable=r.hardwareVerified && r.hardwareActualSpeed==r.actualSpeed &&
+            r.hardwareSamples>0 && std::isfinite(r.c1Rate) && std::isfinite(r.secondStageRate);
+        hwSamplesPerSpeed.push_back(hwUsable ? r.hardwareSamples : 0);
         avgReadTimeMs.push_back(r.readTimeMs);
         jitterCoeffVar.push_back(r.jitterCV);
         avgStabilityRatio.push_back(r.stabilityRatio);
         stabilityMeasured.push_back(r.stabilityMeasured);
         avgReadErrorSignalPerSpeed.push_back(r.readErrorSignal);
-        hwC1PerSpeed.push_back(r.c1Rate);
-        hwSecondStagePerSpeed.push_back(r.secondStageRate);
-        if (r.hardwareSamples > 0) {
+        hwC1PerSpeed.push_back(hwUsable ? r.c1Rate : 0.0);
+        hwSecondStagePerSpeed.push_back(hwUsable ? r.secondStageRate : 0.0);
+        if (hwUsable) {
             ++validHardware;
             hardwareSpeeds.insert(r.actualSpeed);
             const double level=r.c1Rate+(hasPioneerHwC1 ? 0 : r.secondStageRate);
@@ -447,8 +473,10 @@ inline BalanceAssessment AssessBalance(const std::vector<BalanceSpeedSample>& in
 	// Determine the highest speed that showed no wobble degradation.
 	// Walk up from baseline; stop at the first speed with a regression,
 	// plateau, fallback, or significant error/stability increase.
-	int safeSpeedIdx = baselineIdx;
-	for (int s = baselineIdx + 1; s < NUM_SPEEDS; s++) {
+	int safeSpeedIdx = result.firstC2WarningSpeed > 0 && speeds[baselineIdx] >= result.firstC2WarningSpeed
+		? -1 : baselineIdx;
+	for (int s = baselineIdx + 1; safeSpeedIdx >= 0 && s < NUM_SPEEDS; s++) {
+		if (result.firstC2WarningSpeed > 0 && speeds[s] >= result.firstC2WarningSpeed) break;
 		if (validReadSamplesPerSpeed[s] < minValidSamples) break;
 		if (speedFellBack[s] || eccFellBack[s]) break;
 
@@ -476,13 +504,12 @@ inline BalanceAssessment AssessBalance(const std::vector<BalanceSpeedSample>& in
 			double baseC1 = std::max(hwC1PerSpeed[baselineIdx], 1.0);
 			if (hwSamplesPerSpeed[s] == 0) break;
 			if (hwC1PerSpeed[s] / baseC1 > 3.0) break;
-			// Pioneer E22 is diagnostic-only and cannot lower the suggested speed.
-			if (!hasPioneerHwC1 && hwSecondStagePerSpeed[s] > 0.5) break;
 		}
 
 		safeSpeedIdx = s;
 	}
-	int safeSpeed = std::min(speeds[safeSpeedIdx], input[rows[safeSpeedIdx]].requestedSpeed);
+	int safeSpeed = safeSpeedIdx >= 0
+		? std::min(speeds[safeSpeedIdx], input[rows[safeSpeedIdx]].requestedSpeed) : 0;
 
     result.available = true;
     result.partial = rows.size() != input.size();
@@ -499,6 +526,14 @@ inline BalanceAssessment AssessBalance(const std::vector<BalanceSpeedSample>& in
     result.stabilityScore = stabilityScore;
     result.scalingScore = scalingScore;
     result.suggestedSpeed = safeSpeed;
+    result.suggestedActualSpeed = safeSpeedIdx>=0 ? speeds[safeSpeedIdx] : 0;
+    result.recommendationAvailable = safeSpeed > 0;
+    // Positive uncorrectable observations survive partial/unrated passes.
+    // Keep the mechanical score, but do not recommend an extraction speed.
+    if (readEvidence.HasUncorrectable()) {
+        result.recommendationAvailable = false;
+        result.suggestedSpeed = result.suggestedActualSpeed = 0;
+    }
     for (size_t i=0; i<rows.size(); ++i) {
         result.primaryCompared[rows[i]] = i <= static_cast<size_t>(errorCeilingIdx);
         result.speedFellBack[rows[i]] = speedFellBack[i];
@@ -507,5 +542,38 @@ inline BalanceAssessment AssessBalance(const std::vector<BalanceSpeedSample>& in
         if (i > 0) result.previousRow[rows[i]] = static_cast<int>(rows[i-1]);
     }
     return result;
+}
+inline std::string BalanceExtractionGuidance(const BalanceAssessment& assessment) {
+    if (assessment.readEvidence.HasUncorrectable())
+        return "Uncorrectable data observed - use recovery and verify independently";
+    if (assessment.firstC2WarningSpeed>0)
+        return "Caution - C2 warning at ~"+std::to_string(assessment.firstC2WarningSpeed)+"x";
+    return assessment.score>=75 ? "No additional warning from mechanical score; verify the rip"
+        : "Caution - use the suggested setting and verify the rip";
+}
+
+inline void PrintBalanceRipRecommendation(std::ostream& out,const BalanceAssessment& assessment) {
+    const auto flags=out.flags();
+    out<<std::dec;
+    if (assessment.readEvidence.HasUncorrectable()) {
+        out<<"  Suggested rip setting: NOT ESTABLISHED - uncorrectable data observed.\n"
+            <<"  Use Secure/Paranoid recovery and independently verify the recovered audio.\n";
+        if (assessment.readEvidence.hardwareCuTotal>0)
+            out<<"  Hardware CU observed: "<<assessment.readEvidence.hardwareCuTotal<<".\n";
+        if (assessment.readEvidence.pioneerUncorrectableBytes>0)
+            out<<"  Pioneer CD Check uncorrectable bytes: "<<assessment.readEvidence.pioneerUncorrectableBytes
+                <<" (worst observed window).\n";
+        out.flags(flags);
+        return;
+    }
+    if (assessment.recommendationAvailable)
+        out<<"  Suggested rip setting: request "<<assessment.suggestedSpeed
+            <<"x (drive-reported speed ~"<<assessment.suggestedActualSpeed<<"x).\n"
+            <<"  Lower requested settings may run at the same drive speed.\n";
+    else out<<"  Suggested rip setting: NOT ESTABLISHED - no lower measured speed passed the C2 warning limit.\n";
+    if (assessment.firstC2WarningSpeed>0)
+        out<<"  Hardware C2 warning at ~"<<assessment.firstC2WarningSpeed
+            <<"x; this limits the recommendation independently of the mechanical score.\n";
+    out.flags(flags);
 }
 } // namespace Diagnostics

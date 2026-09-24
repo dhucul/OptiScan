@@ -6,6 +6,7 @@
 #include "ErrorTypes.h"
 #include "AnalysisTypes.h"
 #include "ScanQualityRating.h"
+#include "ScanTelemetry.h"
 #include <windows.h>
 #include <vector>
 #include <string>
@@ -53,6 +54,7 @@ struct QCheckSample {
 	int cu = 0;             // CU (uncorrectable) count for this second
 	int pioneerE22 = 0;     // Pioneer vendor E22 diagnostic count, not counted as C2
 	DWORD measuredSectors = 0; // Exact disc coverage of these counters; zero = unknown
+	std::uint64_t elapsedMs = 0; // Elapsed wall time within this pass
 };
 
 // ── Per-track aggregation of C2 / CU events for the report ──────────────────
@@ -67,6 +69,10 @@ struct QCheckTrackErrors {
 // (0xE9/0xEB), Pioneer (0x3B/0x3C), or LiteOn/MediaTek (0xDF/0xF3)
 // vendor commands.  Aggregate CIRC decoder statistics per time slice.
 struct QCheckResult {
+	std::string discIdentity;
+	int requestedSpeed = 0;
+	Diagnostics::HardwareSpeedEvidence speed, recheckSpeed;
+	Diagnostics::ScanThroughput throughput, recheckThroughput;
 	bool supported = false;                    // True if a scan method was available
 	std::string scanMethod;                    // E.g. "Plextor Q-Check (0xE9/0xEB)"
 	DWORD totalSectors = 0;                    // Requested scan range length
@@ -486,6 +492,11 @@ struct BlerResult {
 // Output of the disc rot detection scan.  Combines zone statistics, error
 // cluster data, and heuristic indicators for various rot patterns.
 struct DiscRotAnalysis {
+	std::string discIdentity;
+	int qualityRequestedSpeed = 0;
+	Diagnostics::HardwareSpeedEvidence qualitySpeed;
+	Diagnostics::ScanThroughput qualityThroughput;
+	std::vector<QCheckSample> qualitySamples;
 	int totalReadFailures = 0;                  // Phase 1 primary reads still failed after retry
 	int recoveredReadFailures = 0;             // Initial Phase 1 failure, then successful retry
 	int verificationReadFailures = 0;          // C2-positive sector's verification read failed

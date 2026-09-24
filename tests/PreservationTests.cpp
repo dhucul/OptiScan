@@ -22,6 +22,9 @@ int RunScanQualityTests();
 int RunDiscRotTests();
 int RunMenuDiagnosticTests();
 int RunBalanceAssessmentTests();
+int RunHardwareSweepTests();
+int RunSpeedReportTests();
+int RunScanConsistencyTests();
 
 namespace {
 
@@ -922,6 +925,9 @@ int main() {
     failures += RunDiscRotTests();
     failures += RunMenuDiagnosticTests();
     failures += RunBalanceAssessmentTests();
+    failures += RunHardwareSweepTests();
+    failures += RunSpeedReportTests();
+    failures += RunScanConsistencyTests();
 
 	manifestInput.close();
 	std::error_code cleanupError;

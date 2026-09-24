@@ -107,11 +107,69 @@ int RunBalanceAssessmentTests() {
         "26: actual speed order controls comparisons while report indices map to original rows");
     rows=clean();for(size_t i=2;i<rows.size();++i)rows[i].actualSpeed=0;
     rows[0].hardwareSamples=rows[1].hardwareSamples=15;rows[0].c1Rate=1;rows[1].c1Rate=2;
+    for(size_t i=0;i<2;++i) {rows[i].hardwareActualSpeed=rows[i].actualSpeed;rows[i].hardwareVerified=true;}
     auto pioneer=Diagnostics::AssessBalance(rows,50,25,true,true);
     rows[0].secondStageRate=500;rows[1].secondStageRate=50000;
     auto pioneerE22=Diagnostics::AssessBalance(rows,50,25,true,true);
     check(pioneer.usingHwEcc && pioneerE22.score==pioneer.score && pioneerE22.suggestedSpeed==pioneer.suggestedSpeed,
         "26: extracting the scorer preserves Pioneer E22 as diagnostic-only");
+    check(pioneerE22.firstC2WarningSpeed==0,
+        "26: Pioneer E22 never activates the independent C2 recommendation limit");
+    auto warningSweep=[&] {
+        auto data=clean();
+        const double c1[]={4.53,4.53,6.33,9.2,0,0};
+        const double c2[]={0,0,5.0/15,53.0/15,0,0};
+        for(size_t i=0;i<data.size();++i) {
+            data[i].c1Rate=c1[i];data[i].secondStageRate=c2[i];data[i].hardwareSamples=15;
+            data[i].hardwareActualSpeed=data[i].actualSpeed;data[i].hardwareVerified=i<4;
+        }
+        return data;
+    };
+    rows=warningSweep();
+    auto verifiedBaseline=Diagnostics::AssessBalance(rows,50,25,true,false);
+    rows[0].hardwareVerified=false;
+    auto missingBaseline=Diagnostics::AssessBalance(rows,50,25,true,false);
+    check(verifiedBaseline.usingHwEcc && !missingBaseline.usingHwEcc &&
+        verifiedBaseline.suggestedSpeed==16 && missingBaseline.suggestedSpeed==16 &&
+        missingBaseline.firstC2WarningSpeed==24 && missingBaseline.recommendationAvailable,
+        "26: removing baseline verification cannot lift a verified 24x C2 warning or raise the 16x recommendation");
+    rows[0].hardwareSamples=0;rows[0].hardwareActualSpeed=0;
+    check(Diagnostics::AssessBalance(rows,50,25,true,false).suggestedSpeed==16,
+        "26: completely missing baseline counters still preserve other verified C2 limits");
+    rows=warningSweep();rows[3].validReads=0;rows[3].readTimeMs=0;
+    auto missingTiming=Diagnostics::AssessBalance(rows,50,25,true,false);
+    check(!missingTiming.compared[3] && missingTiming.firstC2WarningSpeed==24 && missingTiming.suggestedSpeed<=16,
+        "26: independent hardware C2 evidence survives insufficient timing coverage at its speed");
+    rows=warningSweep();rows[3].hardwareActualSpeed=8;
+    auto otherPhaseSpeed=Diagnostics::AssessBalance(rows,50,25,true,false);
+    check(otherPhaseSpeed.firstC2WarningSpeed==8 && otherPhaseSpeed.suggestedSpeed==4,
+        "26: the C2 limit follows the measured hardware speed rather than the requested or timing speed");
+    rows=warningSweep();rows[0].secondStageRate=0.75;
+    auto noLowerSpeed=Diagnostics::AssessBalance(rows,50,25,true,false);
+    check(noLowerSpeed.available && !noLowerSpeed.recommendationAvailable && noLowerSpeed.suggestedSpeed==0 &&
+        noLowerSpeed.firstC2WarningSpeed==4,
+        "26: a C2 warning at the lowest measured speed leaves the recommendation unestablished");
+    rows[0].validReads=0;rows[0].readTimeMs=0;
+    auto lowerFailure=Diagnostics::AssessBalance(rows,50,25,true,false);
+    check(lowerFailure.available && !lowerFailure.recommendationAvailable && lowerFailure.firstC2WarningSpeed==4,
+        "26: excluding the lowest timing row cannot erase its separately verified hardware C2 warning");
+    rows=warningSweep();rows[0].hardwareVerified=false;rows[3].hardwareVerified=false;
+    auto unverifiedCounter=Diagnostics::AssessBalance(rows,50,25,true,false);
+    check(unverifiedCounter.firstC2WarningSpeed==0 && unverifiedCounter.recommendationAvailable,
+        "26: unverified counters do not invent a verified speed limit");
+    rows=warningSweep();rows[0].hardwareVerified=false;rows[3].secondStageRate=0.5;
+    auto boundary=Diagnostics::AssessBalance(rows,50,25,true,false);
+    rows[3].secondStageRate=std::nextafter(0.5,1.0);
+    auto aboveBoundary=Diagnostics::AssessBalance(rows,50,25,true,false);
+    check(boundary.firstC2WarningSpeed==0 && aboveBoundary.firstC2WarningSpeed==24 && aboveBoundary.suggestedSpeed==16,
+        "26: the existing C2 threshold remains strictly greater than 0.5 per measured second");
+    rows=warningSweep();rows[3].secondStageRate=std::numeric_limits<double>::quiet_NaN();
+    check(Diagnostics::AssessBalance(rows,50,25,true,false).firstC2WarningSpeed==0,
+        "26: invalid rates cannot create an absolute C2 limit");
+    auto clearedWarning=noLowerSpeed;
+    clearedWarning=assess(clean());
+    check(clearedWarning.firstC2WarningSpeed==0 && clearedWarning.recommendationAvailable && clearedWarning.suggestedSpeed==40,
+        "26: a new measured sweep resets an old unavailable recommendation and old C2 limits");
     auto reused=limited;
     reused=assess(clean());
     check(reused.available && !reused.partial && reused.haveFullScore && reused.suggestedSpeed==40,

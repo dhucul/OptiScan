@@ -112,6 +112,8 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 			cancelled);
 	};
 	result = DiscRotAnalysis{};
+	result.discIdentity = Diagnostics::ScanDiscIdentity(disc);
+	result.qualityRequestedSpeed = scanSpeed;
 	ScopedDriveSpeed restoreSpeed(m_drive);
 	std::vector<DWORD> errorLBAs;
 	std::vector<DWORD> inconsistentLBAs;
@@ -167,11 +169,13 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 			: m_drive.LiteOnScanStart(firstLBA, lastLBA);
 
 		if (started) {
+			c1Result.throughput.Begin(Diagnostics::ScanNowMs());
+			const bool speedReady=Diagnostics::CaptureScanSpeedChecked(m_drive,c1Result.speed,cancelled);
+			Diagnostics::QualitySampleSequence sequence(firstLBA,lastLBA);
 			bool scanDone = false;
-			bool c1Cancelled = false;
+			bool c1Cancelled = !speedReady;
 			bool c1Failed = false;
 			std::string c1FailureReason;
-			int sampleIndex = 0;
 			DWORD lastReportedLBA = DWORD(-1);
 			auto lastLBAProgress = std::chrono::steady_clock::now();
 			DWORD progressLBA = DWORD(-1);
@@ -179,9 +183,10 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 
 			ProgressIndicator c1Progress(40);
 			c1Progress.SetLabel("  C1 Scan");
+			c1Progress.SetShowTransferRate(false);
 			c1Progress.Start();
 
-			while (!scanDone) {
+			while (!scanDone && !c1Cancelled) {
 				if (g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey()) {
 					c1Cancelled = true;
 					break;
@@ -243,20 +248,20 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 						std::to_string(currentLBA);
 					break;
 				}
-				if (!sampleValid) {
-					if (scanDone) break;
-					continue;
-				}
-				if (!usePioneer && measuredSectors == 0 && currentLBA == 0 && c1 == 0 && c2 == 0 && cu == 0 && !scanDone) continue;
-				if (currentLBA == lastReportedLBA && !scanDone) continue;
-				lastReportedLBA = currentLBA;
-
-				// Match Q-Check: discard the first 3 startup/seek-settle samples.
-				if (measuredSectors == 0 && sampleIndex < 3 && !scanDone) { sampleIndex++; continue; }
-
+                if (!Diagnostics::CaptureScanSpeedChecked(m_drive,c1Result.speed,cancelled)) {c1Cancelled=true;break;}
+                if (usePlextor && measuredSectors==0 && currentLBA==0 && c1==0 && c2==0 && cu==0 && !scanDone)
+                    continue;
+                const auto decision=sequence.Observe(currentLBA,measuredSectors,c1,c2,cu,sampleValid);
+                if (decision==Diagnostics::QualitySampleDecision::Invalid) {
+                    c1Failed=true;c1FailureReason="invalid quality sample range, order or counter";break;
+                }
+                if (decision==Diagnostics::QualitySampleDecision::Ignore) {if(scanDone) break;continue;}
+                lastReportedLBA=currentLBA;
+                c1Result.throughput.Observe(measuredSectors,Diagnostics::ScanNowMs());
 				QCheckSample sample;
 				sample.lba = currentLBA;
 				sample.measuredSectors = measuredSectors;
+				sample.elapsedMs = c1Result.throughput.endMs-c1Result.throughput.startMs;
 				sample.c1 = c1;
 				// Pioneer reports E22 here, not verified C2/E32. Keep it in the
 				// diagnostic field so it cannot masquerade as a copy error.
@@ -285,7 +290,7 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 					c1Result.maxPioneerE22PerSecond = sample.pioneerE22;
 					c1Result.maxPioneerE22SecondIndex = idx;
 				}
-				sampleIndex++;
+				c1Progress.SetLabel("  C1 Scan " + Diagnostics::ScanSpeedText(c1Result.throughput.CurrentX()));
 
 				if (currentLBA >= firstLBA) {
 					int done = static_cast<int>(std::min<DWORD>(
@@ -295,6 +300,10 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 				}
 			}
 
+			c1Result.throughput.Finish(Diagnostics::ScanNowMs());
+			result.qualitySpeed=c1Result.speed;
+			result.qualityThroughput=c1Result.throughput;
+			result.qualitySamples=c1Result.samples;
 			c1Progress.Finish(!c1Cancelled && !c1Failed,
 				static_cast<int>(c1Result.totalSectors));
 
@@ -304,7 +313,7 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 				return false;
 			}
 
-			if (c1Cancelled) {
+			if (c1Cancelled || cancelled()) {
 				m_drive.SetSpeed(0);
 				std::cout << "*** Disc rot scan cancelled ***\n";
 				return false;
@@ -330,7 +339,7 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 			// would show a scan speed and confidence for a scan that produced
 			// no samples.
 			if (hasC1) {
-				ComputeScanPeakContext(c1Result.samples, scanSpeed, c1Result.peaks);
+				ComputeScanPeakContext(c1Result.samples, c1Result.speed.ActualSpeed(), c1Result.peaks);
 				ComputeTimedC1(c1Result);
 				result.peaks = c1Result.peaks;
 				result.c1 = c1Result.c1;
@@ -399,6 +408,7 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 
 	ProgressIndicator progress(40);
 	progress.SetLabel("  C2 Scan");
+	progress.SetCdSpeedUnits(true);
 	progress.Start();
 
 	ScsiDrive::C2ReadOptions c2Opts;
@@ -505,6 +515,7 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 	int inconsistentSamples = 0;
 
 	progress.SetLabel("  Adaptive Check");
+	progress.SetShowTransferRate(false);
 	progress.Start();
 
 	for (const auto& t : disc.tracks) {
@@ -813,6 +824,9 @@ void OpticalDrive::PrintDiscRotReport(const DiscRotAnalysis& analysis) {
 	std::cout << Sym::BottomRight << "\n";
 	Reset();
 	std::cout << "\n--- C1 Observations ---\n";
+	std::cout << "  Disc layout: " << analysis.discIdentity << "\n";
+	std::cout << "  Phase 0 requested speed: " << (analysis.qualityRequestedSpeed>0 ? std::to_string(analysis.qualityRequestedSpeed)+"x" : "maximum") << "\n";
+	Diagnostics::PrintScanTelemetry(std::cout,analysis.qualitySpeed,analysis.qualityThroughput);
 	ScanQuality::PrintC1Summary(std::cout, analysis.c1, analysis.c1RequestedSectors);
 	DiscRot::PrintReadEvidence(std::cout, analysis, "  ");
 
@@ -820,7 +834,7 @@ void OpticalDrive::PrintDiscRotReport(const DiscRotAnalysis& analysis) {
 	// reports state their limits in the same words.
 	if (analysis.peaks.scanSpeedX > 0) {
 		std::cout << "\n";
-		std::cout << "  Scan speed:      " << analysis.peaks.scanSpeedX << "x\n";
+		std::cout << "  Drive-reported speed: ~" << analysis.peaks.scanSpeedX << "x\n";
 		std::cout << "  Peak confidence: "
 			<< ScanQuality::ConfidenceLabel(analysis.peaks.PeakConfidence()) << "\n";
 		ScanQuality::PrintConfidenceCaveat(std::cout,
@@ -981,6 +995,9 @@ bool OpticalDrive::SaveDiscRotLog(const DiscRotAnalysis& analysis, const std::ws
 	fprintf(f, "# ==============================\n");
 	fprintf(f, "# Disc Rot Analysis Report\n");
 	std::ostringstream c1Summary;
+	c1Summary << "# Disc layout: " << analysis.discIdentity << "\n";
+	c1Summary << "# Phase 0 requested speed: " << (analysis.qualityRequestedSpeed>0 ? std::to_string(analysis.qualityRequestedSpeed)+"x" : "maximum") << "\n";
+	Diagnostics::PrintScanTelemetry(c1Summary,analysis.qualitySpeed,analysis.qualityThroughput,"# ");
 	ScanQuality::PrintC1Summary(c1Summary, analysis.c1, analysis.c1RequestedSectors, "# ");
 	DiscRot::PrintReadEvidence(c1Summary, analysis, "# ");
 	fputs(c1Summary.str().c_str(), f);
@@ -1050,8 +1067,18 @@ bool OpticalDrive::SaveDiscRotLog(const DiscRotAnalysis& analysis, const std::ws
 			i, c.startLBA, c.endLBA, c.size(), c.errorCount);
 	}
 
-	fclose(f);
-	return true;
+    fprintf(f, "\n# Phase 0 raw observations; unknown duration is blank, never discarded.\n");
+    fprintf(f, "LBA,C1,C2,CU,PioneerE22,CoveredSectors,ElapsedMilliseconds\n");
+    for (const auto& sample:analysis.qualitySamples) {
+        fprintf(f,"%lu,%d,",sample.lba,sample.c1);
+        if (analysis.qualityScanMethod.find("Pioneer")==std::string::npos) fprintf(f,"%d",sample.c2);
+        fprintf(f,",");if(analysis.qualityCuMeasured) fprintf(f,"%d",sample.cu);
+        fprintf(f,",");if(analysis.qualityScanMethod.find("Pioneer")!=std::string::npos) fprintf(f,"%d",sample.pioneerE22);
+        fprintf(f,",");if(sample.measuredSectors>0) fprintf(f,"%lu",sample.measuredSectors);
+        fprintf(f,",%llu\n",static_cast<unsigned long long>(sample.elapsedMs));
+    }
+    const bool written=ferror(f)==0;
+    return fclose(f)==0 && written;
 }
 
 void OpticalDrive::AnalyzeC1RotPatterns(const QCheckResult& c1Result,

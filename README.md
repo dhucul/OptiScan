@@ -6,7 +6,7 @@ A Windows **GUI application** for high-quality audio CD ripping, writing, and ad
 
 OptiScan reads and writes audio CDs at the raw sector level using SCSI/MMC commands and provides multiple quality scanning modes to assess disc health before, during, or after extraction.
 
-**[Download OptiScan 3.39](https://github.com/dhucul/OptiScan/releases/latest)** — choose `OptiScan-3.39-Setup.exe`, the 64-bit installer for Windows 10 or later. It installs the Microsoft Visual C++ 2015–2022 runtime when needed, so setup requires administrator rights.
+**[Download OptiScan 3.40](https://github.com/dhucul/OptiScan/releases/latest)** — choose `OptiScan-3.40-Setup.exe`, the 64-bit installer for Windows 10 or later. It installs the Microsoft Visual C++ 2015–2022 runtime when needed, so setup requires administrator rights.
 
 > [!IMPORTANT]
 > **Drive compatibility is not universal.** OptiScan relies on low-level SCSI/MMC and vendor-specific optical-drive commands, so support depends on the exact drive model, firmware, chipset, USB bridge, and media type. A drive may work for normal ripping but still fail features such as pregap detection, subchannel reading/writing, CD-Text writing, C2/C1 reporting, or hardware quality scans.
@@ -457,6 +457,18 @@ If measurement coverage and speed differentiation are sufficient, each metric pr
 | 0–49 | **POOR** — significant balance problem | Use 4×–8× maximum |
 
 The scan also reports a **suggested maximum rip speed**, bounded by the qualified measured speeds. Partial speed coverage is explicit, and unverified higher speeds are never treated as tested. This is a sampled advisory assessment, not a guarantee of extraction accuracy. On Pioneer drives, Disc Balance additionally runs the utility-compatible Quick CD Check at 0.05 mm radial intervals and reports genuine uncorrectable bytes separately. That sampled data-loss result never changes the mechanical balance score, and a failed or unsupported CD Check is shown as **unmeasured**, never as zero errors.
+
+The hardware C1/C2/E22 sweep repeats a fixed 15-second contiguous audio window. Before **every** speed pass, it reads more unique audio outside that entire window than the drive's reported cache capacity, then starts/resets the vendor scan. Drive-reported speed is captured after entering scan mode and throughout the hardware pass; the earlier timing-sweep speed is not reused as proof of hardware-scan speed. Only fresh, complete, timed observations with stable speed and observable counter activity receive a C1 rating. Failed/unknown eviction, missing/changing speed, and zero-only counters remain **NOT RATED**, with raw counts and the reason retained. A hardware rate contributes to the balance comparison only when its verified actual speed matches that timing row. Cache eviction depends on accurately reported buffer capacity and can increase scan time.
+
+Valid observations with unknown duration retain all raw C1/C2/CU counts, whether they occur at the start, middle or end of a pass. Unknown-duration observations are not treated as startup filler and cannot be converted to per-second rates.
+
+A verified hardware C2 rate above the existing 0.5/sec recommendation threshold limits the suggested speed independently of the relative C1 baseline. Missing baseline counters or insufficient timing at that hardware speed cannot remove the warning. The limit uses the actual hardware-phase speed; Pioneer E22 does not trigger it. If there is no qualifying measured speed below the warning, the report shows **NOT ESTABLISHED** instead of recommending an unsafe or zero-valued speed.
+
+Reports group hardware observations by the hardware pass's actual reported speed, with requested settings retained on each pass. Timing and READ CD observations use their own timing-phase readbacks. When requests such as 4× and 8× both run at approximately 10×, they appear as repeated 10× measurements. Counts are not pooled or averaged away, and a zero on one pass does not erase a positive observation on another. Missing speed readbacks remain in a separate unverified section.
+
+C1 bands apply to individual passes. If repeated measurements straddle the 5/sec EXCELLENT/GOOD boundary, the report explains the cutoff explicitly: 4.07/sec is EXCELLENT and 5.07/sec is GOOD under OptiScan's application bands. That label change alone does not demonstrate disc deterioration or that the higher requested setting made the disc worse.
+
+C2 and E22 rates are per second of measured **disc audio**, not wall-clock scan duration. The report includes their observed totals and formats rates to two decimals (for example, 5 counts / 15 seconds = 0.33/sec).
 
 **Output:** Per-speed error rates, jitter statistics, sub-scores, balance score, and safe speed recommendation.
 
@@ -1116,6 +1128,16 @@ The core program has no runtime dependencies. The one exception is FLAC handling
 WAV ripping and all other operations work without it. Install it from the [FLAC project](https://xiph.org/flac/) and ensure `flac.exe` is on `PATH` if you need FLAC support.
 
 ---
+
+## Reading scan speeds and comparing reports
+
+Q-Check, Disc Balance and Disc Rot's hardware-quality phase record drive-reported speed separately from measured scan throughput. Both use **x** units. A drive readback of approximately **10x** can accompany **2.5x measured throughput**: throughput is audio seconds scanned divided by wall-clock seconds, including scan-command overhead. It is not an independent measurement of spindle speed. Live throughput uses a recent time window; the final report shows the whole-pass average. Unknown counter duration does not acquire a guessed speed.
+
+Quality workflows retain valid early C1/C2/CU observations even when duration is unknown, reject invalid/overlapping positions, and ignore duplicate observations. Q-Check and Disc Rot no longer infer in-pass speed from the requested setting. These changes make the measurement rules consistent; they do not guarantee identical counts from independent reads or establish the physical cause of differing counts.
+
+Reports include a disc-layout key to help avoid comparing an older log from another disc. The working folder receives `qcheck_scan.csv`, `discrot_report.txt`, and now `disc_balance_report.txt`. Balance and Disc Rot save per-position raw hardware counts and elapsed milliseconds, and Q-Check includes elapsed milliseconds per sample. Files are replaced by later successful reports with the same name. Compare matching disc layouts, scan methods, reported speeds and sampled positions; full-disc averages and short-window averages are different measurements.
+
+Balance's rip advice distinguishes the **requested setting** from the **observed drive speed** (for example, request **8x**, drive reports **10x**). A C2 warning takes precedence over reassuring mechanical-score wording for extraction advice. Positive LiteOn CU counts or valid Pioneer CD Check uncorrectable observations suppress speed recommendations and override playback/extraction advice, including when a pass was partial. The mechanical score remains separate.
 
 ## Usage
 

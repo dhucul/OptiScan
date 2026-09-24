@@ -66,6 +66,9 @@
     <ClCompile Include="DiscRotTests.cpp" />
     <ClCompile Include="MenuDiagnosticTests.cpp" />
     <ClCompile Include="BalanceAssessmentTests.cpp" />
+    <ClCompile Include="HardwareSweepTests.cpp" />
+    <ClCompile Include="SpeedReportTests.cpp" />
+    <ClCompile Include="ScanConsistencyTests.cpp" />
     <ClCompile Include="..\OpticalDrive_AudioAnalysis.cpp" />
     <ClCompile Include="..\OpticalDrive_Surface.cpp" />
     <ClCompile Include="..\OpticalDrive_Verification.cpp" />

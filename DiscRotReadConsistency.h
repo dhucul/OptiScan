@@ -78,12 +78,12 @@ inline AudioRanges NormalizeAudioRanges(AudioRanges ranges) {
 // Unknown capacity, insufficient audio, failed reads and cancellation must not
 // qualify matching rereads as independent. Keep away from target read-ahead.
 template<class ReadBlock, class Cancelled>
-bool EvictAudioCache(DWORD target, const AudioRanges& ranges, int bufferSizeKB,
+bool EvictAudioCacheRange(DWORD first, DWORD last, const AudioRanges& ranges, int bufferSizeKB,
     ReadBlock readBlock, Cancelled cancelled) {
-    if (bufferSizeKB <= 0) return false;
+    if (bufferSizeKB <= 0 || last < first) return false;
     const std::uint64_t required = std::uint64_t{static_cast<unsigned>(bufferSizeKB)} * 1024 / AUDIO_SECTOR_SIZE + 1;
-    const std::uint64_t excludedStart = target > 75 ? target - 75 : 0;
-    const std::uint64_t excludedEnd = std::uint64_t{target} + 76;
+    const std::uint64_t excludedStart = first > 75 ? first - 75 : 0;
+    const std::uint64_t excludedEnd = std::uint64_t{last} + 76;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> spans;
     std::uint64_t available = 0;
     for (const auto& range : ranges) {
@@ -110,6 +110,12 @@ bool EvictAudioCache(DWORD target, const AudioRanges& ranges, int bufferSizeKB,
         if (remaining == 0) return true;
     }
     return false;
+}
+
+template<class ReadBlock, class Cancelled>
+bool EvictAudioCache(DWORD target, const AudioRanges& ranges, int bufferSizeKB,
+    ReadBlock readBlock, Cancelled cancelled) {
+    return EvictAudioCacheRange(target, target, ranges, bufferSizeKB, readBlock, cancelled);
 }
 
 struct ConsistencyResult {

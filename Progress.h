@@ -26,6 +26,8 @@ public:
         : m_barWidth(barWidth) {}
 
     void SetLabel(const std::string& label) { m_label = label; }
+    void SetShowTransferRate(bool show) { m_showTransferRate=show; }
+    void SetCdSpeedUnits(bool enabled) { m_cdSpeedUnits=enabled; }
     void SetUnitBytes(int unitBytes) {
         if (unitBytes > 0) m_unitBytes = unitBytes;
     }
@@ -193,11 +195,11 @@ private:
         if (m_instantSpeed > 0 && m_instantSpeed < m_smoothedSpeed * kInstantSpeedRatio) {
             displaySpeed = m_instantSpeed;
         }
-        if (displaySpeed > 0) {
-            ss << " " << std::setw(4) << static_cast<int>(displaySpeed / 1024) << "KB/s";
-        } else {
-            ss << std::string(9, ' ');
-        }
+        if (m_showTransferRate && displaySpeed>0) {
+            if (m_cdSpeedUnits)
+                ss << " scan " << Diagnostics::ScanSpeedText(displaySpeed/(75.0*AUDIO_SECTOR_SIZE));
+            else ss << " " << std::setw(4) << static_cast<int>(displaySpeed/1024) << "KB/s";
+        } else if (m_showTransferRate) ss << std::string(9,' ');
 
         // ETA — fixed-width field for consistent column alignment
         if (eta >= 0) {
@@ -241,6 +243,7 @@ private:
     int m_barWidth;
     std::string m_label;
     int m_unitBytes = AUDIO_SECTOR_SIZE;
+    bool m_showTransferRate=true, m_cdSpeedUnits=false;
 
     // Progress state
     int m_total = 0;
