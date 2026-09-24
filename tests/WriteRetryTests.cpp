@@ -12,7 +12,7 @@ std::vector<BYTE> recorded;
 }
 
 bool ScsiDrive::SendSCSIWithSense(void* rawCdb, BYTE, void* buffer, DWORD bytes,
-    BYTE* sk, BYTE* asc, BYTE* ascq, bool, DWORD) {
+    BYTE* sk, BYTE* asc, BYTE* ascq, bool, DWORD, DWORD*) {
     if (sk) *sk = 0; if (asc) *asc = 0; if (ascq) *ascq = 0;
     const auto* cdb = static_cast<const BYTE*>(rawCdb);
     if (cdb[0] != 0x2A) throw std::runtime_error("Unexpected command in write retry test");

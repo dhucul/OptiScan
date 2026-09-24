@@ -318,9 +318,11 @@ public:
 	// ── Raw SCSI access ──────────────────────────────────────
 	bool SendSCSI(void* cdb, BYTE cdbLength, void* buffer, DWORD bufferSize,
 		bool dataIn = true, DWORD timeoutSec = 60);
+	// Optional data length is zero on failure; callers must validate the fields
+	// they consume even when the SCSI status indicates success.
 	bool SendSCSIWithSense(void* cdb, BYTE cdbLength, void* buffer, DWORD bufferSize,
 		BYTE* senseKey, BYTE* asc, BYTE* ascq, bool dataIn = true,
-		DWORD timeoutSec = 60);
+		DWORD timeoutSec = 60, DWORD* transferredBytes = nullptr);
 	bool SeekToLBA(DWORD lba);
 	// True when the last SeekToLBA() failed because the tray holds no disc.
 	// Lets callers say "no disc" instead of the useless "could not seek".

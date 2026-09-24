@@ -17,7 +17,7 @@ void Expect(bool condition, const char* description) {
 // No physical drive or user preferences are changed by these tests.
 void ScsiDrive::Close() {}
 std::string ScsiDrive::GetSenseDescription(BYTE, BYTE, BYTE) { return {}; }
-bool ScsiDrive::SendSCSIWithSense(void*, BYTE, void*, DWORD, BYTE*, BYTE*, BYTE*, bool, DWORD) {
+bool ScsiDrive::SendSCSIWithSense(void*, BYTE, void*, DWORD, BYTE*, BYTE*, BYTE*, bool, DWORD, DWORD*) {
     throw std::runtime_error("Unexpected CD-Text command");
 }
 bool ScsiDrive::SendSCSI(void* command, BYTE, void* output, DWORD size, bool, DWORD) {

@@ -227,7 +227,8 @@ bool ScsiDrive::SendSCSI(void* cdb, BYTE cdbLength, void* buffer, DWORD bufferSi
 }
 
 bool ScsiDrive::SendSCSIWithSense(void* cdb, BYTE cdbLength, void* buffer, DWORD bufferSize,
-	BYTE* senseKey, BYTE* asc, BYTE* ascq, bool dataIn, DWORD timeoutSec) {
+	BYTE* senseKey, BYTE* asc, BYTE* ascq, bool dataIn, DWORD timeoutSec, DWORD* transferredBytes) {
+	if (transferredBytes) *transferredBytes = 0;
 	if (m_handle == INVALID_HANDLE_VALUE) {
         if (senseKey) *senseKey = 0xFF;
         if (asc) *asc = 0;
@@ -282,16 +283,13 @@ bool ScsiDrive::SendSCSIWithSense(void* cdb, BYTE cdbLength, void* buffer, DWORD
 	if (asc) *asc = sense[12];
 	if (ascq) *ascq = sense[13];
 
-	// GOOD status — no error at all
-	if (sptd->ScsiStatus == 0) return true;
-
-	// CHECK CONDITION — sense 0x00/0x01 = data buffer is valid
-	if (sptd->ScsiStatus == 0x02) {
-		BYTE sk = sense[2] & 0x0F;
-		return sk <= 0x01;
-	}
-
-	return false;
+	// GOOD or recovered/no-sense CHECK CONDITION can still be a short transfer.
+	// DataTransferLength is updated by the port driver on underrun; bytesReturned
+	// describes the pass-through structure, not the separately transferred data.
+	const bool accepted = sptd->ScsiStatus == 0 ||
+		(sptd->ScsiStatus == 0x02 && (sense[2] & 0x0F) <= 0x01);
+	if (accepted && transferredBytes) *transferredBytes = sptd->DataTransferLength;
+	return accepted;
 }
 
 void ScsiDrive::SetSpeed(int multiplier, int writeMultiplier) {

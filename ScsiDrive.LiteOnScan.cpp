@@ -90,7 +90,9 @@ bool ScsiDrive::SupportsLiteOnScan() {
 			cdb[0] = 0xF3; cdb[1] = 0x0E;
 			BYTE buf[16] = {};
 			BYTE sk = 0, asc = 0, ascq = 0;
-			if (!SendSCSIWithSense(cdb, 12, buf, sizeof(buf), &sk, &asc, &ascq))
+			DWORD transferred = 0;
+			if (!SendSCSIWithSense(cdb, 12, buf, sizeof(buf), &sk, &asc, &ascq,
+				true, 60, &transferred) || transferred < 8 || transferred > sizeof(buf))
 				return false;
 			if (buf[2] >= 60 || buf[3] >= 75) return false;
 			const DWORD msf = DWORD(buf[1]) * 4500 + DWORD(buf[2]) * 75 + buf[3];
@@ -134,7 +136,9 @@ bool ScsiDrive::LiteOnScanStart(DWORD startLBA, DWORD endLBA) {
 		cdb[1] = 0x0E;
 		std::vector<BYTE> buf(0x10, 0);
 		BYTE sk = 0, asc = 0, ascq = 0;
-		bool ok = SendSCSIWithSense(cdb, 12, buf.data(), 0x10, &sk, &asc, &ascq);
+		DWORD transferred = 0;
+		bool ok = SendSCSIWithSense(cdb, 12, buf.data(), 0x10, &sk, &asc, &ascq,
+			true, 60, &transferred) && transferred >= 8 && transferred <= buf.size();
 
 		char dbg[128];
 		snprintf(dbg, sizeof(dbg), "LiteOnScanStart(new): startLBA=%lu ok=%d sk=0x%02X\n",
@@ -202,11 +206,25 @@ bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
 	BYTE sk = 0, asc = 0, ascq = 0;
 	constexpr int kCommandAttempts = 5;
 	auto sendPollCommand = [&](BYTE* cdb, BYTE cdbLength, BYTE* data,
-		DWORD dataSize, const char* stage) {
+		DWORD dataSize, const char* stage, DWORD minimumBytes = 0) {
 		for (int attempt = 0; attempt < kCommandAttempts; ++attempt) {
 			sk = asc = ascq = 0;
+			DWORD transferred = 0;
+			if (minimumBytes) std::fill_n(data, dataSize, BYTE(0));
 			if (SendSCSIWithSense(cdb, cdbLength, data, dataSize,
-				&sk, &asc, &ascq)) {
+				&sk, &asc, &ascq, true, 60, &transferred)) {
+				// A successful command is not evidence that the counter fields
+				// arrived. Never parse zero-filled or partially filled placeholders.
+				// Latch/reset commands need no payload; only data packets have a minimum.
+				if (minimumBytes && (transferred < minimumBytes || transferred > dataSize)) {
+					char dbg[192];
+					snprintf(dbg, sizeof(dbg),
+						"LiteOnScanPoll: %s returned %lu bytes; expected %lu-%lu. Sample rejected.\n",
+						stage, static_cast<unsigned long>(transferred),
+						static_cast<unsigned long>(minimumBytes), static_cast<unsigned long>(dataSize));
+					OutputDebugStringA(dbg);
+					return false;
+				}
 				return true;
 			}
 			if (attempt + 1 < kCommandAttempts)
@@ -231,7 +249,7 @@ bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
 		cdb[1] = 0x0E;
 		std::vector<BYTE> buf(0x10, 0);
 
-		if (!sendPollCommand(cdb, 12, buf.data(), 0x10, "0xF3/0x0E data")) {
+		if (!sendPollCommand(cdb, 12, buf.data(), 0x10, "0xF3/0x0E data", 8)) {
 			return false;
 		}
 
@@ -287,7 +305,7 @@ bool ScsiDrive::LiteOnScanPoll(int& c1, int& c2, int& cu,
 		// 2. Get data: 0xDF/0x82/0x05
 		std::fill(buf.begin(), buf.end(), BYTE(0));
 		memset(cdb, 0, 12); cdb[0] = 0xDF; cdb[1] = 0x82; cdb[2] = 0x05;
-		if (!sendPollCommand(cdb, 12, buf.data(), 256, "0xDF/0x82/0x05 data")) {
+		if (!sendPollCommand(cdb, 12, buf.data(), 256, "0xDF/0x82/0x05 data", 5)) {
 			return false;
 		}
 

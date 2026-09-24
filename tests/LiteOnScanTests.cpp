@@ -13,6 +13,7 @@ struct FakeDrive {
     bool oldSupported=true, failRead=false, failInit=false, failPoll=false, failStop=false;
     bool blankResponse=false, zeroCounters=false, stuckPosition=false;
     bool distinctCounterBytes=false;
+    DWORD oldResponseBytes=256, newResponseBytes=16;
     unsigned position=0, oldStops=0, newCommands=0;
     std::deque<unsigned> positions;
     std::vector<std::pair<unsigned,unsigned>> reads;
@@ -30,7 +31,8 @@ bool ScsiDrive::ReadCdAudio(DWORD lba,DWORD count,BYTE,BYTE*,DWORD) {
     return !fake[this].failRead;
 }
 bool ScsiDrive::SendSCSIWithSense(void* raw,BYTE,void* data,DWORD size,
-    BYTE* sk,BYTE* asc,BYTE* ascq,bool,DWORD) {
+    BYTE* sk,BYTE* asc,BYTE* ascq,bool,DWORD,DWORD* transferredBytes) {
+    if(transferredBytes)*transferredBytes=0;
     if(sk)*sk=0; if(asc)*asc=0; if(ascq)*ascq=0;
     auto& state=fake[this];
     const auto* cdb=static_cast<BYTE*>(raw);
@@ -49,11 +51,16 @@ bool ScsiDrive::SendSCSIWithSense(void* raw,BYTE,void* data,DWORD size,
         if(cdb[1]==0x82 && cdb[2]==5 && state.distinctCounterBytes) {
             out[0]=0x01;out[1]=0x23;out[2]=0x04;out[3]=0x56;out[4]=0x78;
         }
+        if(cdb[1]==0x82 && cdb[2]==5) {
+            if(transferredBytes)*transferredBytes=state.oldResponseBytes;
+            if(state.oldResponseBytes<size) std::fill(out+state.oldResponseBytes,out+size,BYTE(0));
+        }
         return true;
     }
     if(cdb[0]==0xF3) {
         ++state.newCommands;
         if(state.failPoll) return false;
+        if(transferredBytes)*transferredBytes=state.newResponseBytes;
         if(state.blankResponse) return true;
         const unsigned pos=state.positions.empty()?state.position:state.positions.front();
         if(!state.positions.empty()) state.positions.pop_front();
@@ -63,6 +70,7 @@ bool ScsiDrive::SendSCSIWithSense(void* raw,BYTE,void* data,DWORD size,
         out[2]=static_cast<BYTE>((msf/75)%60);
         out[3]=static_cast<BYTE>(msf%75);
         out[5]=state.zeroCounters?0:4; out[7]=state.zeroCounters?0:2;
+        if(state.newResponseBytes<size) std::fill(out+state.newResponseBytes,out+size,BYTE(0));
         if(!state.stuckPosition) state.position=pos+75;
         return true;
     }
@@ -110,11 +118,56 @@ int main() {
     fake[&measured].distinctCounterBytes=false;
     measured.LiteOnScanStop();
 
+    for(DWORD length : {0UL, 1UL, 2UL, 3UL, 4UL, 257UL}) {
+        check(measured.LiteOnScanStart(0,74),"Measured scan control commands can return no payload");
+        fake[&measured].oldResponseBytes=length;
+        c1=c2=cu=99; sectors=75; done=valid=true;
+        check(!measured.LiteOnScanPoll(c1,c2,cu,lba,done,&sectors,&valid) &&
+            !valid && !done && sectors==0 && c1==0 && c2==0 && cu==0,
+            "Missing/truncated/oversized DF counter response cannot become a clean measured sample");
+        measured.LiteOnScanStop();
+    }
+    fake[&measured].oldResponseBytes=5; fake[&measured].zeroCounters=true;
+    measured.LiteOnScanStart(0,74);
+    check(measured.LiteOnScanPoll(c1,c2,cu,lba,done,&sectors,&valid) &&
+        valid && done && sectors==75 && c1==0 && c2==0 && cu==0,
+        "A complete five-byte DF counter payload preserves genuine zero observations");
+    measured.LiteOnScanStop();
+    fake[&measured].oldResponseBytes=256; fake[&measured].zeroCounters=false;
+
+    ScsiDrive shortProbe;
+    fake[&shortProbe].oldResponseBytes=4; fake[&shortProbe].newResponseBytes=7;
+    check(!shortProbe.SupportsLiteOnScan(),
+        "Neither truncated protocol can establish scanner support");
+    fake[&shortProbe].oldResponseBytes=5;
+    check(shortProbe.SupportsLiteOnScan() && shortProbe.LiteOnScanMeasuresCu(),
+        "A failed short-response probe can recover when complete counters arrive");
+
     ScsiDrive counter; fake[&counter].oldSupported=false;
     check(counter.SupportsLiteOnScan() && !counter.LiteOnScanMeasuresCu(),
         "Alternate protocol is available only after measured protocol fails and has no CU");
     check(measured.LiteOnScanMeasuresCu() && measured.SupportsLiteOnScan(),
         "Probing another drive cannot change a cached drive's protocol");
+
+    for(DWORD length : {0UL, 1UL, 2UL, 3UL, 4UL, 5UL, 6UL, 7UL, 17UL}) {
+        fake[&counter].newResponseBytes=16;
+        check(counter.LiteOnScanStart(0,200),"Alternate scan starts with a complete response");
+        fake[&counter].newResponseBytes=length;
+        c1=c2=cu=99; sectors=75; done=valid=true;
+        check(!counter.LiteOnScanPoll(c1,c2,cu,lba,done,&sectors,&valid) &&
+            !valid && !done && sectors==0 && c1==0 && c2==0 && cu==0,
+            "Incomplete F3 position/counter fields cannot become a sample or completion marker");
+        counter.LiteOnScanStop();
+        check(!counter.LiteOnScanStart(0,200),
+            "Alternate scan initialization rejects incomplete response fields");
+    }
+    fake[&counter].newResponseBytes=8; fake[&counter].zeroCounters=true;
+    check(counter.LiteOnScanStart(0,200) &&
+        counter.LiteOnScanPoll(c1,c2,cu,lba,done,&sectors,&valid) && valid &&
+        c1==0 && c2==0 && cu==0,
+        "A complete eight-byte F3 payload preserves genuine zero observations");
+    counter.LiteOnScanStop();
+    fake[&counter].newResponseBytes=16; fake[&counter].zeroCounters=false;
     check(counter.LiteOnScanStart(0,200),"Counter-only fallback starts");
     fake[&counter].positions={0,75,75,150,225};
     bool all=true; unsigned accepted=0;
