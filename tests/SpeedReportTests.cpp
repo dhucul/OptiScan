@@ -114,7 +114,13 @@ int RunSpeedReportTests() {
     report.str("");report.clear();
     Diagnostics::PrintHardwareSweepSummary(report,{{startupPass,8,10},{notRun,32,32}},"C2");
     text=report.str();
-    check(text.find("Startup (request 8x): C1 3, C2 9, CU 2")!=std::string::npos &&
+    const auto startupHeading=text.find("--- Startup observations (separate from target totals) ---\n");
+    const auto startupHeaderEnd=text.find("Coverage\n",startupHeading);
+    std::istringstream startupRow(startupHeaderEnd!=std::string::npos ? text.substr(startupHeaderEnd+9) : "");
+    std::string startupRequest,startupReadback,startupCoverage;
+    int startupC1=-1,startupC2=-1,startupCu=-1;
+    startupRow>>startupRequest>>startupReadback>>startupC1>>startupC2>>startupCu>>startupCoverage;
+    check(startupRequest=="8x" && startupReadback=="~10x" && startupC1==3 && startupC2==9 && startupCu==2 && startupCoverage=="Partial" &&
         text.find("Startup coverage incomplete")!=std::string::npos &&
         text.find("NOT RATED - not measured")!=std::string::npos,
         "Compact reporting retains positive partial startup evidence and identifies an unrun target");

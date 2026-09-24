@@ -238,8 +238,10 @@ inline void PrintHardwareSweepSummary(std::ostream& out,
     const std::vector<HardwareSweepReportRow>& rows, const char* secondStage) {
     const auto flags=out.flags(); const auto precision=out.precision(); const auto fill=out.fill();
     out<<std::dec<<std::setfill(' ')<<std::right;
-    out<<"  Request  Readback   C1 total   C1/sec  C1 band     "
-        <<std::setw(7)<<secondStage<<"      CU  Audio(s)\n";
+    out<<std::setw(8)<<"Request"<<std::setw(10)<<"Readback"
+        <<std::setw(11)<<"C1 total"<<std::setw(9)<<"C1/sec"
+        <<"  "<<std::left<<std::setw(11)<<"C1 band"<<std::right
+        <<std::setw(7)<<secondStage<<std::setw(8)<<"CU"<<std::setw(10)<<"Audio(s)"<<'\n';
     std::map<std::string,std::vector<int>> notes;
     bool haveZeros=false,haveStartup=false,haveStartupCounts=false;
     for (const auto& row:rows) {
@@ -277,13 +279,25 @@ inline void PrintHardwareSweepSummary(std::ostream& out,
             haveStartupCounts=haveStartupCounts || pass.startup.samples>0;
             if (!pass.startup.Complete())
                 notes["Startup coverage incomplete or unverified; see saved observations."].push_back(row.requestedSpeed);
-            if (pass.startup.HasActivity()) {
-                out<<"    Startup (request "<<row.requestedSpeed<<"x): C1 "<<pass.startup.c1
-                    <<", "<<secondStage<<' '<<pass.startup.secondStage<<", CU ";
-                if (pass.cuMeasured) out<<pass.startup.cu; else out<<"not measured";
-                out<<" (separate from target totals).\n";
-            }
         }
+    }
+    if (haveStartup) {
+        out<<"\n--- Startup observations (separate from target totals) ---\n";
+        out<<std::setw(8)<<"Request"<<std::setw(10)<<"Readback"<<std::setw(11)<<"C1 total"
+            <<std::setw(9)<<secondStage<<std::setw(8)<<"CU"<<"  Coverage\n";
+        for (const auto& row:rows) {
+            const auto& pass=row.pass;
+            if (pass.startup.plannedSectors==0) continue;
+            const bool observed=pass.startup.samples>0;
+            const auto readback=pass.ActualSpeed()>0 ? "~"+std::to_string(pass.ActualSpeed())+"x" : "--";
+            out<<std::setw(8)<<(std::to_string(row.requestedSpeed)+"x")<<std::setw(10)<<readback;
+            if (observed) out<<std::setw(11)<<pass.startup.c1<<std::setw(9)<<pass.startup.secondStage;
+            else out<<std::setw(11)<<"--"<<std::setw(9)<<"--";
+            if (observed && pass.cuMeasured) out<<std::setw(8)<<pass.startup.cu;
+            else out<<std::setw(8)<<"--";
+            out<<"  "<<(pass.startup.Complete() ? "Complete" : observed ? "Partial" : "Unavailable")<<'\n';
+        }
+        out<<'\n';
     }
     for (const auto& [reason,requests]:notes) {
         out<<"  Request"<<(requests.size()>1 ? "s " : " ");
@@ -291,7 +305,7 @@ inline void PrintHardwareSweepSummary(std::ostream& out,
         out<<":\n";
         ScanQuality::PrintWrapped(out,reason,"    ");
     }
-    out<<"  -- = unavailable. Audio(s) is covered target audio, not scan elapsed time.\n"
+    out<<"  -- = unavailable. Audio(s) in the target table is covered audio, not scan elapsed time.\n"
         <<"  Rows with the same readback are repeat observations; counts are not pooled.\n";
     if (haveZeros)
         out<<"  Zero counts can describe a quiet region; they do not verify error detection.\n";
