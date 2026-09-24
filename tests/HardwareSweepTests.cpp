@@ -17,6 +17,7 @@ struct SweepDrive {
     int speedX=16, pollCount=0, speedCount=0, stopCount=0;
     int failPollAt=-1, missingSpeedAt=-1, changeSpeedAt=-1;
     int unknownDurationAt=-1;
+    int c2PerInterval=0;
     bool allDurationsUnknown=false;
     int cancelAt=0; // 1 eviction, 2 start, 3 poll
     bool active=false,cancelled=false,zeroCounters=false,startFails=false,stopFails=false;
@@ -62,7 +63,7 @@ struct SweepDrive {
                 bool fresh=false;
                 for(DWORD i=0;i<75;++i) fresh=Read(sample.lba+i)||fresh;
                 sample.c1=fresh&&!zeroCounters ? 4 : 0;
-                sample.secondStage=fresh&&!zeroCounters&&interval%3==0 ? 1 : 0;
+                sample.secondStage=fresh&&!zeroCounters ? (c2PerInterval>0 ? c2PerInterval : (interval%3==0 ? 1 : 0)) : 0;
                 if(interval==unknownDurationAt || allDurationsUnknown) {
                     sample.sectors=0;sample.c1=9;sample.secondStage=23;sample.cu=7;
                 }
@@ -208,5 +209,63 @@ int RunHardwareSweepTests() {
     rows[1].hardwareActualSpeed=16;rows[1].hardwareVerified=false;
     check(!Diagnostics::AssessBalance(rows,50,25,true,false).usingHwEcc,
         "Missing freshness/speed evidence cannot influence hardware-based scoring or recommendations");
+
+    // Exercise the same evidence assembly used by CheckDiscBalance. Rate
+    // qualification must not erase positive observations from extraction advice.
+    drive.stopFails=false;drive.ResetPass(16);drive.missingSpeedAt=5;drive.c2PerInterval=10;
+    const auto c2WithoutSpeed=drive.Run();
+    std::vector<Diagnostics::BalanceSpeedSample> timings;
+    for (int speed:{8,16}) {
+        Diagnostics::BalanceSpeedSample r;
+        r.requestedSpeed=r.actualSpeed=speed;r.validReads=50;r.readTimeMs=160.0/speed;
+        r.stabilityRatio=1;r.stabilityMeasured=true;timings.push_back(r);
+    }
+    const auto noWarning=Diagnostics::AssessBalance(timings,50,25,true,false);
+    Diagnostics::BalanceReadEvidence c2Evidence;
+    Diagnostics::AccumulateBalanceHardwareEvidence(c2Evidence,c2WithoutSpeed,true);
+    const auto warned=Diagnostics::AssessBalance(timings,50,25,true,false,c2Evidence);
+    std::ostringstream recommendation;
+    Diagnostics::PrintBalanceRipRecommendation(recommendation,warned);
+    check(c2WithoutSpeed.secondStageTotal==150 && !c2WithoutSpeed.Qualified() &&
+        c2Evidence.unratedTargetC2Total==150 && warned.score==noWarning.score &&
+        warned.firstC2WarningSpeed==0 && !warned.recommendationAvailable && warned.suggestedSpeed==0 &&
+        Diagnostics::BalanceExtractionGuidance(warned).find("hardware C2 observed")!=std::string::npos &&
+        recommendation.str().find("unrated passes: 150")!=std::string::npos,
+        "150 target C2 survive a missing speed readback without inventing a speed limit or changing the score");
+    SweepDrive evictionDrive;evictionDrive.evictionFails=true;
+    const auto positiveWithoutEviction=evictionDrive.Run();
+    for (auto raw:{changed,positiveWithoutEviction,failed,allRaw}) {
+        raw.cuTotal=raw.startup.cu=0; // Isolate C2 from the existing CU override.
+        Diagnostics::BalanceReadEvidence evidence;
+        Diagnostics::AccumulateBalanceHardwareEvidence(evidence,raw,true);
+        const auto assessment=Diagnostics::AssessBalance(timings,50,25,true,false,evidence);
+        check(raw.secondStageTotal>0 && evidence.unratedTargetC2Total==raw.secondStageTotal &&
+            !assessment.recommendationAvailable && assessment.suggestedActualSpeed==0,
+            "Positive target C2 still blocks advice after speed changes, eviction failure, partial scans or unknown duration");
+    }
+    Diagnostics::BalanceReadEvidence pioneerEvidence;
+    Diagnostics::AccumulateBalanceHardwareEvidence(pioneerEvidence,c2WithoutSpeed,false);
+    check(pioneerEvidence.unratedTargetC2Total==0 && pioneerEvidence.startupC2Total==0 &&
+        !pioneerEvidence.HasUncorrectable() &&
+        Diagnostics::AssessBalance(timings,50,25,true,true,pioneerEvidence).recommendationAvailable,
+        "Unrated Pioneer E22 cannot enter the LiteOn C2/CU warning fields");
+    drive.missingSpeedAt=-1;drive.ResetPass(16);
+    const auto rated=drive.Run();
+    Diagnostics::BalanceReadEvidence ratedEvidence;
+    Diagnostics::AccumulateBalanceHardwareEvidence(ratedEvidence,rated,true);
+    check(rated.Qualified() && rated.secondStageTotal==150 && ratedEvidence.unratedTargetC2Total==0,
+        "Qualified target counts retain the existing measured-speed C2 policy");
+    auto startupOnly=zero;
+    startupOnly.startup.secondStage=7;startupOnly.startup.cu=2;
+    Diagnostics::BalanceReadEvidence startupEvidence;
+    Diagnostics::AccumulateBalanceHardwareEvidence(startupEvidence,startupOnly,true);
+    check(startupEvidence.startupC2Total==7 && startupEvidence.hardwareCuTotal==2 &&
+        startupEvidence.unratedTargetC2Total==0,
+        "Evidence assembly preserves startup C2/CU separately from the target");
+    Diagnostics::BalanceReadEvidence zeroEvidence;
+    Diagnostics::AccumulateBalanceHardwareEvidence(zeroEvidence,zero,true);
+    check(zeroEvidence.unratedTargetC2Total==0 &&
+        Diagnostics::AssessBalance(timings,50,25,true,false,zeroEvidence).recommendationAvailable,
+        "An unrated zero observation does not fabricate positive C2 evidence");
     return failures;
 }

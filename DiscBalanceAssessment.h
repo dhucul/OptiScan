@@ -1,5 +1,6 @@
 #pragma once
 #include "DiagnosticAssessment.h"
+#include "HardwareSweep.h"
 #include <numeric>
 #include <ostream>
 #include <limits>
@@ -44,8 +45,19 @@ struct BalanceReadEvidence {
     int pioneerUncorrectableBytes = 0;
     long long startupC2Total = 0;
     long long readCdC2Total = 0;
+    long long unratedTargetC2Total = 0;
     bool HasUncorrectable() const { return hardwareCuTotal>0 || pioneerUncorrectableBytes>0; }
 };
+
+// Rate/speed qualification controls comparisons, not whether positive error
+// evidence survives. Pioneer E22 must never enter these LiteOn C2/CU fields.
+inline void AccumulateBalanceHardwareEvidence(BalanceReadEvidence& evidence,
+    const HardwareSweepPass& pass, bool secondStageIsC2) {
+    if (!secondStageIsC2) return;
+    evidence.startupC2Total += pass.startup.secondStage;
+    if (pass.cuMeasured) evidence.hardwareCuTotal += pass.cuTotal + pass.startup.cu;
+    if (!pass.Qualified()) evidence.unratedTargetC2Total += pass.secondStageTotal;
+}
 
 struct BalanceAssessment {
     BalanceReadEvidence readEvidence;
@@ -551,7 +563,8 @@ inline BalanceAssessment AssessBalance(const std::vector<BalanceSpeedSample>& in
     result.recommendationAvailable = safeSpeed > 0;
     // Positive uncorrectable observations survive partial/unrated passes.
     // Keep the mechanical score, but do not recommend an extraction speed.
-    if (readEvidence.HasUncorrectable() || readEvidence.startupC2Total>0 || readEvidence.readCdC2Total>0) {
+    if (readEvidence.HasUncorrectable() || readEvidence.startupC2Total>0 ||
+        readEvidence.readCdC2Total>0 || readEvidence.unratedTargetC2Total>0) {
         result.recommendationAvailable = false;
         result.suggestedSpeed = result.suggestedActualSpeed = 0;
     }
@@ -567,6 +580,8 @@ inline BalanceAssessment AssessBalance(const std::vector<BalanceSpeedSample>& in
 inline std::string BalanceExtractionGuidance(const BalanceAssessment& assessment) {
     if (assessment.readEvidence.HasUncorrectable())
         return "Uncorrectable data observed - use recovery and verify independently";
+    if (assessment.readEvidence.unratedTargetC2Total>0)
+        return "Caution - hardware C2 observed in an unrated pass; verify independently";
     if (assessment.readEvidence.readCdC2Total>0)
         return "Caution - READ CD C2 observed; verify with secure extraction";
     if (assessment.firstC2WarningSpeed>0)
@@ -590,6 +605,12 @@ inline void PrintBalanceRipRecommendation(std::ostream& out,const BalanceAssessm
                 <<" (worst observed window).\n";
         out.flags(flags);
         return;
+    }
+    if (assessment.readEvidence.unratedTargetC2Total>0) {
+        out<<"  Suggested rip setting: NOT ESTABLISHED - hardware C2 observed in an unrated pass.\n"
+            <<"  Target C2 raw count in unrated passes: "<<assessment.readEvidence.unratedTargetC2Total<<".\n"
+            <<"  A missing rate or speed does not erase these errors; verify with secure extraction.\n";
+        out.flags(flags);return;
     }
     if(assessment.readEvidence.readCdC2Total>0) {
         out<<"  Suggested rip setting: NOT ESTABLISHED - READ CD C2 activity needs independent confirmation.\n"

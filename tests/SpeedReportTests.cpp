@@ -92,5 +92,44 @@ int RunSpeedReportTests() {
     check(report.flags()==flags && report.precision()==precision &&
         report.str().find("C2 raw totals by pass: 0; 15")!=std::string::npos,
         "Grouped reports render decimal observations and restore caller stream formatting");
+    report.str("");report.clear();
+    Diagnostics::PrintHardwareSweepSummary(report,{{first,4,10},{second,8,10}},"C2");
+    text=report.str();
+    check(text.find("4.07")!=std::string::npos && text.find("5.07")!=std::string::npos &&
+        text.find("EXCELLENT")!=std::string::npos && text.find("GOOD")!=std::string::npos &&
+        text.find("counts are not pooled")!=std::string::npos,
+        "Compact hardware rows retain individual C1 rates, bands and repeated-speed semantics");
+    auto quiet=unrated;quiet.limitation="zero-only counters; decoder activity unverified";
+    report.str("");report.clear();
+    Diagnostics::PrintHardwareSweepSummary(report,{{quiet,4,10},{quiet,8,10}},"C2");
+    text=report.str();
+    const auto note=text.find("Zero counts observed");
+    check(note!=std::string::npos && text.find("Zero counts observed",note+1)==std::string::npos &&
+        text.find("Requests 4x, 8x")!=std::string::npos && text.find("15.00")!=std::string::npos &&
+        text.find("quiet region")!=std::string::npos && text.find("EXCELLENT")==std::string::npos,
+        "Zero-only rows show known audio coverage and one shared confidence note without a false C1 grade");
+    auto startupPass=second;
+    startupPass.startup.Reset(250,750);
+    startupPass.startup.Record(250,75,3,9,2);
+    report.str("");report.clear();
+    Diagnostics::PrintHardwareSweepSummary(report,{{startupPass,8,10},{notRun,32,32}},"C2");
+    text=report.str();
+    check(text.find("Startup (request 8x): C1 3, C2 9, CU 2")!=std::string::npos &&
+        text.find("Startup coverage incomplete")!=std::string::npos &&
+        text.find("NOT RATED - not measured")!=std::string::npos,
+        "Compact reporting retains positive partial startup evidence and identifies an unrun target");
+    auto pioneerPass=unknown;pioneerPass.cuMeasured=false;
+    report.str("");report.clear();
+    Diagnostics::PrintHardwareSweepSummary(report,{{pioneerPass,24,24}},"E22");
+    text=report.str();
+    check(text.find("E22")!=std::string::npos && text.find("C2")==std::string::npos &&
+        text.find("--")!=std::string::npos && text.find("NOT RATED")!=std::string::npos,
+        "Compact Pioneer rows retain E22 identity and unavailable CU/readback markers");
+    report.str("");report.clear();report<<std::hex<<std::scientific<<std::setprecision(7)<<std::setfill('0');
+    const auto summaryFlags=report.flags();const auto summaryPrecision=report.precision();const auto summaryFill=report.fill();
+    Diagnostics::PrintHardwareSweepSummary(report,{{first,4,10},{second,8,10}},"C2");
+    check(report.flags()==summaryFlags && report.precision()==summaryPrecision && report.fill()==summaryFill &&
+        report.str().find("4.07")!=std::string::npos,
+        "Compact hardware reporting preserves caller formatting while rendering decimal counts and rates");
     return failures;
 }

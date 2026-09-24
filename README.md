@@ -466,13 +466,15 @@ Valid observations with unknown duration retain all raw C1/C2/CU counts, whether
 
 A verified hardware C2 rate above the existing 0.5/sec recommendation threshold limits the suggested speed independently of the relative C1 baseline. Missing baseline counters or insufficient timing at that hardware speed cannot remove the warning. The limit uses the actual hardware-phase speed; Pioneer E22 does not trigger it. If there is no qualifying measured speed below the warning, the report shows **NOT ESTABLISHED** instead of recommending an unsafe or zero-valued speed.
 
-Reports group hardware observations by the hardware pass's actual reported speed, with requested settings retained on each pass. Timing and READ CD observations use their own timing-phase readbacks. When requests such as 4× and 8× both run at approximately 10×, they appear as repeated 10× measurements. Counts are not pooled or averaged away, and a zero on one pass does not erase a positive observation on another. Missing speed readbacks remain in a separate unverified section.
+The main report puts the balance score and extraction advice first, followed by compact tables with one row per pass. Hardware rows retain the requested setting, the hardware pass's own speed readback, raw target counts, C1 rate/band when available, and covered audio duration. Timing and READ CD rows use their own timing-phase readbacks. Requests such as 4× and 8× that both run at approximately 10× remain separate observations; counts are never pooled. Missing measurements use `--`. Repeated limitations are explained once. A zero-only pass is described as a possibly quiet region with unverified counter activity, rather than implying that known audio coverage is missing. The saved report retains the detailed speed groups, startup evidence, telemetry and raw sample rows.
+
+Positive target C2 from an **unrated LiteOn hardware pass** also remains an extraction warning and withholds the suggested setting. Missing/changing speed, incomplete coverage, unknown duration or failed cache preparation cannot erase those raw observations. These counts do not invent a verified speed limit or alter the mechanical score. Qualified hardware passes retain the existing measured-speed recommendation rule; Pioneer E22 remains diagnostic-only.
 
 C1 bands apply to individual passes. If repeated measurements straddle the 5/sec EXCELLENT/GOOD boundary, the report explains the cutoff explicitly: 4.07/sec is EXCELLENT and 5.07/sec is GOOD under OptiScan's application bands. That label change alone does not demonstrate disc deterioration or that the higher requested setting made the disc worse.
 
 C2 and E22 rates are per second of measured **disc audio**, not wall-clock scan duration. The report includes their observed totals and formats rates to two decimals (for example, 5 counts / 15 seconds = 0.33/sec).
 
-**Output:** Per-speed error rates, jitter statistics, sub-scores, balance score, and safe speed recommendation.
+**Output:** Balance score and suggested rip setting, compact per-pass counts/rates and timing tables, sub-scores, and a saved report with detailed hardware observations and raw samples.
 
 **When to use:** Before ripping at high speed, or when you suspect a disc is warped, cracked near the hub, or has an off-center label.
 

@@ -174,7 +174,12 @@ inline void PrintHardwareSweepEvidence(std::ostream& out, const HardwareSweepPas
         out<<indent<<"Target observations: LBAs "<<pass.targetFirst<<'-'<<pass.targetLast<<".\n";
     }
     PrintScanTelemetry(out,pass.speed,pass.startup.plannedSectors>0?pass.targetThroughput:pass.throughput,indent);
-    ScanQuality::PrintC1Summary(out,pass.c1,0,indent);
+    if (!pass.intervals.empty() && pass.c1.timingKnown && !pass.HasCounterActivity()) {
+        out<<indent<<"Total C1 observed: 0 across "<<std::fixed<<std::setprecision(2)
+            <<pass.c1.MeasuredSeconds()<<" seconds of covered target audio.\n"
+            <<indent<<"C1 band unavailable: these zero counts do not establish counter activity.\n";
+    }
+    else ScanQuality::PrintC1Summary(out,pass.c1,0,indent);
     out<<indent<<secondStage<<" observed total: ";
     if (pass.intervals.empty()) out<<"unavailable (no observations)";
     else out<<pass.secondStageTotal;
@@ -226,6 +231,80 @@ struct HardwareSweepReportRow {
     bool primaryCompared = true;
     bool variationFlag = false;
 };
+
+// The main report keeps each pass visible in one row. Detailed acquisition
+// evidence and raw samples are retained in the saved report.
+inline void PrintHardwareSweepSummary(std::ostream& out,
+    const std::vector<HardwareSweepReportRow>& rows, const char* secondStage) {
+    const auto flags=out.flags(); const auto precision=out.precision(); const auto fill=out.fill();
+    out<<std::dec<<std::setfill(' ')<<std::right;
+    out<<"  Request  Readback   C1 total   C1/sec  C1 band     "
+        <<std::setw(7)<<secondStage<<"      CU  Audio(s)\n";
+    std::map<std::string,std::vector<int>> notes;
+    bool haveZeros=false,haveStartup=false,haveStartupCounts=false;
+    for (const auto& row:rows) {
+        const auto& pass=row.pass;
+        const bool observed=!pass.intervals.empty();
+        const auto readback=pass.ActualSpeed()>0 ? "~"+std::to_string(pass.ActualSpeed())+"x" : "--";
+        out<<std::setw(8)<<(std::to_string(row.requestedSpeed)+"x")<<std::setw(10)<<readback;
+        if (observed) out<<std::setw(11)<<pass.c1.total;
+        else out<<std::setw(11)<<"--";
+        if (pass.Qualified())
+            out<<std::fixed<<std::setprecision(2)<<std::setw(9)<<pass.c1.average
+                <<"  "<<std::left<<std::setw(11)<<ScanQuality::C1RatingName(pass.c1.Rating())<<std::right;
+        else out<<std::setw(9)<<"--"<<"  "<<std::left<<std::setw(11)<<"--"<<std::right;
+        if (observed) out<<std::setw(7)<<pass.secondStageTotal;
+        else out<<std::setw(7)<<"--";
+        if (observed && pass.cuMeasured) out<<std::setw(8)<<pass.cuTotal;
+        else out<<std::setw(8)<<"--";
+        if (observed && pass.c1.timingKnown)
+            out<<std::fixed<<std::setprecision(2)<<std::setw(10)<<pass.c1.MeasuredSeconds();
+        else out<<std::setw(10)<<"--";
+        out<<'\n';
+        if (!pass.Qualified()) {
+            const auto reason=pass.limitation=="zero-only counters; decoder activity unverified"
+                ? "Zero counts observed; counter activity unverified (C1 band unavailable)."
+                : "NOT RATED - "+pass.limitation;
+            notes[reason].push_back(row.requestedSpeed);
+        }
+        else if (!row.timingCompared || pass.ActualSpeed()!=row.timingSpeed)
+            notes["Excluded from speed comparison: timing coverage or speed does not match."].push_back(row.requestedSpeed);
+        if (row.variationFlag)
+            notes["Measurement variation flagged; cause unconfirmed."].push_back(row.requestedSpeed);
+        haveZeros=haveZeros || (observed && !pass.HasCounterActivity());
+        if (pass.startup.plannedSectors>0) {
+            haveStartup=true;
+            haveStartupCounts=haveStartupCounts || pass.startup.samples>0;
+            if (!pass.startup.Complete())
+                notes["Startup coverage incomplete or unverified; see saved observations."].push_back(row.requestedSpeed);
+            if (pass.startup.HasActivity()) {
+                out<<"    Startup (request "<<row.requestedSpeed<<"x): C1 "<<pass.startup.c1
+                    <<", "<<secondStage<<' '<<pass.startup.secondStage<<", CU ";
+                if (pass.cuMeasured) out<<pass.startup.cu; else out<<"not measured";
+                out<<" (separate from target totals).\n";
+            }
+        }
+    }
+    for (const auto& [reason,requests]:notes) {
+        out<<"  Request"<<(requests.size()>1 ? "s " : " ");
+        for (size_t i=0;i<requests.size();++i) out<<(i ? ", " : "")<<requests[i]<<'x';
+        out<<":\n";
+        ScanQuality::PrintWrapped(out,reason,"    ");
+    }
+    out<<"  -- = unavailable. Audio(s) is covered target audio, not scan elapsed time.\n"
+        <<"  Rows with the same readback are repeat observations; counts are not pooled.\n";
+    if (haveZeros)
+        out<<"  Zero counts can describe a quiet region; they do not verify error detection.\n";
+    if (haveStartup) {
+        bool startupActivity=false;
+        for (const auto& row:rows) startupActivity=startupActivity || row.pass.startup.HasActivity();
+        if (haveStartupCounts && !startupActivity)
+            out<<"  Startup: no errors reported in the recorded startup observations.\n";
+        else if (!haveStartupCounts)
+            out<<"  Startup: no observations recorded.\n";
+    }
+    out.flags(flags);out.precision(precision);out.fill(fill);
+}
 
 // Reporting only: group captures by their own hardware-phase readback, retain
 // acquisition order within each group, and never pool away per-pass warnings.

@@ -528,10 +528,8 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
     Diagnostics::BalanceReadEvidence readEvidence;
     if (hasReadCdC2)
         readEvidence.readCdC2Total = std::accumulate(readCdC2Totals.begin(),readCdC2Totals.end(),driftC2.c2Total);
-    if (hasLiteOnHwC1 && m_drive.LiteOnScanMeasuresCu())
-        for (const auto& pass:hwPasses) readEvidence.hardwareCuTotal += pass.cuTotal+pass.startup.cu;
-    if (hasLiteOnHwC1)
-        for (const auto& pass:hwPasses) readEvidence.startupC2Total += pass.startup.secondStage;
+    for (const auto& pass:hwPasses)
+        Diagnostics::AccumulateBalanceHardwareEvidence(readEvidence,pass,hasLiteOnHwC1);
     if (balanceCdCheck.validSamples>0)
         readEvidence.pioneerUncorrectableBytes=balanceCdCheck.worstC2Bytes;
 	const auto assessment = Diagnostics::AssessBalance(measurements, requestedSamples,
@@ -553,10 +551,9 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 
 	std::ostringstream report;
 	report << "\nDisc layout: " << Diagnostics::ScanDiscIdentity(disc) << "\n";
-	report << "Speed groups use drive readbacks; measured throughput is reported separately.\n";
-    report << "Sample grid: 75 sectors, origin LBA " << audioRanges.front().first << "; ten seconds of startup audio before each target.\n";
+	report << "Readback is the drive-reported speed; each table row is one pass.\n";
+    if (hasHwC1) report << "Sample grid: 75 sectors, origin LBA " << audioRanges.front().first << "; ten seconds of startup audio before each target.\n";
 	if (hasHwC1) report << "Hardware scan method: " << (hasPioneerHwC1 ? "Pioneer (0x3B/0x3C)" : m_drive.LiteOnScanMethodName()) << "\n";
-	const auto timingGroups = Diagnostics::GroupMeasuredSpeeds(actualSpeedX);
 
 	// Keep report padding independent of any earlier time formatting.
 	const int reportWidth = 60;
@@ -569,15 +566,17 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 	report << "  (Compares read timing and stability across speed settings)\n\n";
 	report << "  Timing comparison includes drive-reported speeds through " << assessment.maximumMeasuredSpeed << "x.\n";
 	if (assessment.partial) report << "  PARTIAL SPEED COVERAGE - unverified or insufficient timing rows are excluded.\n";
-	report << "  Scores and recommendations apply only to the measured speeds.\n\n";
-	report << "  Timing variation or limited speed gain does not establish physical\n"
-		<< "  wobble, disc damage or faulty C2 reporting. These scores describe\n"
-		<< "  sampled read performance; they do not verify extraction accuracy.\n\n";
-	if (hasHwC1)
-		report << "  Hardware " << hwSecondStageLabel << " totals cover one 15-second target at each speed, plus\n"
-			<< "  separately reported startup observations. The target is selected by\n"
-			<< "  disc position, not by locating defects. Errors elsewhere can be missed.\n"
-			<< "  Compare a full hardware quality scan with Q-scan at the same LBAs.\n\n";
+	report << "\n  Balance Score: " << balanceScore << " / 100 ("
+        << (balanceScore>=75 ? "GOOD" : balanceScore>=50 ? "FAIR" : "POOR") << ")\n";
+    if (assessment.haveFullScore)
+        report << "  Wider speed range: " << balanceScoreFull << " / 100\n";
+    report << "  Audio extraction: " << Diagnostics::BalanceExtractionGuidance(assessment) << "\n";
+    Diagnostics::PrintBalanceRipRecommendation(report,assessment);
+    report << "\n  Scores describe sampled read performance at the measured speeds.\n"
+        << "  They do not establish physical wobble or verify extraction accuracy.\n\n";
+    if (hasHwC1)
+        report << "  Hardware counts cover the same 15-second target at each setting.\n"
+            << "  Startup counts are separate. Errors elsewhere on the disc can be missed.\n\n";
 	if (balanceCdCheckAttempted) {
 		report << "--- Pioneer CD Check Data-Loss Cross-Check ---\n";
 		if (balanceCdCheck.reliable) {
@@ -606,67 +605,54 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 		}
 	}
 	auto PrintReadSignalReport = [&]() {
-		report << "--- READ CD / Read-Stability Signal by Drive-Reported Speed ---\n";
-		for (const auto& group : timingGroups) {
-			Diagnostics::PrintMeasuredSpeedHeading(report,group,"timing-sweep observations");
-			for (size_t pass=0; pass<group.rows.size(); ++pass) {
-				const size_t s=group.rows[pass];
-				report << "    Pass " << pass+1 << " (requested " << speeds[s] << "x): ";
-				if (hasReadCdC2 && successfulC2Reads[s]>0)
-					report << "READ CD C2 " << std::fixed << std::setprecision(2) << avgReadCdC2PerSpeed[s] << "/successful sector read   ";
-				else report << "READ CD C2 N/A   ";
-				report << "balance signal " << std::fixed << std::setprecision(2) << avgReadErrorSignalPerSpeed[s];
-				if (!assessment.compared[s]) report << "  (excluded from speed comparison)";
-				report << "\n";
-				if (hasReadCdC2) {
-					report << "      C2 raw total across repeats: ";
-					if (successfulC2Reads[s]>0) report << readCdC2Totals[s];
-					else report << "unavailable (no successful reads)";
-					report << "; C2-positive reads: " << c2PositiveReads[s] << "/" << successfulC2Reads[s]
-						<< " successful reads (" << sampleLBAs.size()*READS_PER_SAMPLE << " attempted).\n";
-				}
-			}
-		}
-
-		if (hasReadCdC2) {
-			report << "  READ CD C2 totals and averages include every successful repeat.\n"
-				<< "  Only timing selects the fastest read. Repeated reads count repeated\n"
-				<< "  observations, not unique damaged bytes. Failed reads are not clean zeros.\n"
-				<< "  Timing re-test C2 raw total: " << driftC2.c2Total << " across "
-				<< driftC2.successfulReads << " successful reads.\n"
-				<< "  READ CD pointers and hardware decoder counters measure different things.\n"
-				<< "  Zero observations neither verify C2 reporting nor rule out errors\n"
-				<< "  in the unsampled audio.\n";
-		}
-	};
+        report << "--- READ CD observations (all successful repeats) ---\n"
+            << "  Request  Readback   C2 total  Positive/successful  C2/read  Balance signal\n";
+        for (int s=0;s<NUM_SPEEDS;++s) {
+            report << std::right << std::setw(8) << (std::to_string(speeds[s])+"x")
+                << std::setw(10) << (actualSpeedX[s]>0 ? "~"+std::to_string(actualSpeedX[s])+"x" : "--");
+            if (hasReadCdC2 && successfulC2Reads[s]>0) {
+                report << std::setw(11) << readCdC2Totals[s] << std::setw(21)
+                    << (std::to_string(c2PositiveReads[s])+"/"+std::to_string(successfulC2Reads[s]))
+                    << std::fixed << std::setprecision(2) << std::setw(9) << avgReadCdC2PerSpeed[s];
+            }
+            else report << std::setw(11) << "--" << std::setw(21) << "--" << std::setw(9) << "--";
+            report << std::fixed << std::setprecision(2) << std::setw(16) << avgReadErrorSignalPerSpeed[s];
+            if (!assessment.compared[s]) report << " (excluded)";
+            report << '\n';
+        }
+        if (hasReadCdC2) {
+            report << "  " << sampleLBAs.size()*READS_PER_SAMPLE << " reads attempted per setting; failed reads are not clean zeros.\n"
+                << "  Totals count repeated observations, not unique damaged bytes.\n"
+                << "  Timing re-test C2: " << driftC2.c2Total << " across " << driftC2.successfulReads << " successful reads.\n"
+                << "  READ CD pointers and hardware decoder counters are separate measurements.\n";
+        }
+        report << "  Balance signal also includes timing/read-failure penalties; it is not a C2 count.\n";
+    };
+    std::vector<Diagnostics::HardwareSweepReportRow> hardwareRows;
 
 	if (hasHwC1) {
-		report << "--- Hardware Observations Grouped by Drive-Reported Speed (ECC decoder) ---\n";
-		std::vector<Diagnostics::HardwareSweepReportRow> hardwareRows;
+		report << "--- Hardware observations (target totals by pass) ---\n";
 		for (int s=0; s<NUM_SPEEDS; ++s)
 			hardwareRows.push_back({hwPasses[s],speeds[s],actualSpeedX[s],assessment.compared[s],
 				assessment.primaryCompared[s],speedFellBack[s] || eccFellBack[s]});
-		Diagnostics::PrintHardwareSweepGroups(report,hardwareRows,hwSecondStageLabel);
+		Diagnostics::PrintHardwareSweepSummary(report,hardwareRows,hwSecondStageLabel);
 
 		if (hasPioneerHwC1) {
 			report << "  NOTE: Pioneer E22 is a raw diagnostic counter, not verified C2/E32\n"
 				<< "        or CU. It is reported here but does not affect the Balance Score\n"
 				<< "        or suggested rip setting and is not a copy-integrity trigger.\n";
 		}
-		ScanQuality::PrintC1Policy(report);
-		ScanQuality::PrintWrapped(report,
-			"C1 bands describe only the sampled region at each speed. Balance "
-			"scores compare speed-dependent trends, timing and read stability; "
-			"they are not whole-disc C1 ratings or proof of physical imbalance.", "  ");
+        report << "  C1: lower rates are preferable under comparable scan conditions.\n"
+            << "  C1/sec = total C1 / measured audio seconds; longer scans can accumulate more errors.\n"
+            << "  Bands: EXCELLENT <5; GOOD 5-<50; FAIR 50-<220; POOR >=220/sec.\n"
+            << "  These are OptiScan's descriptive bands for this target, not whole-disc grades.\n";
 		if (hwSweepFailed) {
 			report << "  ** NOTE: Some hardware speed buckets were incomplete. Only completed\n"
 				<< "     buckets at qualified measured speeds can contribute to scoring. **\n";
 		}
 		else if (!usingHwEcc) {
-			report << "  ** NOTE: Hardware counters did not provide comparable verified rates\n"
-				<< "     at the timing-sweep speeds. Raw counts and limitations are shown above.\n"
-				<< "     The balance score uses READ CD/read-stability and timing signals. **\n";
-		}
+            report << "  Score basis: READ CD/read stability and timing; hardware rates are not comparable.\n";
+        }
 		if (!usingHwEcc) {
 			report << "\n";
 			PrintReadSignalReport();
@@ -684,33 +670,31 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 			report << "  Note: Hardware counters above " << assessment.primaryMaximumSpeed
 				<< "x do not affect the primary measured-range score.\n"
 				<< "        Qualified counters at higher measured speeds are included in\n"
-				<< "        the full-speed balance score below.\n";
+				<< "        the wider-range balance score above.\n";
 		}
 	}
 	else {
 		PrintReadSignalReport();
 	}
 
-	report << "\n--- Read Time Jitter by Drive-Reported Speed ---\n";
-	for (const auto& group : timingGroups) {
-		Diagnostics::PrintMeasuredSpeedHeading(report,group,"timing observations");
-		for (size_t pass=0; pass<group.rows.size(); ++pass) {
-			const size_t s=group.rows[pass];
-			report << "    Pass " << pass+1 << " (requested " << speeds[s] << "x): CV "
-				<< std::fixed << std::setprecision(3) << jitterCoeffVar[s]
-				<< "  (avg " << std::setprecision(1) << avgReadTimeMs[s] << " ms)  stability ";
-			if (stabilityMeasured[s]) report << std::setprecision(2) << avgStabilityRatio[s] << "x";
-			else report << "N/A";
-			report << "  reads " << validReadSamplesPerSpeed[s] << "/" << requestedSamples;
-			if (!assessment.compared[s]) report << "  (excluded: speed or timing coverage unverified)";
-			const int previous=assessment.previousRow[s];
-			const bool repeat=previous>=0 && actualSpeedX[s]>0 && actualSpeedX[s]==actualSpeedX[previous];
-			if (assessment.timingPenalty[s]>0 && repeat) report << "  ** REPEAT TIMING VARIATION **";
-			else if (assessment.timingPenalty[s]==2) report << "  ** NO SPEED GAIN / SLOWER READS **";
-			else if (assessment.timingPenalty[s]==1) report << "  * less than 5% faster *";
-			report << "\n";
-		}
-	}
+	report << "\n--- Read timing ---\n"
+        << "  Request  Readback   Mean(ms)   Jitter(CV)  Stability  Sectors read\n";
+    for (int s=0;s<NUM_SPEEDS;++s) {
+        report << std::right << std::setw(8) << (std::to_string(speeds[s])+"x")
+            << std::setw(10) << (actualSpeedX[s]>0 ? "~"+std::to_string(actualSpeedX[s])+"x" : "--");
+        if (validReadSamplesPerSpeed[s]>0)
+            report << std::fixed << std::setprecision(1) << std::setw(11) << avgReadTimeMs[s]
+                << std::setprecision(3) << std::setw(13) << jitterCoeffVar[s];
+        else report << std::setw(11) << "--" << std::setw(13) << "--";
+        if (stabilityMeasured[s]) report << std::setprecision(2) << std::setw(11) << avgStabilityRatio[s];
+        else report << std::setw(11) << "--";
+        report << std::setw(14) << (std::to_string(validReadSamplesPerSpeed[s])+"/"+std::to_string(requestedSamples));
+        if (!assessment.compared[s]) report << " (excluded)";
+        else if (assessment.timingPenalty[s]>0) report << " *";
+        report << '\n';
+    }
+    report << "  Read times use the fastest successful repeat, then a trimmed mean.\n"
+        << "  * Limited speed gain or timing variation; the cause is not determined.\n";
 
 	report << "\n  Error Sub-Score:     " << errorScore << " / 100";
 	if (usingHwEcc && hasPioneerHwC1)
@@ -735,10 +719,8 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 		report << "  Stability Sub-Score: N/A (insufficient repeated reads)\n";
 	report << "  Scaling Sub-Score:   " << scalingScore << " / 100\n";
 	if (scalingScore < 100) {
-		report << "  Scaling was reduced because read times did not improve as expected\n"
-			<< "  at higher reported speeds, or varied between same-speed repeats.\n"
-			<< "  This can reflect drive limits or command overhead; the cause is\n"
-			<< "  not determined by this test.\n";
+		report << "  Scaling reflects limited speed gain or timing variation. Drive limits\n"
+            << "  and command overhead can contribute; this test does not determine the cause.\n";
 	}
 
 	if (std::isfinite(driftRatio) && (driftRatio > 1.3 || driftRatio < 0.7)) {
@@ -747,63 +729,11 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 			<< "% thermal drift. Scores may be affected by disc heating. **\n";
 	}
 
-	report << "\n  Balance Score: " << balanceScore << " / 100";
-	if (balanceScore >= 75)      report << "  (GOOD - within the verified speed range)\n";
-	else if (balanceScore >= 50) report << "  (FAIR - reduced timing performance or read stability)\n";
-	else                         report << "  (POOR - limited timing performance, read stability or coverage)\n";
-
-	// Full-speed (mechanical / full-RPM) score. Absent only if no speed above
-	// the audio-relevant ceiling was swept (with the current fixed speed table
-	// it is always present). When absent, the high-speed rows below report
-	// "Not tested" rather than guessing from the audio score.
-	bool haveFullScore = assessment.haveFullScore;
-	int fullScore = balanceScoreFull;
-	if (haveFullScore) {
-		report << "  Balance Score (wider verified range): " << balanceScoreFull << " / 100";
-		if (balanceScoreFull >= 75)      report << "  (GOOD)\n";
-		else if (balanceScoreFull >= 50) report << "  (FAIR)\n";
-		else                             report << "  (POOR)\n";
-	}
-
-	// Plain-language interpretation: what the two scores mean for each
-	// real-world use of the disc, gentlest demand first. Playback and audio
-	// ripping (<=16x) follow the audio score; fast extraction and the
-	// full-RPM mechanical view follow the full-speed score.
-	auto InterpRow = [&report](const char* label, const char* verdict) {
-		report << "  " << std::left << std::setw(24) << label
-			<< std::right << verdict << "\n";
-	};
-
-	report << "\n";
-	InterpRow("Regular playback:",
-        readEvidence.HasUncorrectable() ? "Possible glitches - uncorrectable data observed"
-        : balanceScore >= 75 ? "Very likely fine"
-		: balanceScore >= 50 ? "Likely fine"
-		: "Possible glitches");
-    const auto extractionGuidance=Diagnostics::BalanceExtractionGuidance(assessment);
-    InterpRow("Audio extraction:",extractionGuidance.c_str());
-	InterpRow("Higher verified speeds:",
-        readEvidence.HasUncorrectable() ? "Caution - uncorrectable data observed"
-        : !haveFullScore ? "Not tested"
-		: fullScore >= 75 ? "Fine"
-		: fullScore >= 50 ? "Caution"
-		: "Avoid");
-	InterpRow("Wider verified range:",
-		!haveFullScore ? "Not tested"
-		: fullScore >= 75 ? "Good"
-		: fullScore >= 50 ? "Fair"
-		: "Poor / increased errors in the wider speed range");
-
-	report << "\n";
-	Diagnostics::PrintBalanceRipRecommendation(report,assessment);
-
     if (readEvidence.HasUncorrectable()) {
         report << "\n  Uncorrectable data takes priority over the mechanical score.\n"
             << "  A clean reread cannot verify an earlier rip; verify recovered audio independently.\n";
     }
-    else if(readEvidence.startupC2Total>0) {
-        report << "\n  Startup C2 activity remains unconfirmed; repeat independently before choosing a rip setting.\n";
-    }
+
 	else if (balanceScore < 75) {
 		report << "\n  Recommendation:\n";
 		if (balanceScore < 50) {
@@ -826,9 +756,15 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 		}
 	}
 
+    if (savedReport && hasHwC1)
+        report << "\n  Detailed hardware observations and raw samples follow in the saved report.\n";
 	report << std::string(60, '=') << "\n";
     std::cout << report.str();
     if (savedReport) {
+        if (hasHwC1) {
+            report << "\n--- Detailed hardware observations ---\n";
+            Diagnostics::PrintHardwareSweepGroups(report,hardwareRows,hwSecondStageLabel);
+        }
         report << "\nRaw hardware samples (one row per observation):\n";
         report << "Pass,RequestedX,DriveReportedX,Region,ScanSample,LBA,CoveredSectors,C1," << hwSecondStageLabel
             << ",CU,ElapsedMilliseconds\n";
