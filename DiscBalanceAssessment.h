@@ -2,8 +2,27 @@
 #include "DiagnosticAssessment.h"
 #include <numeric>
 #include <ostream>
+#include <limits>
 
 namespace Diagnostics {
+// Select the fastest read only for timing. Every successful repeat contributes
+// its C2 evidence, including a slow read followed by a clean cache/retry read.
+struct BalanceReadRepeats {
+    int successfulReads = 0, c2PositiveReads = 0;
+    long long c2Total = 0;
+    double bestMs = (std::numeric_limits<double>::max)(), worstMs = 0;
+    void Record(bool ok, double ms, int c2) {
+        if (!ok) return; // A failed transfer does not supply a valid C2 buffer.
+        ++successfulReads;
+        if (c2 > 0) { c2Total += c2; ++c2PositiveReads; }
+        bestMs = (std::min)(bestMs, ms);
+        worstMs = (std::max)(worstMs, ms);
+    }
+    double AverageC2() const {
+        return successfulReads > 0 ? static_cast<double>(c2Total) / successfulReads : 0.0;
+    }
+};
+
 struct BalanceSpeedSample {
     int requestedSpeed = 0;
     int actualSpeed = 0;
@@ -24,6 +43,7 @@ struct BalanceReadEvidence {
     long long hardwareCuTotal = 0;
     int pioneerUncorrectableBytes = 0;
     long long startupC2Total = 0;
+    long long readCdC2Total = 0;
     bool HasUncorrectable() const { return hardwareCuTotal>0 || pioneerUncorrectableBytes>0; }
 };
 
@@ -531,7 +551,7 @@ inline BalanceAssessment AssessBalance(const std::vector<BalanceSpeedSample>& in
     result.recommendationAvailable = safeSpeed > 0;
     // Positive uncorrectable observations survive partial/unrated passes.
     // Keep the mechanical score, but do not recommend an extraction speed.
-    if (readEvidence.HasUncorrectable() || readEvidence.startupC2Total>0) {
+    if (readEvidence.HasUncorrectable() || readEvidence.startupC2Total>0 || readEvidence.readCdC2Total>0) {
         result.recommendationAvailable = false;
         result.suggestedSpeed = result.suggestedActualSpeed = 0;
     }
@@ -547,6 +567,8 @@ inline BalanceAssessment AssessBalance(const std::vector<BalanceSpeedSample>& in
 inline std::string BalanceExtractionGuidance(const BalanceAssessment& assessment) {
     if (assessment.readEvidence.HasUncorrectable())
         return "Uncorrectable data observed - use recovery and verify independently";
+    if (assessment.readEvidence.readCdC2Total>0)
+        return "Caution - READ CD C2 observed; verify with secure extraction";
     if (assessment.firstC2WarningSpeed>0)
         return "Caution - C2 warning at ~"+std::to_string(assessment.firstC2WarningSpeed)+"x";
     if(assessment.readEvidence.startupC2Total>0)
@@ -568,6 +590,13 @@ inline void PrintBalanceRipRecommendation(std::ostream& out,const BalanceAssessm
                 <<" (worst observed window).\n";
         out.flags(flags);
         return;
+    }
+    if(assessment.readEvidence.readCdC2Total>0) {
+        out<<"  Suggested rip setting: NOT ESTABLISHED - READ CD C2 activity needs independent confirmation.\n"
+            <<"  READ CD C2 observed across successful reads: "<<assessment.readEvidence.readCdC2Total
+            <<" (includes repeats and the timing re-test).\n"
+            <<"  Use secure extraction and independently verify the recovered audio.\n";
+        out.flags(flags);return;
     }
     if(assessment.readEvidence.startupC2Total>0) {
         out<<"  Suggested rip setting: NOT ESTABLISHED - startup C2 activity needs independent confirmation.\n"

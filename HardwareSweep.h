@@ -181,6 +181,8 @@ inline void PrintHardwareSweepEvidence(std::ostream& out, const HardwareSweepPas
     if (pass.Qualified()) out<<"; average "<<std::fixed<<std::setprecision(2)
         <<pass.secondStageTotal/pass.c1.MeasuredSeconds()<<"/sec of measured audio\n";
     else out<<"; rate unavailable (unverified measurement)\n";
+    if (!pass.intervals.empty() && pass.secondStageTotal==0)
+        out<<indent<<"No "<<secondStage<<" reported in this target; errors outside this window are not measured.\n";
     if (pass.cuTotal>0) out<<indent<<"CU observed total: "<<pass.cuTotal<<'\n';
     out.flags(flags);out.precision(precision);
 }

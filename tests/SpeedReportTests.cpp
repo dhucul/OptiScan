@@ -25,6 +25,8 @@ int RunSpeedReportTests() {
     std::ostringstream report;
     Diagnostics::PrintHardwareSweepGroups(report,{{first,4,10},{second,8,10}},"C2");
     auto text=report.str();
+    check(text.find("No C2 reported in this target; errors outside this window are not measured.")!=std::string::npos,
+        "A sampled hardware zero cannot be read as a whole-disc C2 total");
     check(text.find("~10x hardware observations - repeated measurements (2 passes)")!=std::string::npos &&
         text.find("4x hardware observations")==std::string::npos && text.find("8x hardware observations")==std::string::npos,
         "Clamped 4x/8x requests appear as repeat measurements at reported 10x");

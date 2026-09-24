@@ -131,6 +131,8 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 	// measured C2 data.
 	std::vector<double> avgReadErrorSignalPerSpeed(NUM_SPEEDS, 0.0);
 	std::vector<double> avgReadCdC2PerSpeed(NUM_SPEEDS, 0.0);
+	std::vector<long long> readCdC2Totals(NUM_SPEEDS, 0);
+	std::vector<int> successfulC2Reads(NUM_SPEEDS, 0), c2PositiveReads(NUM_SPEEDS, 0);
 	std::vector<double> jitterCoeffVar(NUM_SPEEDS, 0.0);
 	std::vector<double> avgReadTimeMs(NUM_SPEEDS, 0.0);
 	std::vector<double> avgStabilityRatio(NUM_SPEEDS, 0.0);
@@ -155,7 +157,8 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 		}
 		Sleep(200); // Let the drive stabilize at new speed
 
-		int totalReadErrorSignal = 0, totalReadCdC2 = 0, tested = 0;
+		double totalReadErrorSignal = 0;
+		int tested = 0;
 		std::vector<double> readTimesMs;
 		std::vector<DWORD> successfulReadLBAs;
 		readTimesMs.reserve(sampleLBAs.size());
@@ -175,11 +178,7 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 			// Take the minimum-time successful read across READS_PER_SAMPLE
 			// attempts to strip rotational latency noise, leaving drive
 			// behavior as the dominant signal.
-			double bestMs = (std::numeric_limits<double>::max)();
-			double worstMs = 0.0;
-			int bestReadCdC2 = 0;
-			bool anyOk = false;
-			int okCount = 0;
+			Diagnostics::BalanceReadRepeats repeats;
 
 			for (int r = 0; r < READS_PER_SAMPLE; r++) {
 				int c2tmp = 0;
@@ -196,34 +195,29 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 				auto t1 = std::chrono::high_resolution_clock::now();
 				double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-				if (ok) {
-					anyOk = true;
-					okCount++;
-					if (ms < bestMs) {
-						bestMs = ms;
-						bestReadCdC2 = c2tmp;
-					}
-					if (ms > worstMs) worstMs = ms;
-				}
+				repeats.Record(ok, ms, c2tmp);
 
 				completed++;
 				progress.Update(completed, totalTests);
 			}
 
-			if (anyOk) {
+			if (repeats.successfulReads > 0) {
+				const double bestMs = repeats.bestMs, worstMs = repeats.worstMs;
 				readTimesMs.push_back(bestMs);
 				successfulReadLBAs.push_back(lba);
 				validReadSamplesPerSpeed[s]++;
 				// Use worst/best ratio as a per-sector wobble indicator
 				if (bestMs > 0.001 && worstMs / bestMs > 3.0)
 					totalReadErrorSignal += 50;  // Synthetic balance penalty, not C2
-				totalReadCdC2 += bestReadCdC2;
-				totalReadErrorSignal += bestReadCdC2;
+				readCdC2Totals[s] += repeats.c2Total;
+				successfulC2Reads[s] += repeats.successfulReads;
+				c2PositiveReads[s] += repeats.c2PositiveReads;
+				totalReadErrorSignal += repeats.AverageC2();
 
 				// Track per-sector read stability: worst/best ratio.
 				// Wobble causes the same sector to read at wildly different
 				// times on successive attempts due to servo hunting.
-				if (okCount >= 2 && bestMs > 0.001) {
+				if (repeats.successfulReads >= 2 && bestMs > 0.001) {
 					stabilitySum += worstMs / bestMs;
 					stabilityCount++;
 				}
@@ -235,8 +229,8 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 		}
 		avgReadErrorSignalPerSpeed[s] = (tested > 0)
 			? static_cast<double>(totalReadErrorSignal) / tested : 0.0;
-		avgReadCdC2PerSpeed[s] = (tested > 0)
-			? static_cast<double>(totalReadCdC2) / tested : 0.0;
+		avgReadCdC2PerSpeed[s] = (successfulC2Reads[s] > 0)
+			? static_cast<double>(readCdC2Totals[s]) / successfulC2Reads[s] : 0.0;
 
 		// Coefficient of variation = stddev / mean (dimensionless, comparable across speeds)
 		// Trimmed mean + CV: drop top/bottom 10% to resist OS/USB outliers
@@ -368,6 +362,7 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 	// ── Thermal drift check ────────────────────────────────────────────
 	// Re-test baseline speed to detect if disc heating shifted read times.
 	double driftRatio = 1.0;
+	Diagnostics::BalanceReadRepeats driftC2;
 	{
 		m_drive.SetSpeed(speeds[0]);
 		Sleep(300);
@@ -400,6 +395,7 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 			auto t1 = std::chrono::high_resolution_clock::now();
 			double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
+			driftC2.Record(ok, ms, c2tmp);
 			if (ok) { driftSum += ms; driftValid++; }
 		}
 		if (g_interrupt.IsInterrupted()) {
@@ -530,6 +526,8 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 			hwPasses[s].ActualSpeed(),hwPasses[s].Qualified()});
 	}
     Diagnostics::BalanceReadEvidence readEvidence;
+    if (hasReadCdC2)
+        readEvidence.readCdC2Total = std::accumulate(readCdC2Totals.begin(),readCdC2Totals.end(),driftC2.c2Total);
     if (hasLiteOnHwC1 && m_drive.LiteOnScanMeasuresCu())
         for (const auto& pass:hwPasses) readEvidence.hardwareCuTotal += pass.cuTotal+pass.startup.cu;
     if (hasLiteOnHwC1)
@@ -575,6 +573,11 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 	report << "  Timing variation or limited speed gain does not establish physical\n"
 		<< "  wobble, disc damage or faulty C2 reporting. These scores describe\n"
 		<< "  sampled read performance; they do not verify extraction accuracy.\n\n";
+	if (hasHwC1)
+		report << "  Hardware " << hwSecondStageLabel << " totals cover one 15-second target at each speed, plus\n"
+			<< "  separately reported startup observations. The target is selected by\n"
+			<< "  disc position, not by locating defects. Errors elsewhere can be missed.\n"
+			<< "  Compare a full hardware quality scan with Q-scan at the same LBAs.\n\n";
 	if (balanceCdCheckAttempted) {
 		report << "--- Pioneer CD Check Data-Loss Cross-Check ---\n";
 		if (balanceCdCheck.reliable) {
@@ -609,20 +612,31 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 			for (size_t pass=0; pass<group.rows.size(); ++pass) {
 				const size_t s=group.rows[pass];
 				report << "    Pass " << pass+1 << " (requested " << speeds[s] << "x): ";
-				if (hasReadCdC2)
-					report << "READ CD C2 " << std::fixed << std::setprecision(2) << avgReadCdC2PerSpeed[s] << "/sector   ";
+				if (hasReadCdC2 && successfulC2Reads[s]>0)
+					report << "READ CD C2 " << std::fixed << std::setprecision(2) << avgReadCdC2PerSpeed[s] << "/successful sector read   ";
 				else report << "READ CD C2 N/A   ";
 				report << "balance signal " << std::fixed << std::setprecision(2) << avgReadErrorSignalPerSpeed[s];
 				if (!assessment.compared[s]) report << "  (excluded from speed comparison)";
 				report << "\n";
+				if (hasReadCdC2) {
+					report << "      C2 raw total across repeats: ";
+					if (successfulC2Reads[s]>0) report << readCdC2Totals[s];
+					else report << "unavailable (no successful reads)";
+					report << "; C2-positive reads: " << c2PositiveReads[s] << "/" << successfulC2Reads[s]
+						<< " successful reads (" << sampleLBAs.size()*READS_PER_SAMPLE << " attempted).\n";
+				}
 			}
 		}
 
 		if (hasReadCdC2) {
-			report << "  READ CD C2 averages use the fastest successful read at each sampled\n"
-				<< "  sector; they do not include every repeat. These pointers and the\n"
-				<< "  hardware decoder counters are separate measurements. Zero values\n"
-				<< "  alone do not establish whether C2 reporting is reliable.\n";
+			report << "  READ CD C2 totals and averages include every successful repeat.\n"
+				<< "  Only timing selects the fastest read. Repeated reads count repeated\n"
+				<< "  observations, not unique damaged bytes. Failed reads are not clean zeros.\n"
+				<< "  Timing re-test C2 raw total: " << driftC2.c2Total << " across "
+				<< driftC2.successfulReads << " successful reads.\n"
+				<< "  READ CD pointers and hardware decoder counters measure different things.\n"
+				<< "  Zero observations neither verify C2 reporting nor rule out errors\n"
+				<< "  in the unsampled audio.\n";
 		}
 	};
 

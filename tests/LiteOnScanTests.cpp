@@ -12,6 +12,7 @@
 struct FakeDrive {
     bool oldSupported=true, failRead=false, failInit=false, failPoll=false, failStop=false;
     bool blankResponse=false, zeroCounters=false, stuckPosition=false;
+    bool distinctCounterBytes=false;
     unsigned position=0, oldStops=0, newCommands=0;
     std::deque<unsigned> positions;
     std::vector<std::pair<unsigned,unsigned>> reads;
@@ -45,6 +46,9 @@ bool ScsiDrive::SendSCSIWithSense(void* raw,BYTE,void* data,DWORD size,
             return false;
         }
         if(cdb[1]==0x82 && cdb[2]==5 && !state.zeroCounters) { out[1]=2; out[3]=1; out[4]=3; }
+        if(cdb[1]==0x82 && cdb[2]==5 && state.distinctCounterBytes) {
+            out[0]=0x01;out[1]=0x23;out[2]=0x04;out[3]=0x56;out[4]=0x78;
+        }
         return true;
     }
     if(cdb[0]==0xF3) {
@@ -98,6 +102,13 @@ int main() {
     measured.LiteOnScanStop();
     check(!measured.LiteOnScanPoll(c1,c2,cu,lba,done,&sectors,&valid) && !valid,
         "Stopped sessions cannot return stale observations");
+    measured.LiteOnScanStart(0,74);
+    fake[&measured].distinctCounterBytes=true;
+    check(measured.LiteOnScanPoll(c1,c2,cu,lba,done,&sectors,&valid) && valid &&
+        c1==0x0123 && c2==0x0456 && cu==0x78,
+        "DF 82 05 preserves both bytes of C2 separately from C1 and CU (QPxTool field map)");
+    fake[&measured].distinctCounterBytes=false;
+    measured.LiteOnScanStop();
 
     ScsiDrive counter; fake[&counter].oldSupported=false;
     check(counter.SupportsLiteOnScan() && !counter.LiteOnScanMeasuresCu(),

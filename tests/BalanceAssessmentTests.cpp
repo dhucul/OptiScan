@@ -2,10 +2,26 @@
 #include "../DiscBalanceAssessment.h"
 #include <iostream>
 #include <limits>
+#include <sstream>
 
 int RunBalanceAssessmentTests() {
     int failed=0;
     auto check=[&](bool ok,const char* label) { std::cout<<(ok?"[PASS] ":"[FAIL] ")<<label<<'\n'; if(!ok) ++failed; };
+    Diagnostics::BalanceReadRepeats repeats;
+    repeats.Record(true,90,12);
+    repeats.Record(true,10,0);
+    repeats.Record(true,30,6);
+    check(repeats.bestMs==10 && repeats.worstMs==90 && repeats.c2Total==18 &&
+        repeats.c2PositiveReads==2 && repeats.successfulReads==3 && repeats.AverageC2()==6,
+        "26: a faster clean repeat cannot erase C2 from slower successful reads");
+    repeats.Record(false,1,999);
+    check(repeats.successfulReads==3 && repeats.c2Total==18 && repeats.AverageC2()==6 && repeats.bestMs==10,
+        "26: failed transfers do not dilute C2 averages or supply valid counters/timing");
+    Diagnostics::BalanceReadRepeats reversed;
+    reversed.Record(true,30,6);reversed.Record(true,10,0);reversed.Record(true,90,12);
+    check(reversed.c2Total==repeats.c2Total && reversed.AverageC2()==repeats.AverageC2() &&
+        reversed.bestMs==repeats.bestMs,
+        "26: repeat ordering affects neither retained C2 observations nor fastest timing");
     auto clean=[] {
         std::vector<Diagnostics::BalanceSpeedSample> rows;
         for (int speed : {4,8,16,24,32,40}) {
@@ -22,6 +38,16 @@ int RunBalanceAssessmentTests() {
     auto assess=[](const auto& rows) {return Diagnostics::AssessBalance(rows,50,25,false,false);};
     auto rows=clean();
     auto full=assess(rows);
+    Diagnostics::BalanceReadEvidence c2Evidence;
+    c2Evidence.readCdC2Total=repeats.c2Total;
+    auto observedC2=Diagnostics::AssessBalance(rows,50,25,false,false,c2Evidence);
+    std::ostringstream c2Report;
+    Diagnostics::PrintBalanceRipRecommendation(c2Report,observedC2);
+    check(observedC2.available && observedC2.score==full.score && !observedC2.recommendationAvailable &&
+        observedC2.suggestedSpeed==0 &&
+        Diagnostics::BalanceExtractionGuidance(observedC2).find("READ CD C2 observed")!=std::string::npos &&
+        c2Report.str().find("successful reads: 18")!=std::string::npos,
+        "26: positive repeat/re-test C2 survives a perfect mechanical score in extraction advice");
     check(full.available && !full.partial && full.score==100 && full.haveFullScore && full.suggestedSpeed==40,
         "26: a complete verified sweep retains its full range and recommendation");
     for (size_t i=2;i<rows.size();++i) rows[i].actualSpeed=0;
@@ -77,10 +103,10 @@ int RunBalanceAssessmentTests() {
     rows=clean();
     const int clamped[]={4,4,8,8,16,16};
     for(size_t i=0;i<rows.size();++i) { rows[i].actualSpeed=clamped[i];rows[i].readTimeMs=160.0/clamped[i]; }
-    auto repeats=assess(rows);
-    check(repeats.available && repeats.score==100 && repeats.suggestedSpeed==16 && !repeats.haveFullScore &&
-        std::all_of(repeats.timingPenalty.begin(),repeats.timingPenalty.end(),[](int p){return p==0;}) &&
-        std::all_of(repeats.primaryCompared.begin(),repeats.primaryCompared.end(),[](bool b){return b;}),
+    auto speedRepeats=assess(rows);
+    check(speedRepeats.available && speedRepeats.score==100 && speedRepeats.suggestedSpeed==16 && !speedRepeats.haveFullScore &&
+        std::all_of(speedRepeats.timingPenalty.begin(),speedRepeats.timingPenalty.end(),[](int p){return p==0;}) &&
+        std::all_of(speedRepeats.primaryCompared.begin(),speedRepeats.primaryCompared.end(),[](bool b){return b;}),
         "26: equivalent same-speed repeats do not invent extra steps or higher recommendations");
     for(auto& r:rows) r.actualSpeed=16;
     check(!assess(rows).available, "26: repeated requests at one actual speed stay unmeasured");
