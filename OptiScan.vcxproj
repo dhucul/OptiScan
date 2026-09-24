@@ -152,6 +152,7 @@
     <ClInclude Include="DiscBalanceAssessment.h" />
     <ClInclude Include="HardwareSweep.h" />
     <ClInclude Include="ScanTelemetry.h" />
+    <ClInclude Include="QualityScanPreparation.h" />
     <ClInclude Include="DiscRotQuality.h" />
     <ClInclude Include="DiscRotReadConsistency.h" />
     <ClInclude Include="ScsiDrive.h" />

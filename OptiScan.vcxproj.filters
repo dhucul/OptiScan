@@ -79,6 +79,7 @@
     <ClInclude Include="ScanResults.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="DiagnosticAssessment.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="DiscBalanceAssessment.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="QualityScanPreparation.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="ScanTelemetry.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="HardwareSweep.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="DiscRotQuality.h"><Filter>Header Files</Filter></ClInclude>

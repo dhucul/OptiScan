@@ -183,7 +183,7 @@ int RunHardwareSweepTests() {
         "Unconfirmed cleanup cannot publish rated observations or permit a following pass");
     const auto ranges=DiscRot::NormalizeAudioRanges({{0,1999},{4000,7999}});
     auto selected=Diagnostics::HardwareSweepRange(ranges,3000);
-    check(selected && selected->first==4000 && selected->second==5124,
+    check(selected && selected->first==4800 && selected->second==5924,
         "Hardware sweep windows remain in contiguous audio across mixed-mode gaps");
     check(!Diagnostics::HardwareSweepRange({{0,999}},750),
         "Short audio cannot fabricate a complete 15-second hardware window");

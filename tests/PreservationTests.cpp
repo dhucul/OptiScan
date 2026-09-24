@@ -25,6 +25,7 @@ int RunBalanceAssessmentTests();
 int RunHardwareSweepTests();
 int RunSpeedReportTests();
 int RunScanConsistencyTests();
+int RunScanPreparationTests();
 
 namespace {
 
@@ -277,6 +278,10 @@ int main() {
 		"Q-Check does not accept unknown coverage as a clean verification pass");
 	qcheckStability.graphSectors = 75;
 	qcheckStability.c2RecheckSamples.front().measuredSectors = 75;
+	Check(ClassifyQCheckC2Stability(qcheckStability) ==
+		QCheckC2Stability::RecheckUnverified,
+		"Full coverage without established cache eviction cannot establish a clean recheck");
+	qcheckStability.recheckStartupCacheCleared = true;
 	Check(ClassifyQCheckC2Stability(qcheckStability) ==
 		QCheckC2Stability::Intermittent,
 		"Q-Check treats a clean verification pass as intermittent");
@@ -928,6 +933,7 @@ int main() {
     failures += RunHardwareSweepTests();
     failures += RunSpeedReportTests();
     failures += RunScanConsistencyTests();
+    failures += RunScanPreparationTests();
 
 	manifestInput.close();
 	std::error_code cleanupError;

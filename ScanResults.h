@@ -7,6 +7,7 @@
 #include "AnalysisTypes.h"
 #include "ScanQualityRating.h"
 #include "ScanTelemetry.h"
+#include "QualityScanPreparation.h"
 #include <windows.h>
 #include <vector>
 #include <string>
@@ -73,6 +74,8 @@ struct QCheckResult {
 	int requestedSpeed = 0;
 	Diagnostics::HardwareSpeedEvidence speed, recheckSpeed;
 	Diagnostics::ScanThroughput throughput, recheckThroughput;
+	Diagnostics::QualityStartupSummary startup, recheckStartup;
+	bool startupCacheCleared=false, recheckStartupCacheCleared=false;
 	bool supported = false;                    // True if a scan method was available
 	std::string scanMethod;                    // E.g. "Plextor Q-Check (0xE9/0xEB)"
 	DWORD totalSectors = 0;                    // Requested scan range length
@@ -175,7 +178,8 @@ enum class QCheckC2Stability {
 	Intermittent,
 	Reproducible,
 	Unrecoverable,
-	RecheckIncomplete
+	RecheckIncomplete,
+	RecheckUnverified
 };
 
 inline bool HasCompleteQCheckCoverage(const std::vector<QCheckSample>& samples,
@@ -193,8 +197,8 @@ inline bool HasCompleteQCheckCoverage(const std::vector<QCheckSample>& samples,
 
 inline QCheckC2Stability ClassifyQCheckC2Stability(const QCheckResult& result) {
 	// Positive evidence remains valid even if the verification pass was
-	// interrupted. Only a clean verdict requires a completed pass with at
-	// least one usable sample.
+	// interrupted or cache eviction was unverified. A zero-error recheck
+	// establishes intermittency only with full coverage and fresh reads.
 	if (result.c2RecheckTotalCU > 0)
 		return QCheckC2Stability::Unrecoverable;
 	if (result.c2RecheckTotal > 0)
@@ -202,7 +206,8 @@ inline QCheckC2Stability ClassifyQCheckC2Stability(const QCheckResult& result) {
 	if (result.c2RecheckCompleted && HasCompleteQCheckCoverage(result.c2RecheckSamples,
 		result.graphStartLba, result.graphSectors) &&
 		result.totalC2 > 0)
-		return QCheckC2Stability::Intermittent;
+		return result.recheckStartupCacheCleared ? QCheckC2Stability::Intermittent
+			: QCheckC2Stability::RecheckUnverified;
 	if (result.totalC2 > 0)
 		return QCheckC2Stability::RecheckIncomplete;
 	return QCheckC2Stability::NoActivity;
@@ -496,6 +501,8 @@ struct DiscRotAnalysis {
 	int qualityRequestedSpeed = 0;
 	Diagnostics::HardwareSpeedEvidence qualitySpeed;
 	Diagnostics::ScanThroughput qualityThroughput;
+	Diagnostics::QualityStartupSummary qualityStartup;
+	bool qualityStartupCacheCleared=false;
 	std::vector<QCheckSample> qualitySamples;
 	int totalReadFailures = 0;                  // Phase 1 primary reads still failed after retry
 	int recoveredReadFailures = 0;             // Initial Phase 1 failure, then successful retry

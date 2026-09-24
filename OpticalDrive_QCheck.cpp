@@ -264,6 +264,13 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 			std::cout << "Requested scan speed: " << scanSpeed << "x\n";
 	}
 
+    const auto scanAudio=Diagnostics::QualityAudioRanges(disc);
+    const int scanBufferKB=Diagnostics::QualityScanBufferKB(m_drive);
+    result.startup.Reset(firstLBA,(std::min)(Diagnostics::kQualityStartupSectors,result.totalSectors));
+    result.startupCacheCleared=Diagnostics::PrepareQualityScanCache(m_drive,scanAudio,
+        firstLBA,firstLBA+result.startup.plannedSectors-1,scanBufferKB,scanCancelled);
+    if(scanCancelled())return false;
+
 	// Send the vendor-specific "start scan" command.  The drive begins
 	// scanning immediately and will report results via polling.
 	QualityScanSession primarySession([&]() {
@@ -431,6 +438,7 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 			sample.c2 = c2;
 		sample.cu = cu;     // Uncorrectable errors (both correction stages failed)
 		result.samples.push_back(sample);
+        result.startup.Record(sample.lba,sample.measuredSectors,sample.c1,usePioneer?sample.pioneerE22:sample.c2,sample.cu);
 
 		// Running totals for summary statistics.
 		result.totalC1 += sample.c1;
@@ -595,6 +603,10 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 		std::this_thread::sleep_for(std::chrono::milliseconds(1000));
         if (scanCancelled()) return cancelPrimaryScan();
 
+        result.recheckStartup.Reset(firstLBA,result.startup.plannedSectors);
+        result.recheckStartupCacheCleared=Diagnostics::PrepareQualityScanCache(m_drive,scanAudio,
+            firstLBA,firstLBA+result.recheckStartup.plannedSectors-1,scanBufferKB,scanCancelled);
+        if(scanCancelled())return cancelPrimaryScan();
 		// Start a second complete scan over the same LBA range.
 		QualityScanSession recheckSession([&]() {
 			return usePlextor ? m_drive.PlextorQCheckStop() : m_drive.LiteOnScanStop();
@@ -697,6 +709,7 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 				recheckSample.c2 = rc2;
 				recheckSample.cu = rcu;
 				result.c2RecheckSamples.push_back(recheckSample);
+                result.recheckStartup.Record(rLBA,recheckSectors,rc1,rc2,rcu);
 				result.c2RecheckTotalC1 += rc1;
 				result.c2RecheckTotal += rc2;
 				result.c2RecheckTotalCU += rcu;
@@ -760,13 +773,15 @@ bool OpticalDrive::RunQCheckScan(const DiscInfo& disc, QCheckResult& result, int
 			if (recheckDone && !recheckFailed && coverageVerified) {
 				result.c2RecheckCompleted = true;
 				if (result.c2RecheckTotal == 0 && result.c2RecheckTotalCU == 0) {
-					// The activity did not reproduce. Preserve the primary-pass
-					// evidence and let the report flag intermittent instability.
 					std::cout << (result.cuMeasured
 						? "\n  Verification pass: no C2 or CU activity reported.\n"
 						: "\n  Verification pass: no C2 activity reported; CU was NOT MEASURED.\n");
-					std::cout << "  Primary-pass C2 activity (" << result.totalC2
-						<< ") retained and flagged as intermittent.\n";
+					if (ClassifyQCheckC2Stability(result) == QCheckC2Stability::Intermittent)
+						std::cout << "  Primary-pass C2 activity (" << result.totalC2
+							<< ") retained and flagged as intermittent.\n";
+					else
+						std::cout << "  Cache eviction was not established; zero counters cannot establish a clean recheck.\n"
+							<< "  Primary-pass C2 activity (" << result.totalC2 << ") retained; repeatability remains unverified.\n";
 				}
 				else if (result.c2RecheckTotalCU > 0) {
 					std::cout << "\n  Verification pass ESCALATED: "
@@ -1371,9 +1386,14 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
     std::cout << "  Disc layout: " << result.discIdentity << "\n";
     std::cout << "  Requested speed: " << (result.requestedSpeed>0 ? std::to_string(result.requestedSpeed)+"x" : "maximum") << "\n";
     Diagnostics::PrintScanTelemetry(std::cout,result.speed,result.throughput);
+    std::cout << "  Sample grid: 75 sectors, origin LBA " << result.graphStartLba << "\n"
+        << "  Startup cache preparation: " << (result.startupCacheCleared?"completed before scan start":"UNVERIFIED") << "\n";
+    Diagnostics::PrintQualityStartup(std::cout,result.startup,pioneerScan?"E22":"C2",result.cuMeasured,true);
     if (result.c2RecheckAttempted) {
         std::cout << "  Verification pass speed measurements:\n";
         Diagnostics::PrintScanTelemetry(std::cout,result.recheckSpeed,result.recheckThroughput,"    ");
+        std::cout << "    Startup cache preparation: " << (result.recheckStartupCacheCleared?"completed":"UNVERIFIED") << "\n";
+        Diagnostics::PrintQualityStartup(std::cout,result.recheckStartup,"C2",result.cuMeasured,true,"    ");
     }
 	std::cout << "  Peak confidence:   "
 		<< ScanQuality::ConfidenceLabel(result.peaks.PeakConfidence()) << "\n";
@@ -1477,6 +1497,9 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 			std::cout << "  C2 Assessment: POOR - C2 activity reproduced on the verification pass\n";
 		else if (c2Stability == QCheckC2Stability::RecheckIncomplete)
 			std::cout << "  C2 Assessment: CAUTION - C2 observed; verification pass incomplete\n";
+		else if (c2Stability == QCheckC2Stability::RecheckUnverified)
+			std::cout << "  C2 Assessment: CAUTION - C2 observed; recheck freshness unverified\n"
+				<< "  Cache eviction was not established; zero counters cannot establish a clean recheck.\n";
 		else if (result.c1Unverified || result.samples.empty())
 			std::cout << "  C2 Assessment: UNVERIFIED - counter reporting was not confirmed\n";
 		else if (result.totalC2 == 0)
@@ -1845,6 +1868,11 @@ void OpticalDrive::PrintQCheckReport(const QCheckResult& result) {
 				Console::Theme::YellowB);
 			std::cout << "C2 ACTIVITY OBSERVED; RECHECK INCOMPLETE";
 		}
+		else if (c2Stability == QCheckC2Stability::RecheckUnverified) {
+			Console::SetColorRGB(Console::Theme::YellowR, Console::Theme::YellowG,
+				Console::Theme::YellowB);
+			std::cout << "C2 ACTIVITY OBSERVED; RECHECK FRESHNESS UNVERIFIED";
+		}
 		else {
 			Console::SetColorRGB(Console::Theme::GreenR, Console::Theme::GreenG,
 				Console::Theme::GreenB);
@@ -1999,9 +2027,14 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
     log << "# Disc layout: " << result.discIdentity << "\n";
     log << "# Requested speed: " << (result.requestedSpeed>0 ? std::to_string(result.requestedSpeed)+"x" : "maximum") << "\n";
     Diagnostics::PrintScanTelemetry(log,result.speed,result.throughput,"# ");
+    log << "# Sample grid: 75 sectors, origin LBA " << result.graphStartLba << "\n"
+        << "# Startup cache preparation: " << (result.startupCacheCleared?"completed before scan start":"UNVERIFIED") << "\n";
+    Diagnostics::PrintQualityStartup(log,result.startup,pioneerScan?"E22":"C2",result.cuMeasured,true,"# ");
     if (result.c2RecheckAttempted) {
         log << "# Verification pass speed measurements:\n";
         Diagnostics::PrintScanTelemetry(log,result.recheckSpeed,result.recheckThroughput,"# ");
+        log << "# Verification startup cache preparation: " << (result.recheckStartupCacheCleared?"completed":"UNVERIFIED") << "\n";
+        Diagnostics::PrintQualityStartup(log,result.recheckStartup,"C2",result.cuMeasured,true,"# ");
     }
 	log << "#\n";
 	log << "# --- C2 Statistics ---\n";
@@ -2078,6 +2111,9 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 			log << "REPRODUCIBLE C2 ACTIVITY\n";
 		else if (c2Stability == QCheckC2Stability::RecheckIncomplete)
 			log << "C2 ACTIVITY OBSERVED; RECHECK INCOMPLETE\n";
+		else if (c2Stability == QCheckC2Stability::RecheckUnverified)
+			log << "C2 ACTIVITY OBSERVED; RECHECK FRESHNESS UNVERIFIED\n"
+				<< "# Cache eviction was not established; zero counters cannot establish a clean recheck.\n";
 		else
 			log << "NO C2 ACTIVITY OBSERVED\n";
 	}
@@ -2149,9 +2185,9 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 	log << "# ==============================\n";
 	log << (pioneerScan ? "# Per-Sample Pioneer C1/E22 Counts\n" : result.cuMeasured ? "# Per-Sample C1/C2/CU Counts\n" : "# Per-Sample C1/C2 Counts (CU not measured)\n");
 	log << "# ==============================\n";
-	log << (pioneerScan ? "Time,Second,LBA,C1,PioneerE22,C1CoveredSectors,C1PerSecond,ElapsedMilliseconds\n"
-		: result.cuMeasured ? "Pass,Time,Second,LBA,C1,C2,CU,C1CoveredSectors,C1PerSecond,ElapsedMilliseconds\n"
-		: "Pass,Time,Second,LBA,C1,C2,C1CoveredSectors,C1PerSecond,ElapsedMilliseconds\n");
+	log << (pioneerScan ? "Time,Second,LBA,C1,PioneerE22,C1CoveredSectors,C1PerSecond,ElapsedMilliseconds,Region\n"
+		: result.cuMeasured ? "Pass,Time,Second,LBA,C1,C2,CU,C1CoveredSectors,C1PerSecond,ElapsedMilliseconds,Region\n"
+		: "Pass,Time,Second,LBA,C1,C2,C1CoveredSectors,C1PerSecond,ElapsedMilliseconds,Region\n");
 
 	for (size_t i = 0; i < result.samples.size(); i++) {
 		const auto& s = result.samples[i];
@@ -2177,7 +2213,7 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 		log << ",";
 		if (result.c1.RateAvailable() && s.measuredSectors > 0)
 			log << std::fixed << std::setprecision(4) << s.c1 * 75.0 / s.measuredSectors;
-		log << "," << s.elapsedMs << "\n";
+		log << "," << s.elapsedMs << "," << (result.startup.Contains(s.lba)?"Startup":"Main") << "\n";
 	}
 
 	if (!pioneerScan) {
@@ -2195,7 +2231,7 @@ bool OpticalDrive::SaveQCheckLog(const QCheckResult& result, const std::wstring&
 			if (s.measuredSectors > 0) log << s.measuredSectors;
 			log << ",";
 			if (s.measuredSectors > 0) log << s.c1 * 75.0 / s.measuredSectors;
-			log << "," << s.elapsedMs << "\n";
+			log << "," << s.elapsedMs << "," << (result.recheckStartup.Contains(s.lba)?"Startup":"Main") << "\n";
 		}
 	}
 

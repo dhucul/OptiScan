@@ -11,21 +11,28 @@
 namespace Diagnostics {
 inline constexpr int kHardwareSweepSamples = 15;
 
-// Select the same bounded, contiguous audio window for every speed. Never
-// extend cache-eviction reads into that window or across mixed-mode gaps.
+// Align targets and the continuous ten-second lead-in to the same 75-sector
+// grid as Q-Check/Disc Rot, anchored at the first audio LBA. Never cross a gap.
 inline std::optional<std::pair<DWORD,DWORD>> HardwareSweepRange(
     const DiscRot::AudioRanges& ranges, DWORD preferredStart) {
-    constexpr std::uint64_t sectors = kHardwareSweepSamples * 75;
+    constexpr std::uint64_t sectors=kHardwareSweepSamples*kQualityIntervalSectors;
     std::optional<std::pair<DWORD,DWORD>> best;
-    std::uint64_t bestDistance = UINT64_MAX;
-    for (const auto& range : ranges) {
-        if (range.second < range.first || std::uint64_t{range.second}-range.first+1 < sectors) continue;
-        const DWORD latest = static_cast<DWORD>(std::uint64_t{range.second}+1-sectors);
-        const DWORD start = std::clamp(preferredStart, range.first, latest);
-        const std::uint64_t distance = start > preferredStart ? start-preferredStart : preferredStart-start;
-        if (!best || distance < bestDistance) {
-            best = {{start, static_cast<DWORD>(std::uint64_t{start}+sectors-1)}};
-            bestDistance = distance;
+    std::uint64_t origin=UINT64_MAX,bestDistance=UINT64_MAX;
+    for(const auto& range:ranges) if(range.second>=range.first) origin=(std::min)(origin,std::uint64_t{range.first});
+    if(origin==UINT64_MAX)return best;
+    for(const auto& range:ranges) {
+        if(range.second<range.first || std::uint64_t{range.second}-range.first+1<sectors+kQualityStartupSectors)continue;
+        const auto minimum=std::uint64_t{range.first}+kQualityStartupSectors;
+        const auto maximum=std::uint64_t{range.second}+1-sectors;
+        const auto first=origin+((minimum-origin+74)/75)*75;
+        const auto last=origin+((maximum-origin)/75)*75;
+        if(first>last)continue;
+        const auto wanted=std::clamp(std::uint64_t{preferredStart},first,last);
+        const auto target=origin+((wanted-origin)/75)*75;
+        const auto distance=target>preferredStart ? target-preferredStart : preferredStart-target;
+        if(!best || distance<bestDistance) {
+            best={{static_cast<DWORD>(target),static_cast<DWORD>(target+sectors-1)}};
+            bestDistance=distance;
         }
     }
     return best;
@@ -39,9 +46,11 @@ struct HardwareSweepSample {
 
 struct HardwareSweepPass {
     bool attempted = false, complete = false, cancelled = false, cleanupFailed = false;
-    bool cacheCleared = false;
+    bool cacheCleared = false, cuMeasured = true;
     HardwareSpeedEvidence speed;
-    ScanThroughput throughput;
+    ScanThroughput throughput, targetThroughput;
+    QualityStartupSummary startup;
+    DWORD targetFirst=0,targetLast=0;
     std::vector<HardwareSweepSample> observations;
     std::vector<std::uint64_t> elapsedMs;
     std::vector<ScanQuality::C1Interval> intervals;
@@ -49,7 +58,7 @@ struct HardwareSweepPass {
     long long secondStageTotal = 0, cuTotal = 0;
     std::string limitation = "not measured";
     bool Qualified() const { return complete && c1.RateAvailable(); }
-    bool HasCounterActivity() const { return c1.total > 0 || secondStageTotal > 0 || cuTotal > 0; }
+    bool HasCounterActivity() const { return c1.total > 0 || secondStageTotal > 0 || cuTotal > 0 || startup.HasActivity(); }
     int ActualSpeed() const { return speed.ActualSpeed(); }
 };
 
@@ -60,31 +69,41 @@ struct HardwareSweepPass {
 template<class Evict, class Start, class Poll, class Stop, class ReadSpeed, class Cancelled, class Now>
 HardwareSweepPass MeasureHardwareSweep(DWORD first, DWORD last, Evict evict,
     Start start, Poll poll, Stop stop, ReadSpeed readSpeed, Cancelled cancelled, Now nowMs,
-    std::function<void(const HardwareSweepPass&)> progressUpdate = {}) {
+    std::function<void(const HardwareSweepPass&)> progressUpdate = {}, DWORD startupSectors=0, bool cuMeasured=true) {
     HardwareSweepPass result;
+    result.targetFirst=first;result.targetLast=last;result.cuMeasured=cuMeasured;
+    if(last<first || std::uint64_t{last}-first+1!=kHardwareSweepSamples*kQualityIntervalSectors ||
+        startupSectors>first || startupSectors%75!=0) {
+        result.limitation="invalid scan window or startup length";return result;
+    }
+    const DWORD scanFirst=first-startupSectors;
+    result.startup.Reset(scanFirst,startupSectors);
+    const size_t plannedSamples=kHardwareSweepSamples+startupSectors/75;
     if (cancelled()) { result.cancelled = true; result.limitation = "cancelled"; return result; }
     result.cacheCleared = evict();
     if (cancelled()) { result.cancelled = true; result.limitation = "cancelled during cache eviction"; return result; }
     result.attempted = true;
     QualityScanSession session(stop);
-    if (!start(first,last)) {
+    if (!start(scanFirst,last)) {
         result.cleanupFailed = !session.Stop();
         result.limitation = result.cleanupFailed ? "scan cleanup failed" : "scan could not start";
         return result;
     }
     auto captureSpeed = [&] { WORD kb=0; const bool ok=readSpeed(kb); result.speed.Record(ok,kb); };
     DWORD progress=DWORD(-1);
-    QualitySampleSequence sequence(first,last);
+    QualitySampleSequence sequence(scanFirst,last);
     result.throughput.Begin(nowMs());
     auto lastProgress = nowMs();
+    auto previousObservationMs=result.throughput.startMs;
     bool failed=false;
     if (!cancelled()) captureSpeed();
-    while (result.intervals.size() < kHardwareSweepSamples) {
+    while (result.observations.size() < plannedSamples) {
         if (cancelled()) { result.cancelled=true; break; }
         HardwareSweepSample sample;
         if (!poll(sample)) { failed=true; result.limitation="hardware poll failed"; break; }
         if (cancelled()) { result.cancelled=true; break; }
         captureSpeed();
+        if (cancelled()) {result.cancelled=true;break;}
         const auto now=nowMs();
         if (progress==DWORD(-1) || sample.lba>progress) { progress=sample.lba;lastProgress=now; }
         else if (now-lastProgress >= 30000) { failed=true;result.limitation="scan stalled";break; }
@@ -97,27 +116,40 @@ HardwareSweepPass MeasureHardwareSweep(DWORD first, DWORD last, Evict evict,
         result.throughput.Observe(sample.sectors,now);
         result.observations.push_back(sample);
         result.elapsedMs.push_back(now-result.throughput.startMs);
-        result.intervals.push_back({sample.lba,sample.sectors,sample.c1});
-        result.secondStageTotal += sample.secondStage;
-        result.cuTotal += sample.cu;
+        if(result.startup.Contains(sample.lba))
+            result.startup.Record(sample.lba,sample.sectors,sample.c1,sample.secondStage,sample.cu);
+        else {
+            if(!result.targetThroughput.started) {
+                result.targetThroughput.Begin(previousObservationMs);
+                if(!result.startup.Complete())result.targetThroughput.coverageKnown=false;
+            }
+            result.targetThroughput.Observe(sample.sectors,now);
+            result.intervals.push_back({sample.lba,sample.sectors,sample.c1});
+            result.secondStageTotal += sample.secondStage;
+            result.cuTotal += sample.cu;
+        }
+        previousObservationMs=now;
         if (progressUpdate) progressUpdate(result);
         if (sample.done) break;
     }
-    result.throughput.Finish(nowMs());
+    const auto finishedMs=nowMs();
+    result.throughput.Finish(finishedMs);
+    result.targetThroughput.Finish(finishedMs);
     result.cleanupFailed = !session.Stop();
     result.cancelled = result.cancelled || cancelled();
     result.complete = !failed && !result.cancelled && !result.cleanupFailed &&
-        result.intervals.size() >= kHardwareSweepSamples;
+        result.intervals.size() == kHardwareSweepSamples && result.observations.size()==plannedSamples;
     result.c1 = ScanQuality::SummarizeC1(result.intervals, false);
     // Zero-only counters can be genuine, but cannot establish decoder activity.
     // Keep raw zeros visible without awarding an EXCELLENT measurement band.
     const bool counterActivity=result.HasCounterActivity();
-    const bool trusted=result.complete && result.cacheCleared && result.speed.Stable() && counterActivity;
+    const bool trusted=result.complete && result.startup.Complete() && result.cacheCleared && result.speed.Stable() && counterActivity;
     result.c1 = ScanQuality::SummarizeC1(result.intervals, trusted);
     if (result.cleanupFailed) result.limitation="scan cleanup failed";
     else if (result.cancelled) result.limitation="cancelled";
     else if (!failed) {
         if (!result.complete) result.limitation="incomplete sample coverage";
+        else if (!result.startup.Complete()) result.limitation="startup duration or coverage unverified";
         else if (!result.cacheCleared) result.limitation="cache eviction could not be established";
         else if (!result.speed.Stable()) result.limitation="hardware-phase speed missing or changed";
         else if (!counterActivity) result.limitation="zero-only counters; decoder activity unverified";
@@ -137,7 +169,11 @@ inline void PrintHardwareSweepEvidence(std::ostream& out, const HardwareSweepPas
     if (!pass.Qualified()) out<<indent<<"NOT RATED - "<<pass.limitation<<'\n';
     else if (pass.ActualSpeed()!=timingSpeed)
         out<<indent<<"Excluded from speed comparison: hardware and timing phases ran at different/unverified speeds.\n";
-    PrintScanTelemetry(out,pass.speed,pass.throughput,indent);
+    if(pass.startup.plannedSectors>0) {
+        PrintQualityStartup(out,pass.startup,secondStage,pass.cuMeasured,false,indent);
+        out<<indent<<"Target observations: LBAs "<<pass.targetFirst<<'-'<<pass.targetLast<<".\n";
+    }
+    PrintScanTelemetry(out,pass.speed,pass.startup.plannedSectors>0?pass.targetThroughput:pass.throughput,indent);
     ScanQuality::PrintC1Summary(out,pass.c1,0,indent);
     out<<indent<<secondStage<<" observed total: ";
     if (pass.intervals.empty()) out<<"unavailable (no observations)";
@@ -207,7 +243,7 @@ inline void PrintHardwareSweepGroups(std::ostream& out,
             out<<"    These are repeat reads at the same approximate reported speed.\n"
                 <<"    Differences within this group do not establish a speed effect.\n";
             bool excellent=false,good=false,positive=false,zero=false;
-            out<<"    C1 by pass: ";
+            out<<"    Target C1 by pass: ";
             for (size_t i=0;i<group.rows.size();++i) {
                 const auto& pass=rows[attempted[group.rows[i]]].pass;
                 if (i>0) out<<"; ";
@@ -220,7 +256,7 @@ inline void PrintHardwareSweepGroups(std::ostream& out,
                 }
                 else out<<"NOT RATED";
             }
-            out<<"\n    "<<secondStage<<" raw totals by pass: ";
+            out<<"\n    Target "<<secondStage<<" raw totals by pass: ";
             for (size_t i=0;i<group.rows.size();++i) {
                 const auto& pass=rows[attempted[group.rows[i]]].pass;
                 if (i>0) out<<"; ";

@@ -159,6 +159,12 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 
 		m_drive.SetSpeed(scanSpeed);
 
+        c1Result.startup.Reset(firstLBA,(std::min)(Diagnostics::kQualityStartupSectors,c1Result.totalSectors));
+        c1Result.startupCacheCleared=Diagnostics::PrepareQualityScanCache(m_drive,audioRanges,
+            firstLBA,firstLBA+c1Result.startup.plannedSectors-1,cacheCaps.bufferSizeKB,cancelled);
+        result.qualityStartup=c1Result.startup;
+        result.qualityStartupCacheCleared=c1Result.startupCacheCleared;
+        if(cancelled())return false;
 		QualityScanSession c1Session([&]() {
 			return usePlextor ? m_drive.PlextorQCheckStop()
 				: usePioneer ? m_drive.PioneerScanStop() : m_drive.LiteOnScanStop();
@@ -271,6 +277,7 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 					sample.c2 = c2;
 				sample.cu = cu;
 				c1Result.samples.push_back(sample);
+                c1Result.startup.Record(sample.lba,sample.measuredSectors,sample.c1,usePioneer?sample.pioneerE22:sample.c2,sample.cu);
 				c1Result.totalC1 += sample.c1;
 				c1Result.totalC2 += sample.c2;
 				c1Result.totalCU += sample.cu;
@@ -304,6 +311,7 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 			result.qualitySpeed=c1Result.speed;
 			result.qualityThroughput=c1Result.throughput;
 			result.qualitySamples=c1Result.samples;
+            result.qualityStartup=c1Result.startup;
 			c1Progress.Finish(!c1Cancelled && !c1Failed,
 				static_cast<int>(c1Result.totalSectors));
 
@@ -318,32 +326,28 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 				std::cout << "*** Disc rot scan cancelled ***\n";
 				return false;
 			}
-			DiscRot::RecordQualityEvidence(c1Result, !c1Failed, result);
 			if (c1Failed) {
 				std::cout << "  C1 quality scan " << c1FailureReason
-					<< "; partial C1 rates discarded, positive C2/CU evidence retained.\n";
-				c1Result.samples.clear();
+					<< "; partial raw counts retained, C1 rates and ratings withheld.\n";
 			}
 
 			RecalculateQCheckTotals(c1Result);
 
-			hasC1 = !c1Result.samples.empty() && (c1Result.totalC1 > 0 ||
+			hasC1 = !c1Failed && !c1Result.samples.empty() && (c1Result.totalC1 > 0 ||
 				c1Result.totalC2 > 0 || c1Result.totalCU > 0 || c1Result.totalPioneerE22 > 0);
 			c1Result.c1Unverified = !hasC1;
-			if (!hasC1 && !c1Result.samples.empty())
+			DiscRot::RecordQualityEvidence(c1Result, !c1Failed, result);
+			if (!c1Failed && !hasC1 && !c1Result.samples.empty())
 				std::cout << "  C1 NOT RATED: all counters are zero; measurement unverified.\n";
 
 			// Same sustained-level statistics the quality scan computes, from
 			// the same helper, so both scans rate this disc identically. Only
-			// published when a usable series exists — otherwise the report
-			// would show a scan speed and confidence for a scan that produced
-			// no samples.
+			// used for pattern analysis when the phase completed with activity.
+			// RecordQualityEvidence retains raw totals separately for partial phases.
 			if (hasC1) {
 				ComputeScanPeakContext(c1Result.samples, c1Result.speed.ActualSpeed(), c1Result.peaks);
 				ComputeTimedC1(c1Result);
 				result.peaks = c1Result.peaks;
-				result.c1 = c1Result.c1;
-				result.c1RequestedSectors = c1Result.totalSectors;
 			}
 			if (hasC1)
 				std::cout << "\r  C1 scan complete: " << c1Result.samples.size()
@@ -827,6 +831,10 @@ void OpticalDrive::PrintDiscRotReport(const DiscRotAnalysis& analysis) {
 	std::cout << "  Disc layout: " << analysis.discIdentity << "\n";
 	std::cout << "  Phase 0 requested speed: " << (analysis.qualityRequestedSpeed>0 ? std::to_string(analysis.qualityRequestedSpeed)+"x" : "maximum") << "\n";
 	Diagnostics::PrintScanTelemetry(std::cout,analysis.qualitySpeed,analysis.qualityThroughput);
+    std::cout << "  Sample grid: 75 sectors, origin LBA " << analysis.qualityStartup.firstLba << "\n"
+        << "  Startup cache preparation: " << (analysis.qualityStartupCacheCleared?"completed before scan start":"UNVERIFIED") << "\n";
+    Diagnostics::PrintQualityStartup(std::cout,analysis.qualityStartup,
+        analysis.qualityScanMethod.find("Pioneer")!=std::string::npos?"E22":"C2",analysis.qualityCuMeasured,true);
 	ScanQuality::PrintC1Summary(std::cout, analysis.c1, analysis.c1RequestedSectors);
 	DiscRot::PrintReadEvidence(std::cout, analysis, "  ");
 
@@ -998,6 +1006,10 @@ bool OpticalDrive::SaveDiscRotLog(const DiscRotAnalysis& analysis, const std::ws
 	c1Summary << "# Disc layout: " << analysis.discIdentity << "\n";
 	c1Summary << "# Phase 0 requested speed: " << (analysis.qualityRequestedSpeed>0 ? std::to_string(analysis.qualityRequestedSpeed)+"x" : "maximum") << "\n";
 	Diagnostics::PrintScanTelemetry(c1Summary,analysis.qualitySpeed,analysis.qualityThroughput,"# ");
+    c1Summary << "# Sample grid: 75 sectors, origin LBA " << analysis.qualityStartup.firstLba << "\n"
+        << "# Startup cache preparation: " << (analysis.qualityStartupCacheCleared?"completed before scan start":"UNVERIFIED") << "\n";
+    Diagnostics::PrintQualityStartup(c1Summary,analysis.qualityStartup,
+        analysis.qualityScanMethod.find("Pioneer")!=std::string::npos?"E22":"C2",analysis.qualityCuMeasured,true,"# ");
 	ScanQuality::PrintC1Summary(c1Summary, analysis.c1, analysis.c1RequestedSectors, "# ");
 	DiscRot::PrintReadEvidence(c1Summary, analysis, "# ");
 	fputs(c1Summary.str().c_str(), f);
@@ -1068,14 +1080,14 @@ bool OpticalDrive::SaveDiscRotLog(const DiscRotAnalysis& analysis, const std::ws
 	}
 
     fprintf(f, "\n# Phase 0 raw observations; unknown duration is blank, never discarded.\n");
-    fprintf(f, "LBA,C1,C2,CU,PioneerE22,CoveredSectors,ElapsedMilliseconds\n");
+    fprintf(f, "LBA,C1,C2,CU,PioneerE22,CoveredSectors,ElapsedMilliseconds,Region\n");
     for (const auto& sample:analysis.qualitySamples) {
         fprintf(f,"%lu,%d,",sample.lba,sample.c1);
         if (analysis.qualityScanMethod.find("Pioneer")==std::string::npos) fprintf(f,"%d",sample.c2);
         fprintf(f,",");if(analysis.qualityCuMeasured) fprintf(f,"%d",sample.cu);
         fprintf(f,",");if(analysis.qualityScanMethod.find("Pioneer")!=std::string::npos) fprintf(f,"%d",sample.pioneerE22);
         fprintf(f,",");if(sample.measuredSectors>0) fprintf(f,"%lu",sample.measuredSectors);
-        fprintf(f,",%llu\n",static_cast<unsigned long long>(sample.elapsedMs));
+        fprintf(f,",%llu,%s\n",static_cast<unsigned long long>(sample.elapsedMs),analysis.qualityStartup.Contains(sample.lba)?"Startup":"Main");
     }
     const bool written=ferror(f)==0;
     return fclose(f)==0 && written;

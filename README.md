@@ -437,26 +437,26 @@ Read evidence then applies minimum warnings independently of these patterns:
 
 ## Disc Balance Check
 
-**Question answered:** *"Is this disc mechanically balanced, and what is the maximum safe rip speed?"*
+**Question answered:** *"How does this disc/drive combination read at different speed settings, and which tested setting is suggested for extraction?"*
 
-Unbalanced or warped CDs vibrate at high rotation speeds, causing read instability, jitter, and in severe cases, read failures. OptiScan sweeps the drive through six read speeds (4×, 8×, 16×, 24×, 32×, 40×) and measures four independent metrics at each speed:
+OptiScan requests six read speeds (4×, 8×, 16×, 24×, 32×, 40×), records the drive's reported speed and compares four related measurements. Timing variation or a plateau can reflect drive limits, command overhead or read difficulty; this test does not determine the physical cause or diagnose wobble.
 
 | Metric | What it measures |
 |---|---|
-| **Error rate** | C2 errors per sector (or hardware C1/C2 via LiteOn `0xDF` when available) |
+| **Error signal** | READ CD C2 from each sector's fastest successful read, plus separate timing/read-failure penalties; qualified hardware C1/C2 is preferred when comparable |
 | **Read time jitter** | Coefficient of variation of per-sector read times |
-| **Stability ratio** | Per-sector read time consistency (higher = more wobble) |
-| **Speed scaling** | Whether actual throughput scales linearly with requested speed |
+| **Stability ratio** | Spread between the fastest and slowest successful reads of the same sector |
+| **Speed scaling** | Whether sampled read times improve as the drive-reported speed increases |
 
 If measurement coverage and speed differentiation are sufficient, each metric produces a 0–100 sub-score. These are blended into a single **Balance Score**:
 
 | Score | Assessment | Recommendation |
 |---|---|---|
-| 75–100 | **GOOD** within the qualified measured range | Use the verified suggested maximum |
-| 50–74 | **FAIR** — some wobble detected | Reduce rip speed |
-| 0–49 | **POOR** — significant balance problem | Use 4×–8× maximum |
+| 75–100 | **GOOD** within the qualified measured range | Use the suggested setting and independently verify the rip |
+| 50–74 | **FAIR** — reduced timing performance or read stability | Use the suggested setting and independently verify the rip |
+| 0–49 | **POOR** — limited timing performance, read stability or coverage | Use secure recovery and independently verify the rip; a speed recommendation may be unavailable |
 
-The scan also reports a **suggested maximum rip speed**, bounded by the qualified measured speeds. Partial speed coverage is explicit, and unverified higher speeds are never treated as tested. This is a sampled advisory assessment, not a guarantee of extraction accuracy. On Pioneer drives, Disc Balance additionally runs the utility-compatible Quick CD Check at 0.05 mm radial intervals and reports genuine uncorrectable bytes separately. That sampled data-loss result never changes the mechanical balance score, and a failed or unsupported CD Check is shown as **unmeasured**, never as zero errors.
+The scan also reports a **suggested rip setting**, bounded by the qualified measured speeds. Partial speed coverage is explicit, and unverified higher speeds are never treated as tested. A reduced scaling score means that higher reported speeds did not deliver the expected read-time improvement, or that repeat timings varied. It does not establish wobble or faulty C2 reporting. READ CD C2 pointers and vendor hardware C1/C2 counters are separate measurements; zero observations alone do not verify counter reliability. This is a sampled advisory assessment, not a guarantee of extraction accuracy. On Pioneer drives, Disc Balance additionally runs the utility-compatible Quick CD Check at 0.05 mm radial intervals and reports genuine uncorrectable bytes separately. That sampled data-loss result never changes the mechanical balance score, and a failed or unsupported CD Check is shown as **unmeasured**, never as zero errors.
 
 The hardware C1/C2/E22 sweep repeats a fixed 15-second contiguous audio window. Before **every** speed pass, it reads more unique audio outside that entire window than the drive's reported cache capacity, then starts/resets the vendor scan. Drive-reported speed is captured after entering scan mode and throughout the hardware pass; the earlier timing-sweep speed is not reused as proof of hardware-scan speed. Only fresh, complete, timed observations with stable speed and observable counter activity receive a C1 rating. Failed/unknown eviction, missing/changing speed, and zero-only counters remain **NOT RATED**, with raw counts and the reason retained. A hardware rate contributes to the balance comparison only when its verified actual speed matches that timing row. Cache eviction depends on accurately reported buffer capacity and can increase scan time.
 
@@ -1130,6 +1130,12 @@ WAV ripping and all other operations work without it. Install it from the [FLAC 
 ---
 
 ## Reading scan speeds and comparing reports
+
+The hardware workflows use a common 75-sector sample grid anchored at the first audio LBA. Disc Balance rounds its target down to that grid within a contiguous audio range and reads **10 seconds of startup audio followed by the 15-second target**, without restarting between them. It requires room for both segments. Cache eviction protects the entire Balance startup-plus-target range; Q-Check and Disc Rot use the same eviction routine to prepare the initial startup segment before starting their full scans.
+
+Startup observations are explicitly identified and retained. Balance reports startup and target totals separately; startup C2 still withholds a speed recommendation pending independent confirmation, and startup CU still overrides extraction advice. Q-Check and Disc Rot keep their startup segment **inside the full-pass totals**, so no requested sectors or first-sample counts are subtracted. Logs label the regions and state whether startup cache preparation completed. A wholly zero pass remains unverified; activity earlier in the same complete fresh pass can support a measured zero target. Consistent sampling makes comparisons meaningful; it does not calibrate the physical accuracy of the vendor counters.
+
+A completed Q-Check verification pass with zero C2 establishes intermittent activity only when coverage is complete and cache eviction succeeded. Otherwise the report retains the primary C2 warning and marks recheck freshness unverified. Positive verification C2/CU remains evidence even if cache preparation or the pass failed. If Disc Rot's quality phase stops early, its report retains the recorded C1 total, raw peak and known coverage, including startup counts, while withholding C1 rates, ratings and C1 pattern analysis for that partial phase.
 
 Q-Check, Disc Balance and Disc Rot's hardware-quality phase record drive-reported speed separately from measured scan throughput. Both use **x** units. A drive readback of approximately **10x** can accompany **2.5x measured throughput**: throughput is audio seconds scanned divided by wall-clock seconds, including scan-command overhead. It is not an independent measurement of spindle speed. Live throughput uses a recent time window; the final report shows the whole-pass average. Unknown counter duration does not acquire a guessed speed.
 

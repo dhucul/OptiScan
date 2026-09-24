@@ -23,6 +23,7 @@ struct BalanceSpeedSample {
 struct BalanceReadEvidence {
     long long hardwareCuTotal = 0;
     int pioneerUncorrectableBytes = 0;
+    long long startupC2Total = 0;
     bool HasUncorrectable() const { return hardwareCuTotal>0 || pioneerUncorrectableBytes>0; }
 };
 
@@ -530,7 +531,7 @@ inline BalanceAssessment AssessBalance(const std::vector<BalanceSpeedSample>& in
     result.recommendationAvailable = safeSpeed > 0;
     // Positive uncorrectable observations survive partial/unrated passes.
     // Keep the mechanical score, but do not recommend an extraction speed.
-    if (readEvidence.HasUncorrectable()) {
+    if (readEvidence.HasUncorrectable() || readEvidence.startupC2Total>0) {
         result.recommendationAvailable = false;
         result.suggestedSpeed = result.suggestedActualSpeed = 0;
     }
@@ -548,6 +549,8 @@ inline std::string BalanceExtractionGuidance(const BalanceAssessment& assessment
         return "Uncorrectable data observed - use recovery and verify independently";
     if (assessment.firstC2WarningSpeed>0)
         return "Caution - C2 warning at ~"+std::to_string(assessment.firstC2WarningSpeed)+"x";
+    if(assessment.readEvidence.startupC2Total>0)
+        return "Caution - startup C2 observed; independent confirmation needed";
     return assessment.score>=75 ? "No additional warning from mechanical score; verify the rip"
         : "Caution - use the suggested setting and verify the rip";
 }
@@ -565,6 +568,12 @@ inline void PrintBalanceRipRecommendation(std::ostream& out,const BalanceAssessm
                 <<" (worst observed window).\n";
         out.flags(flags);
         return;
+    }
+    if(assessment.readEvidence.startupC2Total>0) {
+        out<<"  Suggested rip setting: NOT ESTABLISHED - startup C2 activity needs independent confirmation.\n"
+            <<"  Startup C2 raw count: "<<assessment.readEvidence.startupC2Total<<"; retained separately from target counts.\n";
+        if(assessment.firstC2WarningSpeed>0)out<<"  Target C2 warning also observed at ~"<<assessment.firstC2WarningSpeed<<"x.\n";
+        out.flags(flags);return;
     }
     if (assessment.recommendationAvailable)
         out<<"  Suggested rip setting: request "<<assessment.suggestedSpeed

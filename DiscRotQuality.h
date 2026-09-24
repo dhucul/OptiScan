@@ -11,14 +11,25 @@ inline constexpr const char* kCaveat =
 
 inline void RecordQualityEvidence(const QCheckResult& scan, bool complete, DiscRotAnalysis& result) {
     result.qualityScanMethod = scan.scanMethod;
+    result.qualityStartup=scan.startup;
+    result.qualityStartupCacheCleared=scan.startupCacheCleared;
+    result.qualitySamples = scan.samples;
     result.qualityScanComplete = complete && !scan.samples.empty();
     result.qualityCountersRecorded = !scan.samples.empty();
     result.qualityCuMeasured = scan.cuMeasured && result.qualityCountersRecorded;
+    const bool countersActive = std::any_of(scan.samples.begin(), scan.samples.end(),
+        [](const QCheckSample& sample) {
+            return sample.c1 > 0 || sample.c2 > 0 || sample.cu > 0 || sample.pioneerE22 > 0;
+        });
+    // Raw counts and measured coverage survive a failed phase. Completion and
+    // decoder activity gate rates/ratings, never whether observations are kept.
+    result.c1 = ScanQuality::SummarizeC1(C1Intervals(scan.samples),
+        result.qualityScanComplete && !scan.c1Unverified && countersActive);
+    result.c1RequestedSectors = scan.totalSectors;
     // Retain observed failures even when a later poll fails or a later pass is clean.
-    if (scan.scanMethod.find("Pioneer") == std::string::npos) {
-        result.qualityC2Count = scan.totalC2;
-        result.qualityCUCount = scan.cuMeasured ? scan.totalCU : 0;
-    }
+    const bool hasC2 = result.qualityCountersRecorded && scan.scanMethod.find("Pioneer") == std::string::npos;
+    result.qualityC2Count = hasC2 ? scan.totalC2 : 0;
+    result.qualityCUCount = hasC2 && result.qualityCuMeasured ? scan.totalCU : 0;
 }
 
 inline bool HasConfirmedFailure(const DiscRotAnalysis& result) {

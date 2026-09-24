@@ -227,6 +227,7 @@ int main() {
         if(valid) { QCheckSample s; s.lba=lba; s.measuredSectors=sectors;
             coverageProof.c2RecheckSamples.push_back(s); }
     }
+    coverageProof.recheckStartupCacheCleared=true;
     check(HasCompleteQCheckCoverage(coverageProof.c2RecheckSamples,0,300) &&
         ClassifyQCheckC2Stability(coverageProof)==QCheckC2Stability::Intermittent,
         "A fully read zero-error range supplies the coverage required for a clean recheck");

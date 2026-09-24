@@ -16,7 +16,7 @@
 
 
 // ============================================================================
-// Disc Balance Check - Detects vibration / wobble by sweeping read speed
+// Disc Balance Check - Compares read timing and stability across speed settings
 // ============================================================================
 
 bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::string* savedReport) {
@@ -432,13 +432,15 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 		const auto window = Diagnostics::HardwareSweepRange(audioRanges,maxLBA*3/4);
 		if (!window) {
 			hwSweepFailed = true;
-			for (auto& pass : hwPasses) pass.limitation = "no contiguous 15-second audio window";
-			std::cout << "Hardware sweep unavailable: no contiguous 15-second audio region.\n";
+			for (auto& pass : hwPasses) pass.limitation = "no contiguous aligned startup plus 15-second target window";
+			std::cout << "Hardware sweep unavailable: need an aligned 10-second startup plus 15-second target in contiguous audio.\n";
 		}
 		else {
+            const DWORD scanFirst=window->first-Diagnostics::kQualityStartupSectors;
 			std::cout << "\nRunning hardware C1/" << hwSecondStageLabel << " sweep over LBAs "
 				<< window->first << "-" << window->second << ".\n"
-				<< "Cache eviction precedes every pass; actual hardware-phase speed is measured separately.\n";
+				<< "Aligned 10-second startup: LBAs " << scanFirst << "-" << window->first-1 << ".\n"
+                << "The scan continues into the target without restarting; all startup counts are retained.\n";
 			auto cancelled = [] { return g_interrupt.IsInterrupted() || g_interrupt.CheckEscapeKey(); };
 			for (int step=0; step<NUM_SPEEDS; ++step) {
 				if (cancelled()) return false;
@@ -446,7 +448,7 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 				Sleep(300);
 				auto pass = Diagnostics::MeasureHardwareSweep(window->first,window->second,
 					[&] {
-						return DiscRot::EvictAudioCacheRange(window->first,window->second,audioRanges,
+						return DiscRot::EvictAudioCacheRange(scanFirst,window->second,audioRanges,
 							cacheCapabilities.bufferSizeKB,
 							[&](DWORD start,DWORD count,BYTE* data) { return m_drive.ReadSectorsAudioOnly(start,count,data); },
 							cancelled);
@@ -474,8 +476,8 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 						std::chrono::steady_clock::now().time_since_epoch()).count()); },
                     [&](const Diagnostics::HardwareSweepPass& live) {
                         std::cout << "\r  Hardware scan: " << Diagnostics::ScanSpeedText(live.throughput.CurrentX())
-                            << " measured throughput; " << live.intervals.size() << "/15 samples   " << std::flush;
-                    });
+                            << " measured throughput; startup " << live.startup.samples << "/10, target " << live.intervals.size() << "/15 samples   " << std::flush;
+                    },Diagnostics::kQualityStartupSectors,hasLiteOnHwC1 && m_drive.LiteOnScanMeasuresCu());
                 std::cout << "\n";
 				hwPasses[step] = std::move(pass);
 				const auto& observed = hwPasses[step];
@@ -529,7 +531,9 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 	}
     Diagnostics::BalanceReadEvidence readEvidence;
     if (hasLiteOnHwC1 && m_drive.LiteOnScanMeasuresCu())
-        for (const auto& pass:hwPasses) readEvidence.hardwareCuTotal += pass.cuTotal;
+        for (const auto& pass:hwPasses) readEvidence.hardwareCuTotal += pass.cuTotal+pass.startup.cu;
+    if (hasLiteOnHwC1)
+        for (const auto& pass:hwPasses) readEvidence.startupC2Total += pass.startup.secondStage;
     if (balanceCdCheck.validSamples>0)
         readEvidence.pioneerUncorrectableBytes=balanceCdCheck.worstC2Bytes;
 	const auto assessment = Diagnostics::AssessBalance(measurements, requestedSamples,
@@ -552,6 +556,7 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 	std::ostringstream report;
 	report << "\nDisc layout: " << Diagnostics::ScanDiscIdentity(disc) << "\n";
 	report << "Speed groups use drive readbacks; measured throughput is reported separately.\n";
+    report << "Sample grid: 75 sectors, origin LBA " << audioRanges.front().first << "; ten seconds of startup audio before each target.\n";
 	if (hasHwC1) report << "Hardware scan method: " << (hasPioneerHwC1 ? "Pioneer (0x3B/0x3C)" : m_drive.LiteOnScanMethodName()) << "\n";
 	const auto timingGroups = Diagnostics::GroupMeasuredSpeeds(actualSpeedX);
 
@@ -563,12 +568,13 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 	report << std::string((reportWidth - static_cast<int>(std::strlen(reportTitle))) / 2, ' ')
 		<< reportTitle << "\n";
 	report << std::string(reportWidth, '=') << "\n";
-	report << "  (Detects vibration / wobble by sweeping read speed)\n\n";
-	report << "  Comparison includes verified actual speeds through " << assessment.maximumMeasuredSpeed << "x.\n";
+	report << "  (Compares read timing and stability across speed settings)\n\n";
+	report << "  Timing comparison includes drive-reported speeds through " << assessment.maximumMeasuredSpeed << "x.\n";
 	if (assessment.partial) report << "  PARTIAL SPEED COVERAGE - unverified or insufficient timing rows are excluded.\n";
 	report << "  Scores and recommendations apply only to the measured speeds.\n\n";
-	report << "  This is a mechanical/read-stability assessment, not a C2/CU\n"
-		<< "  data-loss test or proof that an extraction is bit-perfect.\n\n";
+	report << "  Timing variation or limited speed gain does not establish physical\n"
+		<< "  wobble, disc damage or faulty C2 reporting. These scores describe\n"
+		<< "  sampled read performance; they do not verify extraction accuracy.\n\n";
 	if (balanceCdCheckAttempted) {
 		report << "--- Pioneer CD Check Data-Loss Cross-Check ---\n";
 		if (balanceCdCheck.reliable) {
@@ -612,17 +618,11 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 			}
 		}
 
-		// Warn when C2 reports zero but timing-based metrics found problems.
-		// This combination suggests that the drive accepts C2 commands without
-		// actually populating the error-pointer data.
-		bool allC2Zero = true;
-		for (int s = 0; s < NUM_SPEEDS; s++) {
-			if (avgReadCdC2PerSpeed[s] > 0.0) { allC2Zero = false; break; }
-		}
-		if (hasReadCdC2 && allC2Zero && scalingScore < 100) {
-			report << "  ** NOTE: C2 reports 0 errors at all speeds, but timing\n"
-				<< "     detected wobble. C2 data may not be functional on this\n"
-				<< "     drive. Rely on Scaling/Jitter scores instead. **\n";
+		if (hasReadCdC2) {
+			report << "  READ CD C2 averages use the fastest successful read at each sampled\n"
+				<< "  sector; they do not include every repeat. These pointers and the\n"
+				<< "  hardware decoder counters are separate measurements. Zero values\n"
+				<< "  alone do not establish whether C2 reporting is reliable.\n";
 		}
 	};
 
@@ -692,8 +692,8 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 			const int previous=assessment.previousRow[s];
 			const bool repeat=previous>=0 && actualSpeedX[s]>0 && actualSpeedX[s]==actualSpeedX[previous];
 			if (assessment.timingPenalty[s]>0 && repeat) report << "  ** REPEAT TIMING VARIATION **";
-			else if (assessment.timingPenalty[s]==2) report << "  ** REGRESSION **";
-			else if (assessment.timingPenalty[s]==1) report << "  * plateau *";
+			else if (assessment.timingPenalty[s]==2) report << "  ** NO SPEED GAIN / SLOWER READS **";
+			else if (assessment.timingPenalty[s]==1) report << "  * less than 5% faster *";
 			report << "\n";
 		}
 	}
@@ -720,6 +720,12 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 	else
 		report << "  Stability Sub-Score: N/A (insufficient repeated reads)\n";
 	report << "  Scaling Sub-Score:   " << scalingScore << " / 100\n";
+	if (scalingScore < 100) {
+		report << "  Scaling was reduced because read times did not improve as expected\n"
+			<< "  at higher reported speeds, or varied between same-speed repeats.\n"
+			<< "  This can reflect drive limits or command overhead; the cause is\n"
+			<< "  not determined by this test.\n";
+	}
 
 	if (std::isfinite(driftRatio) && (driftRatio > 1.3 || driftRatio < 0.7)) {
 		report << "\n  ** WARNING: Baseline re-test shows "
@@ -729,8 +735,8 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 
 	report << "\n  Balance Score: " << balanceScore << " / 100";
 	if (balanceScore >= 75)      report << "  (GOOD - within the verified speed range)\n";
-	else if (balanceScore >= 50) report << "  (FAIR - some wobble detected, reduce rip speed)\n";
-	else                         report << "  (POOR - significant read instability; use the suggested setting)\n";
+	else if (balanceScore >= 50) report << "  (FAIR - reduced timing performance or read stability)\n";
+	else                         report << "  (POOR - limited timing performance, read stability or coverage)\n";
 
 	// Full-speed (mechanical / full-RPM) score. Absent only if no speed above
 	// the audio-relevant ceiling was swept (with the current fixed speed table
@@ -781,6 +787,9 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
         report << "\n  Uncorrectable data takes priority over the mechanical score.\n"
             << "  A clean reread cannot verify an earlier rip; verify recovered audio independently.\n";
     }
+    else if(readEvidence.startupC2Total>0) {
+        report << "\n  Startup C2 activity remains unconfirmed; repeat independently before choosing a rip setting.\n";
+    }
 	else if (balanceScore < 75) {
 		report << "\n  Recommendation:\n";
 		if (balanceScore < 50) {
@@ -807,7 +816,7 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
     std::cout << report.str();
     if (savedReport) {
         report << "\nRaw hardware samples (one row per observation):\n";
-        report << "Pass,RequestedX,DriveReportedX,LBA,CoveredSectors,C1," << hwSecondStageLabel
+        report << "Pass,RequestedX,DriveReportedX,Region,ScanSample,LBA,CoveredSectors,C1," << hwSecondStageLabel
             << ",CU,ElapsedMilliseconds\n";
         for (int step=0;step<NUM_SPEEDS;++step) {
             const auto& pass=hwPasses[step];
@@ -815,7 +824,7 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
                 const auto& sample=pass.observations[i];
                 report << step+1 << ',' << speeds[step] << ',';
                 if (pass.ActualSpeed()>0) report << pass.ActualSpeed();
-                report << ',' << sample.lba << ',';
+                report << ',' << (pass.startup.Contains(sample.lba)?"Startup":"Target") << ',' << i+1 << ',' << sample.lba << ',';
                 if (sample.sectors>0) report << sample.sectors;
                 report << ',' << sample.c1 << ',' << sample.secondStage << ',';
                 if (hasLiteOnHwC1 && m_drive.LiteOnScanMeasuresCu()) report << sample.cu;

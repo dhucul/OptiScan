@@ -56,7 +56,7 @@ Phase1SectorResult ReadPhase1Sector(DWORD lba, bool pioneer,
             result.c2Errors = 0;
             result.transientC2 = true;
         }
-        else result.c2Errors = std::max(result.c2Errors, verifyC2);
+        else result.c2Errors = (std::max)(result.c2Errors, verifyC2);
     }
     return result;
 }
@@ -67,7 +67,7 @@ inline AudioRanges NormalizeAudioRanges(AudioRanges ranges) {
     for (const auto& range : ranges) {
         if (range.second < range.first) continue;
         if (!merged.empty() && std::uint64_t{range.first} <= std::uint64_t{merged.back().second} + 1)
-            merged.back().second = std::max(merged.back().second, range.second);
+            merged.back().second = (std::max)(merged.back().second, range.second);
         else merged.push_back(range);
     }
     return merged;
@@ -91,8 +91,8 @@ bool EvictAudioCacheRange(DWORD first, DWORD last, const AudioRanges& ranges, in
         auto add = [&](std::uint64_t lo, std::uint64_t hi) {
             if (hi > lo) { spans.emplace_back(lo, hi); available += hi - lo; }
         };
-        add(begin, std::min(end, excludedStart));
-        add(std::max(begin, excludedEnd), end);
+        add(begin, (std::min)(end, excludedStart));
+        add((std::max)(begin, excludedEnd), end);
     }
     if (available < required) return false;
     constexpr DWORD blockSize = 24;
@@ -102,7 +102,7 @@ bool EvictAudioCacheRange(DWORD first, DWORD last, const AudioRanges& ranges, in
         for (auto lba = span.first; lba < span.second && remaining > 0;) {
             if (cancelled()) return false;
             const DWORD count = static_cast<DWORD>(std::min<std::uint64_t>(blockSize,
-                std::min(remaining, span.second - lba)));
+                (std::min)(remaining, span.second - lba)));
             if (!readBlock(static_cast<DWORD>(lba), count, discard.data())) return false;
             remaining -= count;
             lba += count;
