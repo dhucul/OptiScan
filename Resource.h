@@ -72,6 +72,7 @@
 #define IDC_PROGRESS_TEXT       1040
 #define IDC_PROGRESS_BAR        1041
 #define IDC_ACCESSIBLE_EDIT     1042
+#define IDC_DISABLE_ISRC        1043
 #define IDC_DISC_INFO_LABEL     1101
 #define IDC_DRIVE_LABEL         1102
 #define IDC_UTILITY_LABEL       1103

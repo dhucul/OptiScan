@@ -133,6 +133,7 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 	std::vector<double> avgReadCdC2PerSpeed(NUM_SPEEDS, 0.0);
 	std::vector<long long> readCdC2Totals(NUM_SPEEDS, 0);
 	std::vector<int> successfulC2Reads(NUM_SPEEDS, 0), c2PositiveReads(NUM_SPEEDS, 0);
+	std::vector<int> failedReadAttempts(NUM_SPEEDS, 0);
 	std::vector<double> jitterCoeffVar(NUM_SPEEDS, 0.0);
 	std::vector<double> avgReadTimeMs(NUM_SPEEDS, 0.0);
 	std::vector<double> avgStabilityRatio(NUM_SPEEDS, 0.0);
@@ -201,6 +202,8 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 				progress.Update(completed, totalTests);
 			}
 
+			failedReadAttempts[s] += repeats.failedReads;
+			totalReadErrorSignal += repeats.FailurePenalty();
 			if (repeats.successfulReads > 0) {
 				const double bestMs = repeats.bestMs, worstMs = repeats.worstMs;
 				readTimesMs.push_back(bestMs);
@@ -221,9 +224,6 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 					stabilitySum += worstMs / bestMs;
 					stabilityCount++;
 				}
-			}
-			else {
-				totalReadErrorSignal += 100; // Read-failure penalty, not C2
 			}
 			tested++;
 		}
@@ -526,6 +526,7 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 			hwPasses[s].ActualSpeed(),hwPasses[s].Qualified()});
 	}
     Diagnostics::BalanceReadEvidence readEvidence;
+    readEvidence.failedReads = std::accumulate(failedReadAttempts.begin(),failedReadAttempts.end(),driftC2.failedReads);
     if (hasReadCdC2)
         readEvidence.readCdC2Total = std::accumulate(readCdC2Totals.begin(),readCdC2Totals.end(),driftC2.c2Total);
     for (const auto& pass:hwPasses)
@@ -606,7 +607,7 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 	}
 	auto PrintReadSignalReport = [&]() {
         report << "--- READ CD observations (all successful repeats) ---\n"
-            << "  Request  Readback   C2 total  Positive/successful  C2/read  Balance signal\n";
+            << "  Request  Readback   C2 total  Positive/successful  C2/read  Failed  Balance signal\n";
         for (int s=0;s<NUM_SPEEDS;++s) {
             report << std::right << std::setw(8) << (std::to_string(speeds[s])+"x")
                 << std::setw(10) << (actualSpeedX[s]>0 ? "~"+std::to_string(actualSpeedX[s])+"x" : "--");
@@ -616,14 +617,16 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
                     << std::fixed << std::setprecision(2) << std::setw(9) << avgReadCdC2PerSpeed[s];
             }
             else report << std::setw(11) << "--" << std::setw(21) << "--" << std::setw(9) << "--";
-            report << std::fixed << std::setprecision(2) << std::setw(16) << avgReadErrorSignalPerSpeed[s];
+            report << std::setw(8) << failedReadAttempts[s]
+                << std::fixed << std::setprecision(2) << std::setw(16) << avgReadErrorSignalPerSpeed[s];
             if (!assessment.compared[s]) report << " (excluded)";
             report << '\n';
         }
         if (hasReadCdC2) {
             report << "  " << sampleLBAs.size()*READS_PER_SAMPLE << " reads attempted per setting; failed reads are not clean zeros.\n"
                 << "  Totals count repeated observations, not unique damaged bytes.\n"
-                << "  Timing re-test C2: " << driftC2.c2Total << " across " << driftC2.successfulReads << " successful reads.\n"
+                << "  Timing re-test C2: " << driftC2.c2Total << " across " << driftC2.successfulReads << " successful reads; "
+                << driftC2.failedReads << " failed attempts.\n"
                 << "  READ CD pointers and hardware decoder counters are separate measurements.\n";
         }
         report << "  Balance signal also includes timing/read-failure penalties; it is not a C2 count.\n";
@@ -678,7 +681,7 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
 	}
 
 	report << "\n--- Read timing ---\n"
-        << "  Request  Readback   Mean(ms)   Jitter(CV)  Stability  Sectors read\n";
+        << "  Request  Readback   Mean(ms)   Jitter(CV)  Stability  Sectors read  Failed attempts\n";
     for (int s=0;s<NUM_SPEEDS;++s) {
         report << std::right << std::setw(8) << (std::to_string(speeds[s])+"x")
             << std::setw(10) << (actualSpeedX[s]>0 ? "~"+std::to_string(actualSpeedX[s])+"x" : "--");
@@ -689,11 +692,13 @@ bool OpticalDrive::CheckDiscBalance(DiscInfo& disc, int& balanceScore, std::stri
         if (stabilityMeasured[s]) report << std::setprecision(2) << std::setw(11) << avgStabilityRatio[s];
         else report << std::setw(11) << "--";
         report << std::setw(14) << (std::to_string(validReadSamplesPerSpeed[s])+"/"+std::to_string(requestedSamples));
+        report << std::setw(17) << failedReadAttempts[s];
         if (!assessment.compared[s]) report << " (excluded)";
         else if (assessment.timingPenalty[s]>0) report << " *";
         report << '\n';
     }
     report << "  Read times use the fastest successful repeat, then a trimmed mean.\n"
+        << "  Timing re-test: " << driftC2.failedReads << " failed attempts retained.\n"
         << "  * Limited speed gain or timing variation; the cause is not determined.\n";
 
 	report << "\n  Error Sub-Score:     " << errorScore << " / 100";

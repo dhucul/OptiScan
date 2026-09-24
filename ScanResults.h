@@ -13,6 +13,32 @@
 #include <string>
 #include <utility>
 
+// Completion is required to establish a clean cross-check. Valid positive
+// observations remain evidence even if a later command prevents completion.
+template<class Result>
+inline bool HasPioneerCdCheckLoss(const Result& result) {
+	return (result.pioneerCdCheckRun || result.pioneerCdCheckPartial) &&
+		result.pioneerCdCheckC2Bytes > 0;
+}
+
+template<class Source, class Target>
+inline void CopyPioneerCdCheckEvidence(const Source& source, Target& target) {
+	target.pioneerCdCheckRun = source.pioneerCdCheckRun;
+	target.pioneerCdCheckPartial = source.pioneerCdCheckPartial;
+	target.pioneerCdCheckC1Frames = source.pioneerCdCheckC1Frames;
+	target.pioneerCdCheckC2Bytes = source.pioneerCdCheckC2Bytes;
+}
+
+template<class Result>
+inline const char* PioneerCdCheckStatus(const Result& result) {
+	if (HasPioneerCdCheckLoss(result))
+		return result.pioneerCdCheckRun ? "DATA LOSS DETECTED by Pioneer CD Check"
+			: "DATA LOSS DETECTED by Pioneer CD Check (partial scan; coverage incomplete)";
+	if (result.pioneerCdCheckRun) return "No uncorrectable data reported by completed Pioneer CD Check";
+	if (result.pioneerCdCheckPartial) return "INCOMPLETE - no uncorrectable data in recorded windows; remaining coverage unknown";
+	return "NOT MEASURED - Pioneer CD Check unavailable or incomplete";
+}
+
 // ── Shared peak / confidence block ──────────────────────────────────────────
 // Every scan mode that rates a disc from a per-time-slice error series carries
 // this block, so the rules stay identical between them. Raw peaks are still
@@ -136,9 +162,10 @@ struct QCheckResult {
 	// quality scan exposes no CU, so on Pioneer drives that implement the CD
 	// Check protocol we run it over the same audio range to obtain a genuine
 	// uncorrectable measurement. pioneerCdCheckRun is true only when the CD
-	// Check produced valid data (older Pioneer drives support it; the BDR-S13U
+	// Check completed with valid data (older Pioneer drives support it; the BDR-S13U
 	// appears to have dropped it, in which case this stays false).
 	bool pioneerCdCheckRun = false;
+	bool pioneerCdCheckPartial = false; // valid observations from an incomplete cross-check
 	int  pioneerCdCheckC1Frames = 0;   // worst-window C1 uncorrectable frame count
 	int  pioneerCdCheckC2Bytes  = 0;   // worst-window C2 uncorrectable byte count (real data loss)
 	// Per-second time-series data
@@ -453,6 +480,7 @@ struct BlerResult {
 	// that supplies a genuine uncorrectable-data measurement. The flag is true
 	// only after the requested audio range completed with valid measurements.
 	bool pioneerCdCheckRun = false;
+	bool pioneerCdCheckPartial = false;
 	int pioneerCdCheckC1Frames = 0;
 	int pioneerCdCheckC2Bytes = 0;
 
@@ -470,7 +498,7 @@ struct BlerResult {
 	// downstream summary, including independent Pioneer CD Check evidence.
 	bool HasConfirmedFailure() const {
 		return totalReadFailures > 0 || qualityRating == "BAD" ||
-			(pioneerCdCheckRun && pioneerCdCheckC2Bytes > 0);
+			HasPioneerCdCheckLoss(*this);
 	}
 
 	bool HasC1Observations() const { return c1.samples > 0; }
@@ -541,9 +569,10 @@ struct DiscRotAnalysis {
 	// blind to uncorrectable (E32/CU) data, so this measures it directly. Data
 	// loss is the strongest rot signal, so a non-zero C2-uncorrectable count
 	// escalates the rot-risk verdict. pioneerCdCheckRun is true only when the CD
-	// Check produced valid data (older Pioneer drives support it; the BDR-S13U
+	// Check completed with valid data (older Pioneer drives support it; the BDR-S13U
 	// appears to have dropped it, in which case this stays false).
 	bool pioneerCdCheckRun = false;
+	bool pioneerCdCheckPartial = false;
 	int  pioneerCdCheckC1Frames = 0;            // worst-window C1 uncorrectable frame count
 	int  pioneerCdCheckC2Bytes  = 0;            // worst-window C2 uncorrectable byte count (real data loss)
 

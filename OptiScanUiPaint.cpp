@@ -344,6 +344,13 @@ static void DrawUnifiedBackground(Gdiplus::Graphics& graphics, const RECT& rc)
                             i == selectedNav ? &blue : &muted);
     }
 
+    Gdiplus::GraphicsPath optionsBox;
+    AddRoundedRectangle(optionsBox, ScalePx(18), GlobalOptionsTop(),
+        sidebarWidth - ScalePx(36), ScalePx(158), ScalePx(10));
+    graphics.DrawPath(&divider, &optionsBox);
+    graphics.DrawString(L"Global Options", -1, &navSelected,
+        Gdiplus::PointF(ScaleReal(36), (Gdiplus::REAL)GlobalOptionsTop() + ScaleReal(16)), &ink);
+
     // Drive status remains visible without competing with the command area.
     Gdiplus::Pen sidebarRule(ThemeArgb(255, p.hairline), 1.0f);
     graphics.DrawLine(&sidebarRule, ScalePx(28), height - ScalePx(215), sidebarWidth - ScalePx(28), height - ScalePx(215));

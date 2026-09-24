@@ -5,5 +5,6 @@
   <Project Path="OptiScan.vcxproj" Id="9c187de4-b07d-4185-9193-873092f2da16" />
   <Project Path="tests/OptiScan.Tests.vcxproj" Id="6f5861a1-f9fd-4e07-a79b-7ce3f4f76c8b" />
   <Project Path="tests/OptiScan.LiteOn.Tests.vcxproj" Id="57b02373-3215-455a-9b36-d13c74e271cb" />
+  <Project Path="tests/OptiScan.Isrc.Tests.vcxproj" Id="054635c9-b122-4da1-9536-bbf39027bc2b" />
   <Project Path="tests/OptiScan.QCheck.Tests.vcxproj" Id="a0306194-608d-4654-8b65-8baa0d17f2ad" />
 </Solution>

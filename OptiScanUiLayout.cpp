@@ -9,8 +9,12 @@
 #include "Theme.h"
 #include "ButtonFeedback.h"
 #include "UiSound.h"
+#include "GlobalOptions.h"
+#include <uxtheme.h>
 #include <commctrl.h>
 #include <cmath>
+
+#pragma comment(lib, "uxtheme.lib")
 
 // Progress.h (pulled in elsewhere) does `#undef min` / `#undef max`, which
 // would otherwise break the legacy `min(a, b)` / `max(a, b)` calls in the GUI
@@ -45,6 +49,7 @@ void CreateUiFonts()
 
 void ApplyUiFonts()
 {
+    if (hDisableIsrc) SendMessageW(hDisableIsrc, WM_SETFONT, (WPARAM)hCommandFont, TRUE);
     if (hInfoEdit) OutputControl::SetFont(hInfoEdit, hOutputFont);
     if (hProgressText) SendMessageW(hProgressText, WM_SETFONT, (WPARAM)hOutputFont, TRUE);
     if (hAccessibleEdit) SendMessageW(hAccessibleEdit, WM_SETFONT, (WPARAM)hOutputFont, TRUE);
@@ -78,6 +83,17 @@ void CreateMainControls(HWND hWnd)
     const DWORD buttonStyle = WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON | BS_OWNERDRAW;
     const DWORD labelStyle = WS_CHILD | SS_LEFT;
     CreateUiFonts();
+    hDisableIsrc = CreateWindowW(L"BUTTON", L"Disable scanning of ISRC codes",
+        WS_CHILD | WS_TABSTOP | BS_AUTOCHECKBOX | BS_MULTILINE,
+        0, 0, 0, 0, hWnd, (HMENU)IDC_DISABLE_ISRC, hInst, nullptr);
+    if (hDisableIsrc)
+    {
+        // Retain native keyboard and screen-reader checkbox semantics.
+        SetWindowTheme(hDisableIsrc, L"", L"");
+        SendMessageW(hDisableIsrc, WM_SETFONT, (WPARAM)hCommandFont, TRUE);
+        SendMessageW(hDisableIsrc, BM_SETCHECK,
+            GlobalOptions::IsIsrcScanningDisabled() ? BST_CHECKED : BST_UNCHECKED, 0);
+    }
     hDarkEditBrush = CreateOutputEditBrush(ScalePx(960), ScalePx(420));
     if (!hOutputSolidBrush) hOutputSolidBrush = CreateSolidBrush(OutputDark);
 
@@ -189,7 +205,7 @@ void LayoutMainControls(HWND hWnd)
     bool buttonVisible[COMMAND_BUTTON_COUNT]{};
     HWND priorFocus = GetFocus();
 
-    HDWP hdwp = BeginDeferWindowPos(COMMAND_BUTTON_COUNT + 5);
+    HDWP hdwp = BeginDeferWindowPos(COMMAND_BUTTON_COUNT + 6);
     auto move = [&](HWND h, int x, int y, int w, int hgt) {
         if (!h) return;
         for (int i = 0; i < COMMAND_BUTTON_COUNT; ++i) {
@@ -211,6 +227,8 @@ void LayoutMainControls(HWND hWnd)
     // painter and the hit-test cannot drift from it.
     {
         const int sidebarWidth = SidebarWidth();
+        move(hDisableIsrc, ScalePx(36), GlobalOptionsTop() + ScalePx(52),
+            sidebarWidth - ScalePx(72), ScalePx(90));
         const int contentLeft = sidebarWidth + ScalePx(60);
         const int contentRight = rc.right - ScalePx(40);
         const int contentWidth = max(ScalePx(900), contentRight - contentLeft);

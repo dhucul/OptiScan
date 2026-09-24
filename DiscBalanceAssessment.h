@@ -9,11 +9,11 @@ namespace Diagnostics {
 // Select the fastest read only for timing. Every successful repeat contributes
 // its C2 evidence, including a slow read followed by a clean cache/retry read.
 struct BalanceReadRepeats {
-    int successfulReads = 0, c2PositiveReads = 0;
+    int successfulReads = 0, failedReads = 0, c2PositiveReads = 0;
     long long c2Total = 0;
     double bestMs = (std::numeric_limits<double>::max)(), worstMs = 0;
     void Record(bool ok, double ms, int c2) {
-        if (!ok) return; // A failed transfer does not supply a valid C2 buffer.
+        if (!ok) { ++failedReads; return; } // Retain failure, but never its C2 buffer or timing.
         ++successfulReads;
         if (c2 > 0) { c2Total += c2; ++c2PositiveReads; }
         bestMs = (std::min)(bestMs, ms);
@@ -21,6 +21,10 @@ struct BalanceReadRepeats {
     }
     double AverageC2() const {
         return successfulReads > 0 ? static_cast<double>(c2Total) / successfulReads : 0.0;
+    }
+    double FailurePenalty() const {
+        const int attempts = successfulReads + failedReads;
+        return attempts > 0 ? 100.0 * failedReads / attempts : 0.0;
     }
 };
 
@@ -46,6 +50,7 @@ struct BalanceReadEvidence {
     long long startupC2Total = 0;
     long long readCdC2Total = 0;
     long long unratedTargetC2Total = 0;
+    int failedReads = 0; // Includes failed repeats and the timing re-test, regardless of speed readback.
     bool HasUncorrectable() const { return hardwareCuTotal>0 || pioneerUncorrectableBytes>0; }
 };
 
@@ -72,6 +77,7 @@ struct BalanceAssessment {
     int jitterScore = 0, stabilityScore = 0, scalingScore = 0;
     int suggestedSpeed = 0, suggestedActualSpeed = 0, maximumMeasuredSpeed = 0, primaryMaximumSpeed = 0;
     int firstC2WarningSpeed = 0;
+    int firstInsufficientReadSpeed = 0;
     std::vector<bool> compared, primaryCompared, speedFellBack, eccFellBack;
     std::vector<int> previousRow, timingPenalty;
 };
@@ -91,6 +97,13 @@ inline BalanceAssessment AssessBalance(const std::vector<BalanceSpeedSample>& in
     result.previousRow.assign(input.size(), -1);
     result.timingPenalty.assign(input.size(), 0);
     if (requestedSamples <= 0 || minValidSamples <= 0) return result;
+    // Keep coverage failures before filtering timings. A failed measured row
+    // must stop recommendations at that speed even though it cannot be timed.
+    for (const auto& r : input) {
+        if (r.actualSpeed > 0 && r.validReads < minValidSamples &&
+            (result.firstInsufficientReadSpeed == 0 || r.actualSpeed < result.firstInsufficientReadSpeed))
+            result.firstInsufficientReadSpeed = r.actualSpeed;
+    }
     // Absolute, independently verified C2 warnings do not require a relative
     // C1 baseline or usable timing at the same request. They retain their own
     // hardware-phase speed. Pioneer E22 remains diagnostic-only.
@@ -506,11 +519,13 @@ inline BalanceAssessment AssessBalance(const std::vector<BalanceSpeedSample>& in
 	// Determine the highest speed that showed no wobble degradation.
 	// Walk up from baseline; stop at the first speed with a regression,
 	// plateau, fallback, or significant error/stability increase.
-	int safeSpeedIdx = result.firstC2WarningSpeed > 0 && speeds[baselineIdx] >= result.firstC2WarningSpeed
-		? -1 : baselineIdx;
+	auto blocksRecommendation = [&](int speed) {
+		return (result.firstC2WarningSpeed > 0 && speed >= result.firstC2WarningSpeed) ||
+			(result.firstInsufficientReadSpeed > 0 && speed >= result.firstInsufficientReadSpeed);
+	};
+	int safeSpeedIdx = blocksRecommendation(speeds[baselineIdx]) ? -1 : baselineIdx;
 	for (int s = baselineIdx + 1; safeSpeedIdx >= 0 && s < NUM_SPEEDS; s++) {
-		if (result.firstC2WarningSpeed > 0 && speeds[s] >= result.firstC2WarningSpeed) break;
-		if (validReadSamplesPerSpeed[s] < minValidSamples) break;
+		if (blocksRecommendation(speeds[s])) break;
 		if (speedFellBack[s] || eccFellBack[s]) break;
 
 		// Check for timing regression or plateau
@@ -563,7 +578,7 @@ inline BalanceAssessment AssessBalance(const std::vector<BalanceSpeedSample>& in
     result.recommendationAvailable = safeSpeed > 0;
     // Positive uncorrectable observations survive partial/unrated passes.
     // Keep the mechanical score, but do not recommend an extraction speed.
-    if (readEvidence.HasUncorrectable() || readEvidence.startupC2Total>0 ||
+    if (readEvidence.HasUncorrectable() || readEvidence.failedReads>0 || readEvidence.startupC2Total>0 ||
         readEvidence.readCdC2Total>0 || readEvidence.unratedTargetC2Total>0) {
         result.recommendationAvailable = false;
         result.suggestedSpeed = result.suggestedActualSpeed = 0;
@@ -580,6 +595,8 @@ inline BalanceAssessment AssessBalance(const std::vector<BalanceSpeedSample>& in
 inline std::string BalanceExtractionGuidance(const BalanceAssessment& assessment) {
     if (assessment.readEvidence.HasUncorrectable())
         return "Uncorrectable data observed - use recovery and verify independently";
+    if (assessment.readEvidence.failedReads>0)
+        return "Caution - failed read attempts observed; use secure extraction and verify independently";
     if (assessment.readEvidence.unratedTargetC2Total>0)
         return "Caution - hardware C2 observed in an unrated pass; verify independently";
     if (assessment.readEvidence.readCdC2Total>0)
@@ -588,6 +605,8 @@ inline std::string BalanceExtractionGuidance(const BalanceAssessment& assessment
         return "Caution - C2 warning at ~"+std::to_string(assessment.firstC2WarningSpeed)+"x";
     if(assessment.readEvidence.startupC2Total>0)
         return "Caution - startup C2 observed; independent confirmation needed";
+    if (assessment.firstInsufficientReadSpeed>0)
+        return "Caution - insufficient readable samples at ~"+std::to_string(assessment.firstInsufficientReadSpeed)+"x";
     return assessment.score>=75 ? "No additional warning from mechanical score; verify the rip"
         : "Caution - use the suggested setting and verify the rip";
 }
@@ -595,6 +614,9 @@ inline std::string BalanceExtractionGuidance(const BalanceAssessment& assessment
 inline void PrintBalanceRipRecommendation(std::ostream& out,const BalanceAssessment& assessment) {
     const auto flags=out.flags();
     out<<std::dec;
+    if (assessment.readEvidence.failedReads>0)
+        out<<"  Failed read attempts: "<<assessment.readEvidence.failedReads
+            <<" (includes repeats and the timing re-test; successful retries do not erase failures).\n";
     if (assessment.readEvidence.HasUncorrectable()) {
         out<<"  Suggested rip setting: NOT ESTABLISHED - uncorrectable data observed.\n"
             <<"  Use Secure/Paranoid recovery and independently verify the recovered audio.\n";
@@ -625,11 +647,21 @@ inline void PrintBalanceRipRecommendation(std::ostream& out,const BalanceAssessm
         if(assessment.firstC2WarningSpeed>0)out<<"  Target C2 warning also observed at ~"<<assessment.firstC2WarningSpeed<<"x.\n";
         out.flags(flags);return;
     }
+    if (assessment.readEvidence.failedReads>0) {
+        out<<"  Suggested rip setting: NOT ESTABLISHED - failed read attempts need independent confirmation.\n"
+            <<"  Use secure extraction and independently verify the recovered audio.\n";
+        out.flags(flags);return;
+    }
     if (assessment.recommendationAvailable)
         out<<"  Suggested rip setting: request "<<assessment.suggestedSpeed
             <<"x (drive-reported speed ~"<<assessment.suggestedActualSpeed<<"x).\n"
             <<"  Lower requested settings may run at the same drive speed.\n";
+    else if (assessment.firstInsufficientReadSpeed>0)
+        out<<"  Suggested rip setting: NOT ESTABLISHED - no usable measured speed below the read-coverage limit.\n";
     else out<<"  Suggested rip setting: NOT ESTABLISHED - no lower measured speed passed the C2 warning limit.\n";
+    if (assessment.firstInsufficientReadSpeed>0)
+        out<<"  Insufficient readable samples at ~"<<assessment.firstInsufficientReadSpeed
+            <<"x; this limits the recommendation even when that timing row was excluded.\n";
     if (assessment.firstC2WarningSpeed>0)
         out<<"  Hardware C2 warning at ~"<<assessment.firstC2WarningSpeed
             <<"x; this limits the recommendation independently of the mechanical score.\n";

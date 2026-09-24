@@ -10,6 +10,7 @@ extern bool g_accessibleMode;
 extern HWND hInfoButtons[COMMAND_BUTTON_COUNT];
 extern HWND hProgressText;
 extern HWND hProgressBar;
+extern HWND hDisableIsrc;
 extern HFONT hCommandFont;
 extern HFONT hOutputFont;
 extern HBRUSH hDarkEditBrush;
@@ -31,6 +32,7 @@ extern COLORREF OutputDark;
 // clicks land on the wrong nav item, so it lives in exactly one place.
 int SidebarWidth();
 int NavItemTop(int index);
+int GlobalOptionsTop();
 constexpr int kNavItemCount = 6;
 constexpr int kNavItemHeight = 58;
 

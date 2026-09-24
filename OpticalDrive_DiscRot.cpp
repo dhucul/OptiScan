@@ -394,11 +394,8 @@ bool OpticalDrive::RunDiscRotScan(DiscInfo& disc, DiscRotAnalysis& result, int s
 	// that CU is absent. Always attempt the cross-check; unsupported firmware
 	// such as BDR-S13U rejects the start command quickly and remains unmeasured.
 	if (usePioneer && !g_interrupt.IsInterrupted()) {
-		if (RunPioneerCdCheckCrosscheck(disc, c1Result)) {
-			result.pioneerCdCheckRun = true;
-			result.pioneerCdCheckC1Frames = c1Result.pioneerCdCheckC1Frames;
-			result.pioneerCdCheckC2Bytes = c1Result.pioneerCdCheckC2Bytes;
-		}
+		RunPioneerCdCheckCrosscheck(disc, c1Result);
+		CopyPioneerCdCheckEvidence(c1Result, result);
 		if (g_interrupt.IsInterrupted()) {
 			m_drive.SetSpeed(0);
 			std::cout << "\n*** Disc rot scan cancelled during CD Check cross-check ***\n";
@@ -953,7 +950,13 @@ void OpticalDrive::PrintDiscRotReport(const DiscRotAnalysis& analysis) {
 	// that the vendor scan and per-sector C2 can't see on Pioneer drives.
 	if (analysis.pioneerDrive) {
 		std::cout << "  Uncorrectable:       ";
-		if (!analysis.pioneerCdCheckRun) {
+		if (analysis.pioneerCdCheckPartial) {
+			if (HasPioneerCdCheckLoss(analysis)) SetColorRGB(Theme::RedR, Theme::RedG, Theme::RedB);
+			else SetColorRGB(Theme::YellowR, Theme::YellowG, Theme::YellowB);
+			std::cout << PioneerCdCheckStatus(analysis) << " ("
+				<< analysis.pioneerCdCheckC2Bytes << " bytes, worst observed window)\n";
+		}
+		else if (!analysis.pioneerCdCheckRun) {
 			SetColorRGB(Theme::YellowR, Theme::YellowG, Theme::YellowB);
 			std::cout << "NOT MEASURED - Pioneer CD Check unavailable or incomplete; CU/E32 unknown\n";
 		}
@@ -1045,7 +1048,11 @@ bool OpticalDrive::SaveDiscRotLog(const DiscRotAnalysis& analysis, const std::ws
 			analysis.pioneerE22Total, ScanQuality::CounterAverageText(analysis.pioneerE22Observations).c_str(),
 			ScanQuality::CounterPeakText(analysis.pioneerE22Observations).c_str(), analysis.pioneerE22Rating.c_str());
 	}
-	if (analysis.pioneerDrive && !analysis.pioneerCdCheckRun) {
+	if (analysis.pioneerCdCheckPartial) {
+		fprintf(f, "# Uncorrectable (CDChk): %s (C1 uncorr=%d frames, C2 uncorr=%d bytes, worst observed window)\n",
+			PioneerCdCheckStatus(analysis), analysis.pioneerCdCheckC1Frames, analysis.pioneerCdCheckC2Bytes);
+	}
+	else if (analysis.pioneerDrive && !analysis.pioneerCdCheckRun) {
 		fprintf(f, "# Uncorrectable (CDChk): NOT MEASURED - CU/E32 unknown\n");
 	}
 	else if (analysis.pioneerCdCheckRun) {

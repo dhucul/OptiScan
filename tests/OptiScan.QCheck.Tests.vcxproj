@@ -25,6 +25,8 @@
   <ItemGroup>
     <ClCompile Include="QCheckWorkflowTests.cpp" />
     <ClCompile Include="..\OpticalDrive_QCheck.cpp" />
+    <ClCompile Include="..\OpticalDrive_DiscRot.cpp" />
+    <ClCompile Include="..\OpticalDrive_DiscBalance.cpp" />
     <ClCompile Include="..\ScanQualityRating.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

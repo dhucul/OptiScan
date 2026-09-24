@@ -15,7 +15,7 @@ int RunBalanceAssessmentTests() {
         repeats.c2PositiveReads==2 && repeats.successfulReads==3 && repeats.AverageC2()==6,
         "26: a faster clean repeat cannot erase C2 from slower successful reads");
     repeats.Record(false,1,999);
-    check(repeats.successfulReads==3 && repeats.c2Total==18 && repeats.AverageC2()==6 && repeats.bestMs==10,
+    check(repeats.successfulReads==3 && repeats.failedReads==1 && repeats.c2Total==18 && repeats.AverageC2()==6 && repeats.bestMs==10,
         "26: failed transfers do not dilute C2 averages or supply valid counters/timing");
     Diagnostics::BalanceReadRepeats reversed;
     reversed.Record(true,30,6);reversed.Record(true,10,0);reversed.Record(true,90,12);
@@ -38,6 +38,22 @@ int RunBalanceAssessmentTests() {
     auto assess=[](const auto& rows) {return Diagnostics::AssessBalance(rows,50,25,false,false);};
     auto rows=clean();
     auto full=assess(rows);
+    Diagnostics::BalanceReadRepeats recovered;
+    recovered.Record(false,1000,999);recovered.Record(true,10,0);recovered.Record(true,10,0);
+    Diagnostics::BalanceReadEvidence failures;
+    failures.failedReads=recovered.failedReads;
+    const auto failedRepeat=Diagnostics::AssessBalance(rows,50,25,false,false,failures);
+    std::ostringstream failedReport;
+    Diagnostics::PrintBalanceRipRecommendation(failedReport,failedRepeat);
+    check(recovered.c2Total==0 && recovered.FailurePenalty()>0 &&
+        failedRepeat.available && !failedRepeat.recommendationAvailable && failedRepeat.suggestedSpeed==0 &&
+        failedReport.str().find("Failed read attempts: 1")!=std::string::npos &&
+        Diagnostics::BalanceExtractionGuidance(failedRepeat).find("failed read attempts")!=std::string::npos,
+        "26: successful retries preserve failure evidence without inventing C2 and withhold rip advice");
+    failures.hardwareCuTotal=2;
+    const auto both=Diagnostics::AssessBalance(rows,50,25,false,false,failures);
+    check(Diagnostics::BalanceExtractionGuidance(both).find("Uncorrectable")!=std::string::npos,
+        "26: uncorrectable evidence retains priority over recovered read failures");
     Diagnostics::BalanceReadEvidence c2Evidence;
     c2Evidence.readCdC2Total=repeats.c2Total;
     auto observedC2=Diagnostics::AssessBalance(rows,50,25,false,false,c2Evidence);
@@ -121,6 +137,27 @@ int RunBalanceAssessmentTests() {
     auto readFailure=assess(rows);
     check(readFailure.available && !readFailure.compared[1] && readFailure.errorScore==0 && readFailure.score<=35,
         "26: known-speed read failures still constrain coverage when their timings are unavailable");
+    check(readFailure.firstInsufficientReadSpeed==8 && readFailure.suggestedSpeed==4,
+        "26: an excluded failed 8x measurement limits the recommendation to the measured 4x baseline");
+    std::ostringstream coverageReport;
+    Diagnostics::PrintBalanceRipRecommendation(coverageReport,readFailure);
+    check(coverageReport.str().find("Insufficient readable samples at ~8x")!=std::string::npos,
+        "26: the rip recommendation explains the excluded read-coverage limit");
+    rows[1].validReads=24;rows[1].readTimeMs=20;
+    check(assess(rows).suggestedSpeed==4, "26: insufficient partial coverage also blocks higher recommendations");
+    rows[1].validReads=25;
+    check(assess(rows).suggestedSpeed==40, "26: the minimum coverage boundary remains eligible");
+    rows=clean();rows[0].validReads=0;rows[0].readTimeMs=0;
+    const auto baselineFailure=assess(rows);
+    check(baselineFailure.available && !baselineFailure.recommendationAvailable && baselineFailure.suggestedSpeed==0,
+        "26: failure at the lowest measured speed leaves no recommendation despite faster usable rows");
+    rows=clean();rows[1].actualSpeed=4;rows[1].validReads=0;
+    check(!assess(rows).recommendationAvailable,
+        "26: a failed repeat at the same actual speed cannot be hidden by another successful request");
+    rows=clean();rows[0].actualSpeed=8;rows[0].validReads=0;rows[0].readTimeMs=0;
+    rows[1].actualSpeed=4;rows[1].readTimeMs=40;
+    check(assess(rows).suggestedActualSpeed==4,
+        "26: the coverage limit follows actual speed rather than request order");
     rows=clean();for(auto& r:rows)r.validReads=25;
     check(assess(rows).score<=35, "26: half-readable coverage never becomes a perfect balance score");
     rows=clean();rows[0].readTimeMs=std::numeric_limits<double>::quiet_NaN();

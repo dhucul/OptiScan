@@ -147,7 +147,7 @@ int RunScanQualityTests() {
 			std::to_string(GetTickCount64()) + ".csv");
 	for (bool c1Present : {false, true}) {
 		for (bool c2Unverified : {false, true}) {
-			for (int failure : {0, 1, 2, 3}) {
+			for (int failure : {0, 1, 2, 3, 4}) {
 				BlerResult exported;
 				exported.hasC1Data = c1Present;
 				exported.c2Unverified = c2Unverified;
@@ -160,7 +160,8 @@ int RunScanQualityTests() {
 				exported.totalReadFailures = failure == 1 ? 1 : 0;
 				exported.pioneerVendorQuality = true;
 				exported.pioneerCdCheckRun = failure == 2;
-				exported.pioneerCdCheckC2Bytes = 8; // unusable unless the run flag is true
+				exported.pioneerCdCheckPartial = failure == 4;
+				exported.pioneerCdCheckC2Bytes = 8; // requires complete or valid partial evidence
 				check(drive.SaveBlerLog(exported, failureLog.wstring()), "CSV regression output saved");
 				std::ifstream saved(failureLog);
 				const std::string csv{std::istreambuf_iterator<char>(saved),
@@ -171,6 +172,9 @@ int RunScanQualityTests() {
 					"CSV failure precedence survives every missing-channel combination");
 				check(failure == 0 || csv.find("C1 quality only") == std::string::npos,
 					"Confirmed failure is not relabelled as a C1-only assessment");
+				check(failure != 4 || (csv.find("DATA LOSS DETECTED") != std::string::npos &&
+					csv.find("partial scan") != std::string::npos),
+					"BLER exports preserve partial Pioneer loss and incomplete coverage");
 			}
 		}
 	}

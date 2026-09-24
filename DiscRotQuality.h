@@ -35,7 +35,7 @@ inline void RecordQualityEvidence(const QCheckResult& scan, bool complete, DiscR
 inline bool HasConfirmedFailure(const DiscRotAnalysis& result) {
     return result.totalReadFailures > 0 || result.verificationReadFailures > 0 || result.consistencyReadFailures > 0 ||
         result.qualityCUCount > 0 ||
-        (result.pioneerCdCheckRun && result.pioneerCdCheckC2Bytes > 0);
+        HasPioneerCdCheckLoss(result);
 }
 
 // Completeness is independent of observed errors and of display strings.
@@ -119,7 +119,9 @@ inline void Finalize(DiscRotAnalysis& result) {
     if (result.totalRereadTests == 0 || result.consistencyUnverifiedSamples > 0)
         result.recommendation += " Independent rereads were not established for all samples; matching cached data cannot prove consistency.";
     if (result.pioneerDrive && !result.pioneerCdCheckRun)
-        result.recommendation += " Pioneer CU/E32 was not measured; verify any rip independently.";
+        result.recommendation += result.pioneerCdCheckPartial
+            ? " Pioneer CD Check coverage was incomplete; recorded evidence is retained. Verify any rip independently."
+            : " Pioneer CU/E32 was not measured; verify any rip independently.";
 }
 
 inline void PrintReadEvidence(std::ostream& out, const DiscRotAnalysis& result, const char* prefix = "") {

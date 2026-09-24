@@ -33,6 +33,7 @@ bool g_accessibleMode = false;
 HWND hInfoButtons[COMMAND_BUTTON_COUNT];        // quick action buttons
 HWND hProgressText;                             // live progress status
 HWND hProgressBar;                              // live progress meter
+HWND hDisableIsrc;
 HFONT hCommandFont;
 HFONT hOutputFont;
 HBRUSH hDarkEditBrush;
@@ -48,6 +49,7 @@ static int gHoveredNavIndex = -1;
 
 int SidebarWidth() { return ScalePx(360); }
 int NavItemTop(int index) { return ScalePx(145 + index * 76); }
+int GlobalOptionsTop() { return NavItemTop(kNavItemCount - 1) + ScalePx(kNavItemHeight + 30); }
 
 int GetNavIndex()
 {
@@ -275,6 +277,7 @@ RECT GetMonitorWorkArea(HWND hWnd)
 // user can't queue or interfere with a running workflow. Pass `true` to
 // re-enable all buttons (workflow finished).
 void SetMenuButtonsEnabled(bool enabled) {
+    if (hDisableIsrc) EnableWindow(hDisableIsrc, enabled ? TRUE : FALSE);
     // Clear button stays clickable so it can act as Cancel while a workflow runs.
     for (int i = 0; i < COMMAND_BUTTON_COUNT; i++) {
         if (i == kClearButtonIndex) continue;
@@ -294,6 +297,17 @@ void SetMenuButtonsEnabled(bool enabled) {
 
 LRESULT HandleControlColorStatic(HWND hWnd, HDC hdc, HWND child)
 {
+    if (child == hDisableIsrc)
+    {
+        if (IsHighContrastActive())
+            return DefWindowProc(hWnd, WM_CTLCOLORSTATIC, (WPARAM)hdc, (LPARAM)child);
+        SetBkMode(hdc, OPAQUE);
+        SetBkColor(hdc, ActiveTheme().surfaceRaised);
+        SetTextColor(hdc, IsWindowEnabled(child)
+            ? ActiveTheme().cardInk : ActiveTheme().cardInkMuted);
+        SetDCBrushColor(hdc, ActiveTheme().surfaceRaised);
+        return (INT_PTR)GetStockObject(DC_BRUSH);
+    }
     // The accessible mirror is a read-only EDIT (which sends
     // WM_CTLCOLORSTATIC, not WM_CTLCOLOREDIT). Paint it in the app's dark
     // console theme so it doesn't flash a white box over the dark UI, but
@@ -392,6 +406,7 @@ void OnThemeChangedUi()
             if (hInfoButtons[i]) InvalidateRect(hInfoButtons[i], nullptr, TRUE);
         }
         if (hProgressText)   InvalidateRect(hProgressText, nullptr, TRUE);
+        if (hDisableIsrc)    InvalidateRect(hDisableIsrc, nullptr, TRUE);
         if (hAccessibleEdit) InvalidateRect(hAccessibleEdit, nullptr, TRUE);
     }
 }

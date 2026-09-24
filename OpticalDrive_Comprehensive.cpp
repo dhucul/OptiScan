@@ -88,7 +88,8 @@ void OpticalDrive::PrintComprehensiveReport(const ComprehensiveScanResult& resul
 			<< ScanQuality::CounterAverageText(result.bler.pioneerE22Observations)
 			<< " avg, " << ScanQuality::CounterPeakText(result.bler.pioneerE22Observations) << " peak (diagnostic)\n";
 		std::cout << "  Uncorrectable:    ";
-		if (!result.bler.pioneerCdCheckRun) std::cout << "NOT MEASURED\n";
+		if (result.bler.pioneerCdCheckPartial) std::cout << PioneerCdCheckStatus(result.bler) << "\n";
+		else if (!result.bler.pioneerCdCheckRun) std::cout << "NOT MEASURED\n";
 		else if (result.bler.pioneerCdCheckC2Bytes > 0)
 			std::cout << "YES - DATA LOSS (" << result.bler.pioneerCdCheckC2Bytes << " bytes)\n";
 		else std::cout << "NO - completed Pioneer CD Check\n";
@@ -107,9 +108,7 @@ void OpticalDrive::PrintComprehensiveReport(const ComprehensiveScanResult& resul
 		std::cout << "  Pioneer E22:       " << result.rot.pioneerE22Total << " total, "
 			<< ScanQuality::CounterPeakText(result.rot.pioneerE22Observations) << " peak (diagnostic)\n";
 		std::cout << "  CU cross-check:    "
-			<< (result.rot.pioneerCdCheckRun ?
-				(result.rot.pioneerCdCheckC2Bytes > 0 ? "DATA LOSS CONFIRMED" : "measured clean")
-				: "NOT MEASURED") << "\n";
+			<< PioneerCdCheckStatus(result.rot) << "\n";
 	}
 
 	// Speed Comparison Summary
@@ -233,7 +232,8 @@ bool OpticalDrive::SaveComprehensiveReport(const ComprehensiveScanResult& result
 			<< ScanQuality::CounterAverageText(result.bler.pioneerE22Observations) << " avg, "
 			<< ScanQuality::CounterPeakText(result.bler.pioneerE22Observations) << " peak (diagnostic only)\n";
 		file << "Uncorrectable:   ";
-		if (!result.bler.pioneerCdCheckRun) file << "NOT MEASURED\n";
+		if (result.bler.pioneerCdCheckPartial) file << PioneerCdCheckStatus(result.bler) << "\n";
+		else if (!result.bler.pioneerCdCheckRun) file << "NOT MEASURED\n";
 		else if (result.bler.pioneerCdCheckC2Bytes > 0)
 			file << "YES - DATA LOSS (" << result.bler.pioneerCdCheckC2Bytes << " bytes)\n";
 		else file << "NO - completed Pioneer CD Check\n";
@@ -254,9 +254,7 @@ bool OpticalDrive::SaveComprehensiveReport(const ComprehensiveScanResult& result
 			<< ScanQuality::CounterAverageText(result.rot.pioneerE22Observations) << " avg, "
 			<< ScanQuality::CounterPeakText(result.rot.pioneerE22Observations) << " peak (diagnostic only)\n";
 		file << "CU cross-check:  "
-			<< (result.rot.pioneerCdCheckRun ?
-				(result.rot.pioneerCdCheckC2Bytes > 0 ? "DATA LOSS CONFIRMED" : "measured clean")
-				: "NOT MEASURED") << "\n\n";
+			<< PioneerCdCheckStatus(result.rot) << "\n\n";
 	}
 
 	file << "Audio Content\n";

@@ -1,5 +1,6 @@
 ﻿#include "OpticalDrive.h"
 #include <iostream>
+#include "GlobalOptions.h"
 #include <iomanip>
 #include <cstring>
 #include <vector>
@@ -178,6 +179,10 @@ bool OpticalDrive::ReadMCN(DiscInfo& disc) {
 }
 
 bool OpticalDrive::ReadISRC(DiscInfo& disc) {
+	if (GlobalOptions::IsIsrcScanningDisabled()) {
+		std::cout << "\nISRC scanning disabled in Global Options.\n";
+		return false;
+	}
 	std::cout << "\nReading ISRC codes...\n";
 	struct IsrcRow {
 		int trackNumber = 0;

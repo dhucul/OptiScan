@@ -468,9 +468,7 @@ OpticalDrive::PioneerQualityFallbackResult OpticalDrive::RunPioneerVendorQuality
 	// was derived from instead of re-deriving tiers from the raw peaks.
 	result.peaks = qc.peaks;
 	result.sustainedC1Rating = qc.sustainedC1Rating;
-	result.pioneerCdCheckRun = qc.pioneerCdCheckRun;
-	result.pioneerCdCheckC1Frames = qc.pioneerCdCheckC1Frames;
-	result.pioneerCdCheckC2Bytes = qc.pioneerCdCheckC2Bytes;
+	CopyPioneerCdCheckEvidence(qc, result);
 
 	result.perSecondC1.reserve(qc.samples.size());
 	result.perSecondC2.reserve(qc.samples.size());

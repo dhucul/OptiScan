@@ -66,7 +66,10 @@ void OpticalDrive::PrintBlerReport(const DiscInfo& disc, const BlerResult& resul
 					"E22 and C1 peak at the same time slice - one event counted by "
 					"two decoder stages, not two independent findings.", "  ");
 			std::cout << "  Uncorrectable:    ";
-			if (!result.pioneerCdCheckRun)
+			if (result.pioneerCdCheckPartial)
+				std::cout << PioneerCdCheckStatus(result) << " ("
+					<< result.pioneerCdCheckC2Bytes << " bytes, worst observed window)\n";
+			else if (!result.pioneerCdCheckRun)
 				std::cout << "NOT MEASURED\n";
 			else if (result.pioneerCdCheckC2Bytes > 0)
 				std::cout << "YES - " << result.pioneerCdCheckC2Bytes

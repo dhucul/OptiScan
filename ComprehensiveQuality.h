@@ -6,8 +6,7 @@
 // Pure final-assessment policy, shared by the scan workflow and regression tests.
 namespace ComprehensiveQuality {
 inline bool HasConfirmedPioneerLoss(const ComprehensiveScanResult& result) {
-	return (result.bler.pioneerCdCheckRun && result.bler.pioneerCdCheckC2Bytes > 0)
-		|| (result.rot.pioneerCdCheckRun && result.rot.pioneerCdCheckC2Bytes > 0);
+	return HasPioneerCdCheckLoss(result.bler) || HasPioneerCdCheckLoss(result.rot);
 }
 
 inline bool HasConfirmedFailure(const ComprehensiveScanResult& result) {

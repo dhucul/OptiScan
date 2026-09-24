@@ -18,6 +18,7 @@
 #include "MainMenu.h"
 #include "Theme.h"
 #include "UiSound.h"
+#include "GlobalOptions.h"
 #include <commctrl.h>
 #include <string>
 #include <vector>
@@ -639,6 +640,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             // Parse the menu selections:
             switch (wmId)
             {
+            case IDC_DISABLE_ISRC:
+                if (HIWORD(wParam) == BN_CLICKED && !GuiWorker::IsRunning())
+                {
+                    GlobalOptions::SetIsrcScanningDisabled(
+                        IsDlgButtonChecked(hWnd, IDC_DISABLE_ISRC) == BST_CHECKED);
+                }
+                return 0;
             case IDC_INFO_BUTTON1:
             case IDC_INFO_BUTTON2:
             case IDC_INFO_BUTTON3:
@@ -875,6 +883,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                             bool needsAudioDisc = ButtonNeedsAudioDisc(commandIndex);
                             bool needsDrive = ButtonNeedsDrive(commandIndex);
                             bool disablesMenu = ButtonDisablesMenu(commandIndex);
+                            // Help and Check for updates leave command buttons enabled,
+                            // but option changes are rejected while any worker runs.
+                            // Lock the checkbox too; completion/start failure restores it.
+                            EnableWindow(GetDlgItem(hWnd, IDC_DISABLE_ISRC), FALSE);
                             // Disable every menu button except Cancel for the
                             // duration of the workflow. Re-enabled in WM_APP_WORKER_DONE.
                             if (disablesMenu) SetMenuButtonsEnabled(false);

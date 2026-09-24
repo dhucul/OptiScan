@@ -6,7 +6,7 @@ A Windows **GUI application** for high-quality audio CD ripping, writing, and ad
 
 OptiScan reads and writes audio CDs at the raw sector level using SCSI/MMC commands and provides multiple quality scanning modes to assess disc health before, during, or after extraction.
 
-**[Download OptiScan 3.40](https://github.com/dhucul/OptiScan/releases/latest)** — choose `OptiScan-3.40-Setup.exe`, the 64-bit installer for Windows 10 or later. It installs the Microsoft Visual C++ 2015–2022 runtime when needed, so setup requires administrator rights.
+**[Download OptiScan 3.41](https://github.com/dhucul/OptiScan/releases/latest)** — choose `OptiScan-3.41-Setup.exe`, the 64-bit installer for Windows 10 or later. It installs the Microsoft Visual C++ 2015–2022 runtime when needed, so setup requires administrator rights.
 
 > [!IMPORTANT]
 > **Drive compatibility is not universal.** OptiScan relies on low-level SCSI/MMC and vendor-specific optical-drive commands, so support depends on the exact drive model, firmware, chipset, USB bridge, and media type. A drive may work for normal ripping but still fail features such as pregap detection, subchannel reading/writing, CD-Text writing, C2/C1 reporting, or hardware quality scans.
@@ -502,13 +502,14 @@ The report includes the chipset family, detection confidence, interface type, US
 
 The diagnostic menu distinguishes a completed observation from unavailable or incomplete measurements:
 
+- **7 / 10 — Quality scan and Disc Rot:** valid Pioneer CD Check errors survive a later failed or cancelled cross-check. Partial uncorrectable activity retains its data-loss warning in assessments and saved reports; zero counts from an incomplete cross-check never establish a clean result.
 - **14 — Audio content analysis:** content counts and percentages use only successfully read samples. No readable samples means **NOT MEASURED**. Any sampled read failure leaves the analysis incomplete; zero counts do not certify silence, clipping, level or DC-offset absence.
 - **16 — Lead area check:** examines pre-program samples when accessible, or an inner program-area proxy, plus the final program-area sectors. It does not verify the actual lead-in TOC or lead-out. Successful proxy reads are reported only as boundary observations.
 - **17 — Subchannel integrity:** aborting after 200 consecutive errors returns an incomplete result. Cancellation during the final control-field check also propagates to the caller.
 - **18 — Subchannel burn status:** failed reads, zero-filled raw responses and formatted-Q-only support leave optional R-W content unknown. They never establish an empty subchannel or justify skipping extraction. A completed raw assessment requires no failed/empty sampled responses and at least 90% valid Q CRCs; even then, lack of R-W activity is only a statement about the sampled program-area sectors.
 - **19 — Copy-protection check:** informational observations do not count as weak evidence. A likely-protection verdict requires two strong indicators, or one strong indicator plus two warning-level indicators.
 - **24 — Seek time analysis:** failed origin/seek attempts are reported separately and never enter timing medians or averages. Every tested pair remains in the result, including pairs with no successful attempts, marked as unmeasured. Only measured pairs enter timing statistics; failed and unmeasured pairs remain in the final abnormal-seek summary. Partial measurements return incomplete, and failed commands cannot be classified as fast/normal seeks.
-- **26 — Disc balance:** requires sufficient readable samples at two distinct drive-reported speeds. Unverified speed rows are excluded from comparisons and recommendations, and fewer than two distinct verified speeds produce no score. Qualified rows are compared in actual-speed order; equal or worsening timings at distinct speeds remain plateau/regression evidence. Recommendations never exceed the qualified measured speed. Known-speed read failures still constrain coverage.
+- **26 — Disc balance:** requires sufficient readable samples at two distinct drive-reported speeds. Unverified speed rows are excluded from comparisons and recommendations, and fewer than two distinct verified speeds produce no score. Qualified rows are compared in actual-speed order; equal or worsening timings at distinct speeds remain plateau/regression evidence. Recommendations never exceed the qualified measured speed or cross a measured speed with insufficient readable samples. Failed attempts remain visible even when another repeat succeeds, including failures during the timing re-test; they withhold the suggested rip setting and advise secure extraction with independent verification.
 
 ## Subchannel Data Extraction
 
